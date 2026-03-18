@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from itertools import product
 from pathlib import Path
@@ -180,12 +181,14 @@ def cross_validate(failing_agent_spec: AgentSpec, backup_agent_spec: AgentSpec, 
                     continue_env_with_backup_agent(backup_env, backup_agent, result)
             except Exception as e:
                 logger.error(
-                    f"Error during backup agent evaluation of {backup_agent_spec.name} on chronic {backup_env.chronics_handler.get_name()}, skip this chronic: {e}")
+                    f"Error during backup agent evaluation of {backup_agent_spec.name} on chronic {backup_env.chronics_handler.get_name()}, skip this chronic")
+                logger.exception(e)
                 result.backup_agent_completed[backup_env.chronics_handler.get_name()] = None
                 result.additional_timesteps[backup_env.chronics_handler.get_name()] = None
 
         except Exception as e:
-            logger.error(f"Error during rollout of {failing_agent_spec.name} and on chronic {g2op_env.chronics_handler.get_name()}, skip this chronic: {e}")
+            logger.error(f"Error during rollout of {failing_agent_spec.name} and on chronic {g2op_env.chronics_handler.get_name()}, skip this chronic:")
+            logger.exception(e)
             result.failing_agent_completed[g2op_env.chronics_handler.get_name()] = None
             result.backup_agent_completed[g2op_env.chronics_handler.get_name()] = None
             result.additional_timesteps[g2op_env.chronics_handler.get_name()] = None
@@ -1575,9 +1578,11 @@ def main():
     from concurrent.futures import ProcessPoolExecutor, as_completed
     from itertools import product
 
-    model1 = AgentSpec(name="RAPPO", load_path="/home/adriandegenolb/Dev/NRI-for-explainable-RL-in-Power-Grids/results/agents/CustomPPO_0_426b7_2026-01-19_10-28-48", checkpoint_name="checkpoint_000020")
-    model2 = AgentSpec(name="MLP", load_path="/home/adriandegenolb/Dev/NRI-for-explainable-RL-in-Power-Grids/results/agents/CustomPPO_0_48ac9_2026-01-19_14-39-31_MLP", checkpoint_name="checkpoint_000020")
-    model3 = AgentSpec(name="GNN", load_path="/home/adriandegenolb/Dev/NRI-for-explainable-RL-in-Power-Grids/results/agents/CustomPPO_0_4cbd2_2026-01-19_14-39-38_GNN", checkpoint_name="checkpoint_000023")
+    cwd = os.getcwd()
+
+    model1 = AgentSpec(name="RAPPO", load_path=Path(cwd, "results/agents/CustomPPO_0_426b7_2026-01-19_10-28-48"), checkpoint_name="checkpoint_000020")
+    model2 = AgentSpec(name="MLP", load_path=Path(cwd, "/home/adrian/Dev/NRI-for-explainable-RL-in-Power-Grids/results/agents/CustomPPO_0_48ac9_2026-01-19_14-39-31_MLP"), checkpoint_name="checkpoint_000020")
+    model3 = AgentSpec(name="GNN", load_path=Path(cwd, "/home/adrian/Dev/NRI-for-explainable-RL-in-Power-Grids/results/agents/CustomPPO_0_4cbd2_2026-01-19_14-39-38_GNN"), checkpoint_name="checkpoint_000023")
 
     num_episodes = 50
 
