@@ -206,9 +206,9 @@ class BusConnectivityGraphObsSpace(GraphObservationSpace):
             voltage_angle,
             current,
             rho,
-            bus_indices,
-            element_indices,
-            substation_indices
+            #bus_indices,
+            #element_indices,
+            #substation_indices
         ]
 
         node_features = np.array(features).transpose()
@@ -250,9 +250,9 @@ class BusConnectivityGraphObsSpace(GraphObservationSpace):
             "voltage_angle",
             "current",
             "rho",
-            "bus_indices",
-            "element_indices",
-            "substation_indices"
+            #"bus_indices",
+            #"element_indices",
+            #"substation_indices"
         ]
 
         return feature_names

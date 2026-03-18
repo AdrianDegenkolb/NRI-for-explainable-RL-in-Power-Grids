@@ -19,12 +19,12 @@ def main():
                        checkpoint_name="checkpoint_000022")
 
     num_episodes = 50
-    for dataset in ["l2rpn_case14_sandbox_val", "l2rpn_case14_sandbox_test"]:
+    for dataset in ["l2rpn_case14_sandbox_val_local", "l2rpn_case14_sandbox_test_local"]:
         print(f"Evaluating on dataset: {dataset}")
         eval_env_name = dataset
-        env_suffix = eval_env_name.split('_')[-1]
+        env_suffix = "_".join(eval_env_name.split('_')[-2:])
 
-        for model in [model1, model2, model3, model4]:
+        for model in [model2]:
             print(f"\nEvaluating model: {model.name}")
             model_id = str(model.load_path).split('/')[-1]
             save_path = Path(f"results/evaluations/{model.name}/{model_id}/{env_suffix}")

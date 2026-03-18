@@ -13,6 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
 import seaborn as sns
 
+from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
 from src.visualization import visualize_graph, PlottingArgs
 from src.visualization.utils import NodeStyle
 
@@ -118,8 +119,7 @@ def _plot_three_histograms(
         if integer_bins:
             ax.xaxis.set_major_locator(MultipleLocator(1))
 
-    suffix = ' (Aggregated)' if aggregated else ''
-    fig.suptitle(f'{suptitle}{suffix}', fontsize=14, fontweight='bold')
+    fig.suptitle(f'{suptitle}', fontsize=14, fontweight='bold')
 
 
 class MetricVisualizer(abc.ABC, Generic[T]):
@@ -251,7 +251,11 @@ class DegreeDistributionVisualizer(MetricVisualizer[Dict[str, npt.NDArray]]):
         # Average degrees across all timesteps
         latent_full = np.mean([m['latent_full'] for m in self.metrics_history], axis=0)
         latent_subgraph = np.mean([m['latent_subgraph'] for m in self.metrics_history], axis=0)
-        powergrid_full = np.mean([m['powergrid_full'] for m in self.metrics_history], axis=0)
+        # Powergrid is a discrete graph — degrees are integers; round to nearest int
+        # after averaging (the graph is static, so this is a no-op in practice)
+        powergrid_full = np.round(
+            np.mean([m['powergrid_full'] for m in self.metrics_history], axis=0)
+        ).astype(int)
 
         return {
             'latent_full': latent_full,
@@ -280,8 +284,8 @@ class DegreeDistributionVisualizer(MetricVisualizer[Dict[str, npt.NDArray]]):
                 latent_subgraph_degrees[dst] += prob_exists
         latent_subgraph_degrees[~node_mask] = np.nan  # Set degrees of nodes outside the mask to NaN for clarity
 
-        # Compute powergrid degrees (full graph)
-        powergrid_full_degrees = np.zeros(num_nodes, dtype=float)
+        # Compute powergrid degrees (full graph) — discrete graph, so integer degrees
+        powergrid_full_degrees = np.zeros(num_nodes, dtype=int)
         for src, dst in powergrid_graph.T:
             powergrid_full_degrees[src] += 1
             powergrid_full_degrees[dst] += 1
@@ -796,6 +800,9 @@ class PosteriorDistributionVisualizer(MetricVisualizer[Tuple[npt.NDArray, Option
         fig, axes = plt.subplots(1, n_cols, figsize=(9 * n_cols, 6))
         if n_cols == 1:
             axes = [axes]  # Make it iterable
+        import grid2op
+        env = grid2op.make("l2rpn_case14_sandbox")
+        powerline_edges = BusConnectivityGraphObsSpace(grid2op_observation_space=env.observation_space).to_gym(env.reset())[EDGE_INDEX]
 
         # Right: Graph visualization
         visualize_graph(PlottingArgs(
@@ -806,10 +813,10 @@ class PosteriorDistributionVisualizer(MetricVisualizer[Tuple[npt.NDArray, Option
             skip_last_edge_type=True,
             show_legend=False
         ), ax=axes[0])
-        axes[0].set_title(r'Mean RAPPO graph $\bar{q}_\phi(\mathbf{z}_{ij} = 1)$')
+        axes[0].set_title(r'Mean RAPPO graph $\bar{q}_\phi(\mathbf{z}_{ij} = 1)$', fontsize=20, fontweight='bold')
 
         if aggregated and std_posterior is not None:
-            latent_edge_probs = np.stack(std_posterior * 5)
+            latent_edge_probs = np.stack(std_posterior + 0.4)
             visualize_graph(PlottingArgs(
                 num_nodes=len(self.node_styles),
                 node_styles=self.node_styles,
@@ -817,7 +824,7 @@ class PosteriorDistributionVisualizer(MetricVisualizer[Tuple[npt.NDArray, Option
                 latent_edge_probs=latent_edge_probs,
                 skip_last_edge_type=True
             ), ax=axes[1])
-            axes[1].set_title(r'Edge-wise temporal variance over $p_\phi(\mathbf{z}_{ij} = 1 \mid s_t)$')
+            axes[1].set_title(r'Edge-wise temporal variance over $p_\phi(\mathbf{z}_{ij} = 1 \mid s_t)$', fontsize=20, fontweight='bold')
 
         plt.tight_layout()
 
@@ -1068,9 +1075,9 @@ class KLDivergenceVisualizer(MetricVisualizer[Tuple[npt.NDArray, npt.NDArray]]):
 
         bins = _compute_shared_bins([per_edge_kl])
         if len(per_edge_kl) > 0:
-            ax.hist(per_edge_kl, bins=bins, color=COLOR_LATENT_FULL, edgecolor='black', alpha=0.75, density=True)
+            ax.hist(per_edge_kl, bins=bins, color=COLOR_POWERGRID, edgecolor='black', alpha=0.75, density=True)
             mean_val = float(np.mean(per_edge_kl))
-            ax.axvline(mean_val, color='red', linestyle='--', linewidth=1.8, label=f'Mean: {mean_val:.4f}')
+            ax.axvline(mean_val, color='blue', linestyle='-.', linewidth=1.8, label=f'Mean: {mean_val:.4f}')
             ax.legend(fontsize=9)
         else:
             ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
@@ -1079,8 +1086,7 @@ class KLDivergenceVisualizer(MetricVisualizer[Tuple[npt.NDArray, npt.NDArray]]):
         ax.set_ylabel('Density')
         ax.grid(axis='y', alpha=0.3)
 
-        suffix = ' (Aggregated)' if aggregated else ''
-        ax.set_title(f'Per-Edge KL Divergence{suffix}', fontsize=14, fontweight='bold')
+        ax.set_title(f'Per-Edge KL Divergence', fontsize=14)
 
         plt.tight_layout()
 
@@ -1219,9 +1225,14 @@ class SymmetryMetricVisualizer(MetricVisualizer[float]):
 
         fig, ax = plt.subplots(1, 1, figsize=(6, 4))
         sns.histplot(symmetry_scores, ax=ax, bins=30, alpha=0.7, stat='density')
+        mean_symmetry = np.mean(symmetry_scores)
+        ax.axvline(mean_symmetry, color='blue', linestyle='-.', linewidth=1.8, label=f'Mean: {mean_symmetry:.4f}')
+        ax.legend(fontsize=9)
         ax.set_xlabel('Symmetry Score (R)')
         ax.set_ylabel('Density')
-        ax.set_title(f'Distribution of Posterior Symmetry Scores,\n aggregated over {len(symmetry_scores)} timesteps)')
+        ax.set_title(f'Per edge Posterior Symmetry Scores')
+
+        plt.grid(axis="y", alpha=0.3)
 
         plt.tight_layout()
 

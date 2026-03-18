@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 if __name__ == "__main__":
     analyzer_to_run = [
         #Hypothesis1verifier(),
-        #Hypothesis2verifier(),
+        Hypothesis2verifier(),
         Hypothesis3verifier()
     ]
     agent_spec = AgentSpec(

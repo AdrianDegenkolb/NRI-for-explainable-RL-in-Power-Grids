@@ -58,13 +58,13 @@ class PosteriorMetrics(PosteriorAnalyzer):
         self.metrics: Dict[str, MetricVisualizer] = {
             "Node Degree": DegreeDistributionVisualizer(node_styles=node_styles),
             "Clustering Coefficient": ClusteringCoefficientVisualizer(node_styles=node_styles),
-            "Inner Tree Node Probability": InnerTreeNodeProbabilityVisualizer(node_styles=node_styles),
+            #"Inner Tree Node Probability": InnerTreeNodeProbabilityVisualizer(node_styles=node_styles),
             "Posterior Distribution": PosteriorDistributionVisualizer(node_styles=node_styles),
             "KL Divergence": KLDivergenceVisualizer(node_styles=node_styles),
             #"Entropy vs KL": EntropyVsKLVisualizer(node_styles=node_styles),
             #"Path Length": AllPairsShortestPathVisualizer(node_styles=node_styles),
             "Symmetry Analysis": SymmetryMetricVisualizer(node_styles=node_styles),
-            "Connected Node Types": EdgeNodeTypeVisualizer(node_styles=node_styles),
+            #"Connected Node Types": EdgeNodeTypeVisualizer(node_styles=node_styles),
             #"Steps": StepVisualizer(node_styles=node_styles),
             "Betweenness Centrality": BetweennessVisualizer(node_styles=node_styles),
         }
@@ -188,19 +188,29 @@ class PosteriorMetrics(PosteriorAnalyzer):
         # Helper: compute stats (mean, std, min, max, median) for a 1-D array
         # ------------------------------------------------------------------ #
         def _stats(arr: npt.NDArray):
-            """Return (mean, std, min, max, median) or all None if arr is empty / scalar."""
+            """Return (is_integer, mean, std, min, max, median) or all None if arr is empty / scalar."""
             arr = np.asarray(arr).ravel()
             arr = arr[np.isfinite(arr)]
             if arr.size == 0:
-                return None, None, None, None, None
-            return float(np.mean(arr)), float(np.std(arr)), float(np.min(arr)), float(np.max(arr)), float(np.median(arr))
+                return False, None, None, None, None, None
+            # Treat as integer if dtype is integral OR if all values are whole numbers
+            # (handles legacy data saved as float that represents discrete counts)
+            is_integer = np.issubdtype(arr.dtype, np.integer) or bool(np.all(arr == np.floor(arr)))
+            return (is_integer,
+                    float(np.mean(arr)), float(np.std(arr)),
+                    float(np.min(arr)), float(np.max(arr)), float(np.median(arr)))
 
-        def _fmt(val, digits=4):
-            return f"{val:.{digits}f}" if val is not None else "--"
+        def _fmt(val, digits=4, is_integer=False):
+            if val is None:
+                return "--"
+            return f"{int(round(val))}" if is_integer else f"{val:.{digits}f}"
 
-        def _fmt_mean_std(mean, std, digits=4):
+        def _fmt_mean_std(mean, std, digits=4, is_integer=False):
             if mean is None:
                 return "--"
+            if is_integer:
+                # Mean of integers can be non-integer; keep one decimal for clarity
+                return f"{mean:.1f} ± {std:.1f}" if std is not None else f"{mean:.1f}"
             if std is None:
                 return _fmt(mean, digits)
             return f"{mean:.{digits}f} ± {std:.{digits}f}"
@@ -228,9 +238,12 @@ class PosteriorMetrics(PosteriorAnalyzer):
             ]:
                 if arr is None:
                     continue
-                mean, std, mn, mx, med = _stats(arr)
+                is_int, mean, std, mn, mx, med = _stats(arr)
                 rows.append((display_name, graph_label,
-                             _fmt_mean_std(mean, std), _fmt(mn), _fmt(mx), _fmt(med)))
+                             _fmt_mean_std(mean, std, is_integer=is_int),
+                             _fmt(mn, is_integer=is_int),
+                             _fmt(mx, is_integer=is_int),
+                             _fmt(med, is_integer=is_int)))
             rows.append(("", "", "", "", "", ""))  # blank separator row
 
         # --- Betweenness Centrality (different dict keys) ---
@@ -243,9 +256,12 @@ class PosteriorMetrics(PosteriorAnalyzer):
             ]:
                 if arr is None:
                     continue
-                mean, std, mn, mx, med = _stats(arr)
+                is_int, mean, std, mn, mx, med = _stats(arr)
                 rows.append(("Betweenness Centrality", graph_label,
-                             _fmt_mean_std(mean, std), _fmt(mn), _fmt(mx), _fmt(med)))
+                             _fmt_mean_std(mean, std, is_integer=is_int),
+                             _fmt(mn, is_integer=is_int),
+                             _fmt(mx, is_integer=is_int),
+                             _fmt(med, is_integer=is_int)))
             rows.append(("", "", "", "", "", ""))
 
         # --- Posterior Distribution ---
@@ -256,17 +272,23 @@ class PosteriorMetrics(PosteriorAnalyzer):
             p_exists = mean_post[:, :-1].sum(axis=1)
             p_no_edge = mean_post[:, -1]
             for arr, label in [(p_exists, "p(edge exists)"), (p_no_edge, "p(no edge)")]:
-                mean, std, mn, mx, med = _stats(arr)
+                is_int, mean, std, mn, mx, med = _stats(arr)
                 rows.append(("Posterior Distribution", label,
-                             _fmt_mean_std(mean, std), _fmt(mn), _fmt(mx), _fmt(med)))
+                             _fmt_mean_std(mean, std, is_integer=is_int),
+                             _fmt(mn, is_integer=is_int),
+                             _fmt(mx, is_integer=is_int),
+                             _fmt(med, is_integer=is_int)))
             rows.append(("", "", "", "", "", ""))
 
         # --- KL Divergence ---
         data = aggregated_data_per_metric.get("KL Divergence")
         if data is not None:
-            mean, std, mn, mx, med = _stats(data)
+            is_int, mean, std, mn, mx, med = _stats(data)
             rows.append(("Per Edge KL Divergence", "--",
-                         _fmt_mean_std(mean, std), _fmt(mn), _fmt(mx), _fmt(med)))
+                         _fmt_mean_std(mean, std, is_integer=is_int),
+                         _fmt(mn, is_integer=is_int),
+                         _fmt(mx, is_integer=is_int),
+                         _fmt(med, is_integer=is_int)))
             rows.append(("", "", "", "", "", ""))
 
         # --- Symmetry Analysis ---
@@ -411,12 +433,12 @@ def main():
     )
     env_name = "l2rpn_case14_sandbox_test"
     # Set to True to run the agent and compute metrics; False to load from disk and visualize only
-    compute_data = True
+    compute_data = False
     # Set to True to also save per-step figures (slow); False to only save aggregated figures
     enable_stepwise_viz = False
     num_episodes = 50
     max_total_duration_s = 60 * 60 * 1  # 1 hour
-    save_dir = Path("results/graph_metrics")
+    save_dir = Path("results/graph_metrics_thesis")
 
     if compute_data:
         agent, env, gym_env = load_agent_from_spec(agent_spec=agent_spec, env_name=env_name)

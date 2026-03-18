@@ -1115,7 +1115,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
                 return
             outpath.parent.mkdir(parents=True, exist_ok=True)
             all_vals = [post_vals, prior_vals, rem_vals, add_vals]
-            labels = ["posterior", "prior (baseline)", r"removed $p(1-q)$", r"added $q(1-p)$"]
+            labels = ["posterior", "prior (baseline)", r"removal prob", r"addition prob"]
             combined = np.concatenate([v[np.isfinite(v)] for v in all_vals])
             bins = np.linspace(combined.min(), combined.max(), 31) if combined.size > 1 else 30
             fig, axes = plt.subplots(1, 4, figsize=(18, 4), sharex=True, sharey=True)
@@ -1139,37 +1139,38 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             plt.show()
 
         # ---- Graph visualisation ----
-        if self._environment is None or self._powerline_edge_index is None:
-            import grid2op
-            from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
-            self._environment = grid2op.make("l2rpn_case14_sandbox")
-            obs_space = BusConnectivityGraphObsSpace(grid2op_observation_space=self._environment.observation_space)
-            self._powerline_edge_index = obs_space.to_gym(self._environment.reset())[EDGE_INDEX]
-
-        self._visualize_coupling_graph(C_mean, P_mean, PR_mean, node_counts, timesteps_total = C_T.shape[0])
-
-        if node_counts is not None and node_counts.size > 0:
-            plt.figure(figsize=(max(8, len(node_counts) // 3), 4))
-            plt.bar(range(len(node_counts)), node_counts)
-            plt.xlabel("Node index")
-            plt.ylabel("Reconfiguration count")
-            plt.title(r"Per-node reconfiguration frequency ($V(a_t)$ membership count)")
-            plt.tight_layout()
-            plt.savefig(self.outdir / "bar_node_reconfiguration_counts.png")
-            plt.savefig(self.outdir / "bar_node_reconfiguration_counts.svg")
-            plt.show()
+        # if self._environment is None or self._powerline_edge_index is None:
+        #     import grid2op
+        #     from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
+        #     self._environment = grid2op.make("l2rpn_case14_sandbox")
+        #     obs_space = BusConnectivityGraphObsSpace(grid2op_observation_space=self._environment.observation_space)
+        #     self._powerline_edge_index = obs_space.to_gym(self._environment.reset())[EDGE_INDEX]
+        #
+        # self._visualize_coupling_graph(C_mean, P_mean, PR_mean, node_counts, timesteps_total = C_T.shape[0])
+        #
+        # if node_counts is not None and node_counts.size > 0:
+        #     plt.figure(figsize=(max(8, len(node_counts) // 3), 4))
+        #     plt.bar(range(len(node_counts)), node_counts)
+        #     plt.xlabel("Node index")
+        #     plt.ylabel("Reconfiguration count")
+        #     plt.title(r"Per-node reconfiguration frequency ($V(a_t)$ membership count)")
+        #     plt.tight_layout()
+        #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.png")
+        #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.svg")
+        #     plt.show()
 
         # ---- KDE: mean C conditioned on posterior (left) and prior (right) ----
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharex=True, sharey=True)
         for ax, mean_val, suffix in [
             (axes[0], P_mean,  "posterior"),
             (axes[1], PR_mean, "prior"),
+            #(axes[1,0], added_mean, "addition prob"),
+            #(axes[1,1], removed_mean, "removal prob"),
         ]:
             valid = np.isfinite(C_mean) & np.isfinite(mean_val)
             C_v, X_v = C_mean[valid], mean_val[valid]
-            sns.kdeplot(C_v[X_v > 0.5],  label=f"High {suffix} node pairs", ax=ax)
-            sns.kdeplot(C_v[X_v <= 0.5], label=f"Low {suffix} node pairs",  ax=ax)
-            ax.set_xlim(0, 1)
+            sns.kdeplot(C_v[X_v > 0.8],  label=f"High {suffix} node pairs", ax=ax)
+            sns.kdeplot(C_v[X_v <= 0.8], label=f"Low {suffix} node pairs",  ax=ax)
             ax.set_xlabel(r"Mean $\bar{C}_{ij}^{\mathrm{effect}}$")
             ax.set_ylabel("Density")
             ax.set_title(f"{cl} vs {suffix}")
@@ -1180,104 +1181,104 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.savefig(self.outdir / "kde_C_effect_conditioned_on_posterior_prior.svg")
         plt.show()
 
-        # ---- KDE: mean C conditioned on removed p(1-q) and added q(1-p) ----
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
-        for ax, mean_val, suffix in [
-            (axes[0], removed_mean, r"removed $p(1-q)$"),
-            (axes[1], added_mean,   r"added $q(1-p)$"),
-        ]:
-            valid = np.isfinite(C_mean) & np.isfinite(mean_val)
-            C_v, X_v = C_mean[valid], mean_val[valid]
-            med = np.median(X_v) if X_v.size > 0 else 0.5
-            sns.kdeplot(C_v[X_v > med],  label=f"High {suffix} node pairs", ax=ax)
-            sns.kdeplot(C_v[X_v <= med], label=f"Low {suffix} node pairs",  ax=ax)
-            ax.set_xlim(0, 1)
-            ax.set_xlabel(r"Mean $\bar{C}_{ij}^{\mathrm{effect}}$")
-            ax.set_ylabel("Density")
-            ax.set_title(f"{cl} vs {suffix}")
-            ax.legend()
-        #fig.suptitle(r"$\bar{C}_{ij}^{\mathrm{effect}}$ – removed/added", y=0.98)
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.png")
-        plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.svg")
-        plt.show()
+        # # ---- KDE: mean C conditioned on removed p(1-q) and added q(1-p) ----
+        # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+        # for ax, mean_val, suffix in [
+        #     (axes[0], removed_mean, r"removal prob"),
+        #     (axes[1], added_mean,   r"addition prob"),
+        # ]:
+        #     valid = np.isfinite(C_mean) & np.isfinite(mean_val)
+        #     C_v, X_v = C_mean[valid], mean_val[valid]
+        #     med = 0.8#np.median(X_v) if X_v.size > 0 else 0.5
+        #     sns.kdeplot(C_v[X_v > med],  label=f"High {suffix} node pairs", ax=ax, bw_adjust=0.5)
+        #     sns.kdeplot(C_v[X_v <= med], label=f"Low {suffix} node pairs",  ax=ax, bw_adjust=0.5)
+        #     #ax.set_xlim(0, 1)
+        #     ax.set_xlabel(r"Mean $\bar{C}_{ij}^{\mathrm{effect}}$")
+        #     ax.set_ylabel("Density")
+        #     ax.set_title(f"{cl} vs {suffix}")
+        #     ax.legend()
+        # #fig.suptitle(r"$\bar{C}_{ij}^{\mathrm{effect}}$ – removed/added", y=0.98)
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])
+        # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.png")
+        # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.svg")
+        # plt.show()
 
-        # Scatter: posterior / prior / removed / added vs mean C
-        for mean_val, suffix in [
-            (P_mean,       "posterior"),
-            (PR_mean,      "prior"),
-            (removed_mean, "removed_p1mq"),
-            (added_mean,   "added_q1mp"),
-        ]:
-            valid = np.isfinite(C_mean) & np.isfinite(mean_val)
-            C_v, X_v = C_mean[valid], mean_val[valid]
-            label_suffix = suffix.replace("_", " ")
-            self._save_scatter(
-                values=(X_v, C_v),
-                title=f"Scatter: {cl} vs {label_suffix}",
-                xlabel=f"Mean {label_suffix} existence probability",
-                ylabel=r"Mean $C_{ij}^{\mathrm{effect}}$",
-                outpath=self.outdir / f"scatter_{suffix}_vs_C_effect.png",
-            )
+        # # Scatter: posterior / prior / removed / added vs mean C
+        # for mean_val, suffix in [
+        #     (P_mean,       "posterior"),
+        #     (PR_mean,      "prior"),
+        #     (removed_mean, "removed_p1mq"),
+        #     (added_mean,   "added_q1mp"),
+        # ]:
+        #     valid = np.isfinite(C_mean) & np.isfinite(mean_val)
+        #     C_v, X_v = C_mean[valid], mean_val[valid]
+        #     label_suffix = suffix.replace("_", " ")
+        #     self._save_scatter(
+        #         values=(X_v, C_v),
+        #         title=f"Scatter: {cl} vs {label_suffix}",
+        #         xlabel=f"Mean {label_suffix} existence probability",
+        #         ylabel=r"Mean $C_{ij}^{\mathrm{effect}}$",
+        #         outpath=self.outdir / f"scatter_{suffix}_vs_C_effect.png",
+        #     )
 
         # ---- KDE: aggregated C conditioned on posterior (left) and prior (right) ----
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
-        for ax, mean_val, suffix in [
-            (axes[0], P_mean,  "posterior"),
-            (axes[1], PR_mean, "prior"),
-        ]:
-            valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
-            C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
-            sns.kdeplot(C_agg_v[X_agg_v > 0.5],  label=f"High {suffix} node pairs", ax=ax)
-            sns.kdeplot(C_agg_v[X_agg_v <= 0.5], label=f"Low {suffix} node pairs",  ax=ax)
-            ax.set_xlabel(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)")
-            ax.set_ylabel("Density")
-            ax.set_title(f"{cl} vs {suffix}")
-            ax.legend()
-        #fig.suptitle(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$", y=0.98)
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.png")
-        plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.svg")
-        plt.show()
-
-        # ---- KDE: aggregated C conditioned on removed and added ----
-        fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
-        for ax, mean_val, suffix in [
-            (axes[0], removed_mean, r"removed $p(1-q)$"),
-            (axes[1], added_mean,   r"added $q(1-p)$"),
-        ]:
-            valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
-            C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
-            med = np.median(X_agg_v) if X_agg_v.size > 0 else 0.5
-            sns.kdeplot(C_agg_v[X_agg_v > med],  label=f"High {suffix} node pairs", ax=ax)
-            sns.kdeplot(C_agg_v[X_agg_v <= med], label=f"Low {suffix} node pairs",  ax=ax)
-            ax.set_xlabel(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)")
-            ax.set_ylabel("Density")
-            ax.set_title(f"{cl} vs {suffix}")
-            ax.legend()
-        #fig.suptitle(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ – removed/added", y=0.98)
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.png")
-        plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.svg")
-        plt.show()
+        # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+        # for ax, mean_val, suffix in [
+        #     (axes[0], P_mean,  "posterior"),
+        #     (axes[1], PR_mean, "prior"),
+        # ]:
+        #     valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
+        #     C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
+        #     sns.kdeplot(C_agg_v[X_agg_v > 0.8],  label=f"High {suffix} node pairs", ax=ax)
+        #     sns.kdeplot(C_agg_v[X_agg_v <= 0.8], label=f"Low {suffix} node pairs",  ax=ax)
+        #     ax.set_xlabel(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)")
+        #     ax.set_ylabel("Density")
+        #     ax.set_title(f"{cl} vs {suffix}")
+        #     ax.legend()
+        # #fig.suptitle(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$", y=0.98)
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])
+        # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.png")
+        # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.svg")
+        # plt.show()
+        #
+        # # ---- KDE: aggregated C conditioned on removed and added ----
+        # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
+        # for ax, mean_val, suffix in [
+        #     (axes[0], removed_mean, r"addition prob"),
+        #     (axes[1], added_mean,   r"removal prob"),
+        # ]:
+        #     valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
+        #     C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
+        #     med = 0.8#np.median(X_agg_v) if X_agg_v.size > 0 else 0.5
+        #     sns.kdeplot(C_agg_v[X_agg_v > med],  label=f"High {suffix} node pairs", ax=ax)
+        #     sns.kdeplot(C_agg_v[X_agg_v <= med], label=f"Low {suffix} node pairs",  ax=ax)
+        #     ax.set_xlabel(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)")
+        #     ax.set_ylabel("Density")
+        #     ax.set_title(f"{cl} vs {suffix}")
+        #     ax.legend()
+        # #fig.suptitle(r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ – removed/added", y=0.98)
+        # plt.tight_layout(rect=[0, 0, 1, 0.95])
+        # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.png")
+        # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.svg")
+        # plt.show()
 
         # Scatter: removed / added vs aggregated C
-        for mean_val, suffix in [
-            (P_mean,       "posterior"),
-            (PR_mean,      "prior"),
-            (removed_mean, "removed_p1mq"),
-            (added_mean,   "added_q1mp"),
-        ]:
-            valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
-            C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
-            label_suffix = suffix.replace("_", " ")
-            self._save_scatter(
-                values=(X_agg_v, C_agg_v),
-                title=f"Scatter: aggregated {cl} vs {label_suffix}",
-                xlabel=f"Mean {label_suffix} existence probability",
-                ylabel=r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)",
-                outpath=self.outdir / f"scatter_{suffix}_vs_C_effect_agg.png",
-            )
+        # for mean_val, suffix in [
+        #     (P_mean,       "posterior"),
+        #     (PR_mean,      "prior"),
+        #     (removed_mean, "removed_p1mq"),
+        #     (added_mean,   "added_q1mp"),
+        # ]:
+        #     valid_agg = np.isfinite(C_agg) & np.isfinite(mean_val)
+        #     C_agg_v, X_agg_v = C_agg[valid_agg], mean_val[valid_agg]
+        #     label_suffix = suffix.replace("_", " ")
+        #     self._save_scatter(
+        #         values=(X_agg_v, C_agg_v),
+        #         title=f"Scatter: aggregated {cl} vs {label_suffix}",
+        #         xlabel=f"Mean {label_suffix} existence probability",
+        #         ylabel=r"Aggregated $\tilde{C}_{ij}^{\mathrm{effect}}$ (row-normalised)",
+        #         outpath=self.outdir / f"scatter_{suffix}_vs_C_effect_agg.png",
+        #     )
 
         # ---- Per-timestep metric histograms (2-panel and 4-panel) ----
         _hist2(spearman_rho, prior_spearman_rho,
@@ -1286,45 +1287,45 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         _hist4(spearman_rho, prior_spearman_rho, removed_spearman_rho, added_spearman_rho,
                metric="Spearman", xlabel=r"Spearman $\rho$",
                outpath=self.outdir / "hist_spearman_rho.png")
-        _hist2(pearson_r, prior_pearson_r,
-               metric="Pearson r", xlabel="Pearson r",
-               outpath=self.outdir / "hist_pearson_r.png")
-        _hist4(pearson_r, prior_pearson_r, removed_pearson_r, added_pearson_r,
-               metric="Pearson r", xlabel="Pearson r",
-               outpath=self.outdir / "hist_pearson_r.png")
-        _hist2(kendall_tau_arr, prior_kendall_tau_arr,
-               metric="Kendall tau", xlabel=r"Kendall $\tau$",
-               outpath=self.outdir / "hist_kendall_tau.png")
-        _hist4(kendall_tau_arr, prior_kendall_tau_arr, removed_kendall_tau_arr, added_kendall_tau_arr,
-               metric="Kendall tau", xlabel=r"Kendall $\tau$",
-               outpath=self.outdir / "hist_kendall_tau.png")
-        _hist2(topk_arr, prior_topk_arr,
-               metric=f"Top-{int(self.topk_frac * 100)}% overlap",
-               xlabel=f"Top-{int(self.topk_frac * 100)}% overlap fraction",
-               outpath=self.outdir / f"hist_topk_overlap_{int(self.topk_frac * 100)}pct.png",
-               vline=self.topk_frac, vline_label=f"Random baseline ({self.topk_frac:.0%})")
-        _hist4(topk_arr, prior_topk_arr, removed_topk_arr, added_topk_arr,
-               metric=f"Top-{int(self.topk_frac * 100)}% overlap",
-               xlabel=f"Top-{int(self.topk_frac * 100)}% overlap fraction",
-               outpath=self.outdir / f"hist_topk_overlap_{int(self.topk_frac * 100)}pct.png",
-               vline=self.topk_frac, vline_label=f"Random baseline ({self.topk_frac:.0%})")
-        _hist2(roc_auc_arr, prior_roc_auc_arr,
-               metric=f"ROC-AUC (p{int(self.strong_label_percentile)})", xlabel="ROC-AUC",
-               outpath=self.outdir / f"hist_roc_auc_p{int(self.strong_label_percentile)}.png")
-        _hist4(roc_auc_arr, prior_roc_auc_arr, removed_roc_auc_arr, added_roc_auc_arr,
-               metric=f"ROC-AUC (p{int(self.strong_label_percentile)})", xlabel="ROC-AUC",
-               outpath=self.outdir / f"hist_roc_auc_p{int(self.strong_label_percentile)}.png")
-        _hist2(ap_arr, prior_ap_arr,
-               metric=f"Avg Precision (p{int(self.strong_label_percentile)})", xlabel="Average Precision",
-               outpath=self.outdir / f"hist_avg_precision_p{int(self.strong_label_percentile)}.png")
-        _hist4(ap_arr, prior_ap_arr, removed_ap_arr, added_ap_arr,
-               metric=f"Avg Precision (p{int(self.strong_label_percentile)})", xlabel="Average Precision",
-               outpath=self.outdir / f"hist_avg_precision_p{int(self.strong_label_percentile)}.png")
-        _hist2(mi_arr, prior_mi_arr,
-               metric="Mutual information", xlabel="MI",
-               outpath=self.outdir / "hist_mutual_info.png")
-        _hist4(mi_arr, prior_mi_arr, removed_mi_arr, added_mi_arr,
-               metric="Mutual information", xlabel="MI",
-               outpath=self.outdir / "hist_mutual_info.png")
+        #_hist2(pearson_r, prior_pearson_r,
+         #      metric="Pearson r", xlabel="Pearson r",
+          #     outpath=self.outdir / "hist_pearson_r.png")
+        #_hist4(pearson_r, prior_pearson_r, removed_pearson_r, added_pearson_r,
+        #       metric="Pearson r", xlabel="Pearson r",
+        #       outpath=self.outdir / "hist_pearson_r.png")
+        #_hist2(kendall_tau_arr, prior_kendall_tau_arr,
+        #       metric="Kendall tau", xlabel=r"Kendall $\tau$",
+        #       outpath=self.outdir / "hist_kendall_tau.png")
+        #_hist4(kendall_tau_arr, prior_kendall_tau_arr, removed_kendall_tau_arr, added_kendall_tau_arr,
+        #       metric="Kendall tau", xlabel=r"Kendall $\tau$",
+        #       outpath=self.outdir / "hist_kendall_tau.png")
+        #_hist2(topk_arr, prior_topk_arr,
+        #       metric=f"Top-{int(self.topk_frac * 100)}% overlap",
+        #       xlabel=f"Top-{int(self.topk_frac * 100)}% overlap fraction",
+        #       outpath=self.outdir / f"hist_topk_overlap_{int(self.topk_frac * 100)}pct.png",
+        #       vline=self.topk_frac, vline_label=f"Random baseline ({self.topk_frac:.0%})")
+        #_hist4(topk_arr, prior_topk_arr, removed_topk_arr, added_topk_arr,
+        #       metric=f"Top-{int(self.topk_frac * 100)}% overlap",
+        #       xlabel=f"Top-{int(self.topk_frac * 100)}% overlap fraction",
+        #       outpath=self.outdir / f"hist_topk_overlap_{int(self.topk_frac * 100)}pct.png",
+        #       vline=self.topk_frac, vline_label=f"Random baseline ({self.topk_frac:.0%})")
+        #_hist2(roc_auc_arr, prior_roc_auc_arr,
+        #       metric=f"ROC-AUC (p{int(self.strong_label_percentile)})", xlabel="ROC-AUC",
+        #       outpath=self.outdir / f"hist_roc_auc_p{int(self.strong_label_percentile)}.png")
+        #_hist4(roc_auc_arr, prior_roc_auc_arr, removed_roc_auc_arr, added_roc_auc_arr,
+        #       metric=f"ROC-AUC (p{int(self.strong_label_percentile)})", xlabel="ROC-AUC",
+        #       outpath=self.outdir / f"hist_roc_auc_p{int(self.strong_label_percentile)}.png")
+       # _hist2(ap_arr, prior_ap_arr,
+       #        metric=f"Avg Precision (p{int(self.strong_label_percentile)})", xlabel="Average Precision",
+       #        outpath=self.outdir / f"hist_avg_precision_p{int(self.strong_label_percentile)}.png")
+       # _hist4(ap_arr, prior_ap_arr, removed_ap_arr, added_ap_arr,
+       #        metric=f"Avg Precision (p{int(self.strong_label_percentile)})", xlabel="Average Precision",
+       #        outpath=self.outdir / f"hist_avg_precision_p{int(self.strong_label_percentile)}.png")
+       # _hist2(mi_arr, prior_mi_arr,
+       #        metric="Mutual information", xlabel="MI",
+        #       outpath=self.outdir / "hist_mutual_info.png")
+        #_hist4(mi_arr, prior_mi_arr, removed_mi_arr, added_mi_arr,
+        #       metric="Mutual information", xlabel="MI",
+        #       outpath=self.outdir / "hist_mutual_info.png")
 
         print(f"Saved metrics and plots to: {self.outdir.absolute()}")

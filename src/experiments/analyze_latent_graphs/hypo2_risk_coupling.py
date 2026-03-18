@@ -447,7 +447,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         added_mean   = P_mean  * (1.0 - PR_mean)  # q(1-p): [E]
 
         # --- KDE: coupling conditioned on high/low posterior (left) and prior (right) ---
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True, sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 3), sharex=True, sharey=True)
         for ax, mean_val, suffix in [
             (axes[0], P_mean,  "posterior"),
             (axes[1], PR_mean, "prior"),
@@ -467,7 +467,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         plt.show()
 
         # --- KDE: coupling conditioned on high/low for removed and added ---
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True, sharey=True)
+        fig, axes = plt.subplots(1, 2, figsize=(12, 3), sharex=True, sharey=True)
         for ax, mean_val, suffix in [
             (axes[0], removed_mean, r"removed $p(1-q)$"),
             (axes[1], added_mean,   r"added $q(1-p)$"),

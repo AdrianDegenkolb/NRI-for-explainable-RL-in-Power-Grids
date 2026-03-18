@@ -80,14 +80,14 @@ def visualize_agent_survival(datasets: List[AgentMetrics], save_to: Optional[Pat
     df = pd.DataFrame(records)
 
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.2)
-    plt.figure(figsize=(12, 4))
+    plt.figure(figsize=(3 * len(datasets), 4))
     # --- Boxplot ---
     sns.boxplot(
         data=df,
         x="Agent",
         y="Survival Duration",
         hue="Agent",
-        palette="muted",
+        palette=["#4878D0", "#63BE5D", "#82C6E2", "#956CB4"],
         legend=False
     )
 
@@ -447,7 +447,7 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
             markerfacecolor=color,
             markersize=10,
             linestyle='None',
-            label=label
+            label=label,
         )
         for label, (color, shape) in unique_labels.items()
     ]
@@ -459,7 +459,7 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
         Line2D([0], [0],
                color=c,
                lw=2,
-               label=f"Edge type {i}")
+               label=f"Node pairs with high\nposterior mean/variance")
         for i, c in enumerate(dependency_edge_colors_unique)
     ]
     powerline_edge_color = [d["color"] for (_, _, d) in G.edges(data=True) if d["type"] == "Connection"]
@@ -475,9 +475,9 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
 
     # Combine and draw - use provided ax or current axes
     if ax is not None:
-        ax.legend(handles=node_legend + edge_legend, loc="best", frameon=False)
+        ax.legend(handles=node_legend + edge_legend, loc="best", frameon=False, fontsize=14)
     else:
-        plt.legend(handles=node_legend + edge_legend, loc="best", frameon=False)
+        plt.legend(handles=node_legend + edge_legend, loc="best", frameon=False, fontsize=14)
 
 
 def visualize_grid(args: GridPlottingArgs, ax=None) -> Optional[Figure]:
