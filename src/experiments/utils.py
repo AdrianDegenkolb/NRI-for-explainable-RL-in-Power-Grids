@@ -7,7 +7,7 @@ import numpy as np
 from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 
-from evaluate_rllib_agent import load_config, load_rllib_agent
+from src.rl4pnc.evaluation.evaluate_rllib_agent import load_config, load_rllib_agent
 from src.rl4pnc.grid2op_env.custom_environment import CustomizedGrid2OpEnvironment
 
 

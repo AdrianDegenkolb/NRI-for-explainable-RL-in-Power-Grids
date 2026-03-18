@@ -13,14 +13,10 @@ from scipy.stats import spearmanr, kendalltau
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from evaluate_rllib_agent import load_config, load_rllib_agent
 from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
 from src.experiments.analyze_latent_graphs.MetricAnalyzer import PosteriorAnalyzer
-from src.experiments.analyze_latent_graphs.agent_analysis_framework import LatentGraphAnalysisAgent
 from src.experiments.analyze_latent_graphs.build_coupling_matrices import get_risk_vector
 from src.nri.utils import fully_connected_edge_index
-from src.rl4pnc.evaluation.evaluation_agents import RllibAgent
-from src.rl4pnc.grid2op_env.custom_environment import CustomizedGrid2OpEnvironment
 from src.visualization import visualize_graph, PlottingArgs, get_node_styles
 
 logger = logging.getLogger(__name__)

@@ -92,7 +92,7 @@ def test_symmetry_metric():
     print("Visualization generated successfully!")
 
     # Save the figure
-    output_path = "/home/adrian/Dev/NRI-for-explainable-RL-in-Power-Grids/results/visualizations/test_symmetry_metric.png"
+    output_path = "/results/visualizations/test_symmetry_metric.png"
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Figure saved to: {output_path}")
 

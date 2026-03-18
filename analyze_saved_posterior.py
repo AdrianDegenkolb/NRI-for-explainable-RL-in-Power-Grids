@@ -29,7 +29,6 @@ from src.experiments.analyze_latent_graphs.Metrics import (
     InnerTreeNodeProbabilityVisualizer,
     PosteriorDistributionVisualizer,
     KLDivergenceVisualizer,
-    PathLengthVisualizer,
     SymmetryMetricVisualizer,
     EdgeNodeTypeVisualizer,
     BetweennessVisualizer,

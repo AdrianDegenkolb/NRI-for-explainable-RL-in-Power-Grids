@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from evaluate_rllib_agent import evaluate_rllib_checkpoint
+from src.rl4pnc.evaluation.evaluate_rllib_agent import evaluate_rllib_checkpoint
 from src.experiments.utils import AgentSpec
 
 

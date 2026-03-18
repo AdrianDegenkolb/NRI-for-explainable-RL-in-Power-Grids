@@ -28,7 +28,7 @@ from src.ra_agents.ppo.rllib.rappo.RAPPO import RAPPOTorchPolicy
 from src.rl4pnc.algorithms.custom_ppo import CustomPPO
 from src.rl4pnc.algorithms.optuna_search import MyOptunaSearch
 from src.rl4pnc.experiments.callback import Style, TuneCallback
-from evaluate_rllib_agent import evaluate_rllib_checkpoint
+from src.rl4pnc.evaluation.evaluate_rllib_agent import evaluate_rllib_checkpoint
 
 # Configure logging
 logger = logging.getLogger(__name__)
