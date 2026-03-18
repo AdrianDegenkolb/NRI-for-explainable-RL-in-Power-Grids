@@ -46,14 +46,14 @@ Furthermore, it is split into training, testing, and validation episodes.
 ## Train a model
 Training scripts are located under `training_scripts`. To train a relations aware PPO, run:
 ```commandline
-PYTHONPATH=$(pwd) python training_scripts/train_relations_aware_ppo.py
+PYTHONPATH=$(pwd) python training_scripts/train_ppo.py -f configs/rappo_anneal.yaml -wd . -s 42 -j 0 --model-type RAGNN --experiment-name experiment1
 ```
 Similarly, the other scripts can be run.
-To adapt parameters explore the `hydra_configs`-folder
+To adapt parameters explore the `configs`-folder
 # Project
 This project contains the following folders:
 - **data**: output data
-- **hydra_configs**: contains hyperparameters for reproducibility
+- **configs**: contains hyperparameters for reproducibility
 - **slurm_scripts**: scripts to run the code on Uc3
 - **src**: Code
 - **training scripts**: entry points in the code
