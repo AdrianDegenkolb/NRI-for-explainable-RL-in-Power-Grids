@@ -2,7 +2,7 @@
 Test script for the SymmetryMetricVisualizer.
 """
 import numpy as np
-from src.experiments.analyze_latent_graphs.Metrics import SymmetryMetricVisualizer
+from experiments import SymmetryMetricVisualizer
 
 
 def test_symmetry_metric():

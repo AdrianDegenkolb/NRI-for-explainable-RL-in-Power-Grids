@@ -1,5 +1,4 @@
-import grid2op
-from src.common.evaluate_heuristic_agents import main as evaluate_heuristic_agents
+from experiments import main as evaluate_heuristic_agents
 
 if __name__ == "__main__":
     #env_name = "l2rpn_case14_sandbox"

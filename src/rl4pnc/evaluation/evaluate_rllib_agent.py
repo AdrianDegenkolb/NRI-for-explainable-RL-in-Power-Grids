@@ -19,11 +19,11 @@ from typing import Optional
 
 from ray.rllib.models import ModelCatalog
 
-from src.common.baseline_agent import evaluate_agent
-from src.common.constants import SEED
-from src.ra_agents.RAFeatureExtractor import RLlibGNNModel, RLlibRAGNNModel, RLlibNRIGNNModel
+from src.core.baseline_agent import evaluate_agent
+from src.core.constants import SEED
+from src.rarl_rllib.model import RARLModel, GNNBaselineModel
 from src.rl4pnc.evaluation.evaluation_agents import RllibAgent
-from src.rl4pnc.grid2op_env.custom_environment import CustomizedGrid2OpEnvironment
+from src.grid2op_env.env import CustomizedGrid2OpEnvironment
 from src.visualization import get_evaluation_metrics, visualize_agent_survival
 
 # Configure logging
@@ -173,11 +173,6 @@ def evaluate_rllib_checkpoint(
     :param save_to_path: Optional path to save results (default: None, saves in checkpoint directory)
     :return: Path to results directory
     """
-    # Register custom models before loading checkpoint
-    ModelCatalog.register_custom_model("gnn_model", RLlibGNNModel)
-    ModelCatalog.register_custom_model("ragnn_model", RLlibRAGNNModel)
-    ModelCatalog.register_custom_model("nrignn_model", RLlibNRIGNNModel)
-
     # Load environment configuration from params.json
     try:
         params = load_config(checkpoint_path)
@@ -248,13 +243,13 @@ def evaluate_rllib_checkpoint(
         logger.info(f"Agent loaded successfully!")
 
         # Validate observation space restoration
-        from src.common.observation_space import BusConnectivityGraphObsSpace
+        from src.grid2op_env.observation_converter import GraphObservationConverter
         obs_space = agent._rllib_agent.observation_space
 
         if hasattr(obs_space, 'spaces') and 'reinforcement_learning_agent' in obs_space.spaces:
             rl_obs_space = obs_space.spaces['reinforcement_learning_agent']
 
-            if isinstance(rl_obs_space, BusConnectivityGraphObsSpace):
+            if isinstance(rl_obs_space, GraphObservationConverter):
                 logger.info(f"✓ Observation space correctly restored as BusConnectivityGraphObsSpace")
                 logger.info(f"  - x_dim: {rl_obs_space.x_dim}")
                 logger.info(f"  - num_nodes: {rl_obs_space.num_nodes}")
@@ -332,8 +327,5 @@ def main():
 
 
 if __name__ == "__main__":
-    ModelCatalog.register_custom_model("gnn_model", RLlibGNNModel)
-    ModelCatalog.register_custom_model("ragnn_model", RLlibRAGNNModel)
-    ModelCatalog.register_custom_model("nrignn_model", RLlibNRIGNNModel)
     main()
 

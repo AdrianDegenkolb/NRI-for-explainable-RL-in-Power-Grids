@@ -10,11 +10,14 @@ from pathlib import Path
 from time import time
 from typing import Any, Dict, List, OrderedDict, Union
 
+from omegaconf import DictConfig
+
 import grid2op
 import numpy as np
 import ray
 from grid2op.Environment import BaseEnv
 from ray import air, tune
+from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.registry import POLICIES
 from ray.rllib.models import ModelCatalog
 from ray.tune.experiment import Trial
@@ -23,10 +26,10 @@ from ray.tune.schedulers import ASHAScheduler
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
-from src.ra_agents.RAFeatureExtractor import RLlibGNNModel, RLlibRAGNNModel, RLlibNRIGNNModel
-from src.ra_agents.ppo.rllib.rappo.RAPPO import RAPPOTorchPolicy
-from src.rl4pnc.algorithms.custom_ppo import CustomPPO
-from src.rl4pnc.algorithms.optuna_search import MyOptunaSearch
+from src.algorithms.custom_ppo import CustomPPO
+from src.algorithms.optuna_search import MyOptunaSearch
+from src.rarl_rllib import make_rarl_policy, RARLModel
+from src.rarl_rllib.model import GNNBaselineModel
 from src.rl4pnc.experiments.callback import Style, TuneCallback
 from src.rl4pnc.evaluation.evaluate_rllib_agent import evaluate_rllib_checkpoint
 
@@ -34,10 +37,9 @@ from src.rl4pnc.evaluation.evaluate_rllib_agent import evaluate_rllib_checkpoint
 logger = logging.getLogger(__name__)
 
 # register custom components
-POLICIES["rappo_torch_policy"] = RAPPOTorchPolicy
-ModelCatalog.register_custom_model("gnn_model", RLlibGNNModel)
-ModelCatalog.register_custom_model("ragnn_model", RLlibRAGNNModel)
-ModelCatalog.register_custom_model("nrignn_model", RLlibNRIGNNModel)
+POLICIES["rappo_torch_policy"] = make_rarl_policy(PPOTorchPolicy)
+ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
+ModelCatalog.register_custom_model("ragnn_model", RARLModel)
 
 
 def get_num_available_episodes(env_name: str) -> int:
@@ -318,18 +320,22 @@ class TimeStopper(Stopper):
         return time() - self._start > self._deadline
 
 
-def get_duration(setup):
-    duration = setup.get("duration", None)
-    # convert duration to seconds
-    if duration is None or duration == 0:
-        print(f"Run until {setup['nb_timesteps']} agent time steps.")
-        return duration
+def get_duration(experiment_cfg: DictConfig) -> int | None:
+    """Return the wall-clock training budget in seconds, or None to run until nb_timesteps."""
+    duration = experiment_cfg.duration
+    if duration is None:
+        print(f"Run until {experiment_cfg.nb_timesteps} agent time steps.")
+        return None
     if isinstance(duration, str):
-        duration = int(duration.split(":")[0]) * 3600 + int(duration.split(":")[1]) * 60
+        h, m = duration.split(":")
+        seconds = int(h) * 3600 + int(m) * 60
     else:
-        duration = duration * 60  # Stop all trials after duration minutes
-    print("Run training for ", duration, " seconds.")
-    return duration
+        seconds = int(duration) * 60
+    if seconds == 0:
+        print(f"Run until {experiment_cfg.nb_timesteps} agent time steps.")
+        return None
+    print(f"Run training for {seconds}s.")
+    return seconds
 
 
 def trial_str_creator(trial: Trial, job_id=""):
@@ -349,254 +355,220 @@ def trial_dir_name(trial: Trial):
     return "{}_{}".format(trial.custom_trial_name, datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
 
-def print_details(custom_model_config: Dict[str, Any], setup: Dict[str, Any]):
-    print("Using reward function: ", custom_model_config["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__)
-    print("Using action space: ", custom_model_config["env_config"]["action_space"])
-    print("Using observation space: ", custom_model_config["env_config"]["observation_space"])
+def print_details(rllib_cfg: Dict[str, Any]) -> None:
+    print("Using reward function: ", rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__)
+    print("Using action space:    ", rllib_cfg["env_config"]["action_space"])
+    print("Using observation space:", rllib_cfg["env_config"]["observation_space"])
 
-def run_training(config: dict[str, Any], setup: dict[str, Any], job_id: str) -> ResultGrid:
+def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> ResultGrid:
+    """Run RLLib PPO training driven by the Hydra config.
+
+    Args:
+        rllib_cfg: Flat RLLib algorithm config dict (built by build_rllib_config).
+        cfg:       Full assembled Hydra DictConfig (cfg.experiment, cfg.optimization, …).
+        job_id:    Unique identifier for this run (e.g. SLURM job id).
     """
-    Function that runs the training script.
-    """
-    # init ray
-    # Set the environment variable
+    exp = cfg.experiment
+    opt = cfg.optimization
+
+    # --- Init Ray ---
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
     os.environ["WANDB_MODE"] = "offline"
     os.environ["WANDB_SILENT"] = "true"
-    tmp_dir = ray._private.utils.get_ray_temp_dir()
-    print(f"Ray's temporary directory: {tmp_dir}")
-    local_mode = setup.get("ray_local_mode", False)
-    ray.init(local_mode=local_mode)
-    print(f"Ray initialized in {'local' if local_mode else 'cluster'} mode.")
+    print(f"Ray's temporary directory: {ray._private.utils.get_ray_temp_dir()}")
+    ray.init(local_mode=exp.ray_local_mode)
+    print(f"Ray initialized in {'local' if exp.ray_local_mode else 'cluster'} mode.")
 
-    # whether to perform hyperparameter optimization
-    do_optimization = setup['optimization']['enable']
-
-    # Use Optuna search algorithm to find good working parameters
+    # --- Optuna search (optional) ---
     algo = None
-    if do_optimization:
-        points_to_eval = setup['optimization'].get('points_to_evaluate', None)
+    asha = None
+    if opt.enable:
         algo = MyOptunaSearch(
-            metric=setup['optimization']["score_metric"],
-            mode=setup['optimization']["mode"],
-            points_to_evaluate=[points_to_eval] if points_to_eval is not None else None,
+            metric=opt.score_metric,
+            mode=opt.mode,
+            points_to_evaluate=[opt.points_to_evaluate] if opt.points_to_evaluate is not None else None,
         )
-        if setup['optimization'].get("load_from", None) is not None:
-            print("Retrieving results old experiment from : ", setup['optimization']['load_from'])
-            algo.restore_from_dir(setup['optimization']['load_from'])
+        if opt.load_from is not None:
+            print("Retrieving previous Optuna results from: ", opt.load_from)
+            algo.restore_from_dir(opt.load_from)
             for key in algo._space.keys():
                 if '/' in key:
-                    delete_nested_key(config, key)
+                    delete_nested_key(rllib_cfg, key)
                 else:
-                    del config[key]
+                    rllib_cfg.pop(key, None)
 
         asha = ASHAScheduler(
-            time_attr="timesteps_total", # must be monotonic with training iterations
-            max_t=setup["nb_timesteps"],  # same unit as time_attr
-            grace_period=max(1, setup["nb_timesteps"] // 2),  # or another warmup in timesteps
+            time_attr="timesteps_total",
+            max_t=exp.nb_timesteps,
+            grace_period=max(1, exp.nb_timesteps // 2),
             reduction_factor=5,
         )
 
-    dur = get_duration(setup)
+    dur = get_duration(exp)
+    time_budget = int(dur * 0.9) if (opt.enable and dur) else None
+    if time_budget:
+        print(f"Optimization time budget: {time_budget}s ({time_budget / 3600:.2f}h, 10% buffer for cleanup)")
 
-    # Get time budget for entire optimization (different from per-trial duration)
-    time_budget = None
-    if do_optimization:
-        # For optimization, calculate time budget from duration if specified
-        if dur:
-            # Leave some buffer time (10%) for cleanup before SLURM kills the job
-            time_budget = int(dur * 0.9)
-            print(f"Setting time budget for optimization to {time_budget}s ({time_budget/3600:.2f} hours) with 10% buffer for cleanup")
-
-    storage_path = os.path.abspath(os.path.join(setup.get("workdir", "."), "results", "experiments"))
+    storage_path = os.path.abspath(os.path.join(os.getcwd(), "results", "experiments"))
     os.makedirs(storage_path, exist_ok=True)
 
-    # Add total timesteps to config for use in callbacks
-    config["total_timesteps"] = setup["nb_timesteps"]
+    rllib_cfg["total_timesteps"] = exp.nb_timesteps
 
-    # Create tuner
+    # --- Build TuneConfig ---
+    shared_tune_kwargs = dict(
+        trial_name_creator=lambda t: trial_str_creator(t, job_id),
+        trial_dirname_creator=trial_dir_name,
+    )
+    if opt.enable:
+        tune_config = tune.TuneConfig(
+            **shared_tune_kwargs,
+            search_alg=algo,
+            scheduler=asha,
+            metric=opt.score_metric,
+            mode=opt.mode,
+            num_samples=opt.num_trials or -1,
+            time_budget_s=time_budget,
+        )
+    else:
+        tune_config = tune.TuneConfig(**shared_tune_kwargs)
+
+    # --- Build Tuner ---
     tuner = tune.Tuner(
         trainable=CustomPPO,
-        param_space=config,
+        param_space=rllib_cfg,
         run_config=air.RunConfig(
-            name=setup["experiment_name"],
+            name=exp.experiment_name,
             storage_path=storage_path,
-            stop={"timesteps_total": setup["nb_timesteps"]},  # Stop condition for individual trials
+            stop={"timesteps_total": exp.nb_timesteps},
             callbacks=[
                 TuneCallback(
-                    setup["my_log_level"],
-                    "evaluation/custom_metrics/grid2op_end_mean",
-                    eval_freq=config["evaluation_interval"],
+                    exp.my_log_level,
+                    opt.score_metric,
+                    eval_freq=rllib_cfg["evaluation_interval"],
                     heartbeat_freq=60,
                 ),
             ],
             checkpoint_config=air.CheckpointConfig(
-                checkpoint_frequency=setup["checkpoint_freq"],
+                checkpoint_frequency=exp.checkpoint_freq,
                 checkpoint_at_end=True,
-                checkpoint_score_attribute=setup['optimization']["score_metric"],
+                checkpoint_score_attribute=opt.score_metric,
                 num_to_keep=5,
             ),
-            verbose=setup["verbose"],
+            verbose=exp.verbose,
         ),
-        tune_config=tune.TuneConfig(
-            trial_name_creator=lambda t: trial_str_creator(t, job_id),
-            trial_dirname_creator=lambda t: trial_dir_name(t),
-            search_alg=algo,
-            scheduler=asha,
-            metric=setup['optimization']["score_metric"],
-            mode=setup['optimization']["mode"],
-            num_samples=setup['optimization'].get("num_trials", -1) or -1,
-            time_budget_s=time_budget,
-        ) if do_optimization else
-        tune.TuneConfig(
-            trial_name_creator=lambda t: trial_str_creator(t, job_id),
-            trial_dirname_creator=lambda t: trial_dir_name(t),
-        ),
+        tune_config=tune_config,
     )
 
-    print_details(config, setup)
+    print_details(rllib_cfg)
 
-    # Launch tuning
+    # --- Launch ---
     try:
         result_grid = tuner.fit()
-    except Exception as e:
-        print("Error during tuning:")
+    except Exception:
         traceback.print_exc()
         exit()
     finally:
-        # Close ray instance
         ray.shutdown()
 
-    for i in range(len(result_grid)):
-        result = result_grid[i]
+    # --- Print checkpoint summary for each trial ---
+    for i, result in enumerate(result_grid):
         if not result.error:
-            # Print and save available checkpoints
             checkpoints_tojson = {
-                os.path.basename(checkpoint.path): metrics['evaluation']['custom_metrics'] for
-                checkpoint, metrics in result.best_checkpoints
+                os.path.basename(checkpoint.path): metrics['evaluation']['custom_metrics']
+                for checkpoint, metrics in result.best_checkpoints
             }
-            with open(os.path.join(result.path, "checkpoint_results.json"), "w") as outfile:
-                json.dump(checkpoints_tojson, outfile)
+            with open(os.path.join(result.path, "checkpoint_results.json"), "w") as f:
+                json.dump(checkpoints_tojson, f)
             try:
-                print(Style.BOLD + f" *---- Trial {i} finished successfully with evaluation results ---*\n" + Style.END +
-                      tabulate(
-                          [[k] + list(v.values()) for k, v in checkpoints_tojson.items()],
-                          headers=['checkpoint'] + list(result.metrics['evaluation']['custom_metrics'].keys()),
-                          tablefmt='rounded_grid')
-                      )
+                print(
+                    Style.BOLD + f" *---- Trial {i} finished successfully ---*\n" + Style.END +
+                    tabulate(
+                        [[k] + list(v.values()) for k, v in checkpoints_tojson.items()],
+                        headers=['checkpoint'] + list(result.metrics['evaluation']['custom_metrics'].keys()),
+                        tablefmt='rounded_grid',
+                    )
+                )
             except Exception as e:
                 print("Could not print checkpoint results table: ", e)
         else:
-            print(f"Trial failed with error {result.error}.")
+            print(f"Trial {i} failed with error {result.error}.")
 
-    # If Optuna optimization was enabled, save results summary
-    if do_optimization:
+    # --- Find best result ---
+    if opt.enable:
         try:
-            best_result = result_grid.get_best_result(metric=setup["optimization"]["score_metric"], mode="max")
+            best_result = result_grid.get_best_result(metric=opt.score_metric, mode=opt.mode)
         except RuntimeError as e:
-            print(f"\n{Style.BOLD}{Style.RED}{'='*80}{Style.END}")
-            print(f"{Style.BOLD}{Style.RED}ERROR: Could not find best trial for metric '{setup['optimization']['score_metric']}'{Style.END}")
-            print(f"{Style.RED}This usually means:{Style.END}")
-            print(f"{Style.RED}  1. No trials completed successfully{Style.END}")
-            print(f"{Style.RED}  2. The metric was never reported (check if evaluation is enabled){Style.END}")
-            print(f"{Style.RED}  3. All trials failed before reporting any results{Style.END}")
-            print(f"\n{Style.RED}Original error: {str(e)}{Style.END}")
-            print(f"{Style.BOLD}{Style.RED}{'='*80}{Style.END}\n")
-
-            # Check if any trials completed
-            if len(result_grid) == 0:
-                print(f"{Style.RED}No trials were run. Check the configuration.{Style.END}")
-            else:
-                print(f"{Style.YELLOW}Found {len(result_grid)} trial(s), but none reported the required metric.{Style.END}")
-                print(f"{Style.YELLOW}Check that evaluation is enabled and runs at least once during training.{Style.END}")
-
+            print(f"\n{Style.BOLD}{Style.RED}{'=' * 80}{Style.END}")
+            print(f"{Style.BOLD}{Style.RED}ERROR: Could not find best trial for metric '{opt.score_metric}'{Style.END}")
+            print(f"{Style.RED}Original error: {str(e)}{Style.END}")
+            print(f"{Style.BOLD}{Style.RED}{'=' * 80}{Style.END}\n")
             return result_grid
 
-        config = best_result.config["model"]["custom_model_config"]
-        relation_awareness_config = best_result.config["relation_awareness"]
-        config.update({"relation_awareness": relation_awareness_config})
-
+        # Print best hyperparameters
+        best_model_cfg = best_result.config["model"]["custom_model_config"]
+        best_ra_cfg = best_result.config["relation_awareness"]
         rows = [
-            [f"{module}.{param}", value]
-            for module, params in config.items()
-            for param, value in params.items()
+            [f"model.custom_model_config.{k}", v]
+            for k, v in best_model_cfg.items()
+            if not isinstance(v, dict)
+        ] + [
+            [f"relation_awareness.{k}", v]
+            for k, v in best_ra_cfg.items()
+            if not isinstance(v, dict)
         ]
-        table = tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_grid", floatfmt=".3f", )
-        print(f"\n{Style.BOLD}{'='*80}{Style.END}")
+        print(f"\n{Style.BOLD}{'=' * 80}{Style.END}")
         print(f"{Style.BOLD}Best hyperparameters found:{Style.END}")
-        print(table)
-
-        # Print checkpoint location
+        print(tabulate(rows, headers=["Parameter", "Value"], tablefmt="rounded_grid", floatfmt=".3f"))
         with best_result.checkpoint.as_directory() as checkpoint_dir:
-            print("Corresponding checkpoint can be found under ", checkpoint_dir)
+            print("Corresponding checkpoint: ", checkpoint_dir)
 
-        # Save the Optuna study to a SQLite database for dashboard access
+        # Save Optuna study
         if algo is not None:
-            optuna_path = os.path.join(storage_path, setup['experiment_name'], f"optuna_results_{job_id}")
-            study_name = f"{setup['experiment_name']}_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            optuna_path = os.path.join(storage_path, exp.experiment_name, f"optuna_results_{job_id}")
+            study_name = f"{exp.experiment_name}_{job_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             db_path = algo.save_study(optuna_path, study_name)
-            tune_path = os.path.join(storage_path, setup['experiment_name'], f"tune_results")
+            tune_path = os.path.join(storage_path, exp.experiment_name, "tune_results")
             os.makedirs(tune_path, exist_ok=True)
             algo.save_to_dir(tune_path, f"tune_checkpoint_{job_id}")
-            print(f"\n{Style.BOLD}{'='*80}{Style.END}")
-            print(f"{Style.BOLD}Optuna study saved to: {db_path}{Style.END}")
-            print(f"{Style.BOLD}To view in Optuna Dashboard, run:{Style.END}")
+            print(f"\n{Style.BOLD}Optuna study saved to: {db_path}{Style.END}")
             print(f"  optuna-dashboard sqlite:///{db_path}")
-            print(f"{Style.BOLD}{'='*80}{Style.END}\n")
+            print(f"{Style.BOLD}{'=' * 80}{Style.END}\n")
     else:
-        # if no optimization, get best result by episode reward
         try:
             best_result = result_grid.get_best_result(metric="episode_reward_mean", mode="max")
         except RuntimeError as e:
-            print(f"\n{Style.BOLD}{Style.RED}{'='*80}{Style.END}")
-            print(f"{Style.BOLD}{Style.RED}ERROR: Could not find best trial{Style.END}")
-            print(f"{Style.RED}No trials completed successfully or reported metrics.{Style.END}")
-            print(f"\n{Style.RED}Original error: {str(e)}{Style.END}")
-            print(f"{Style.BOLD}{Style.RED}{'='*80}{Style.END}\n")
+            print(f"\n{Style.BOLD}{Style.RED}ERROR: Could not find best trial — {e}{Style.END}\n")
             return result_grid
-
         with best_result.checkpoint.as_directory() as checkpoint_dir:
-            print("Best checkpoint can be found under ", checkpoint_dir)
+            print("Best checkpoint: ", checkpoint_dir)
 
-    # evaluate best checkpoint
-    eval_config = setup.get('post_training_evaluation', {})
-    if eval_config.get('enabled', True):
-        print(f"\n{Style.BOLD}{'='*80}{Style.END}")
+    # --- Post-training evaluation ---
+    post_eval = exp.post_training_evaluation
+    if post_eval.enabled:
+        print(f"\n{Style.BOLD}{'=' * 80}{Style.END}")
         print(f"{Style.BOLD}Evaluating best checkpoint...{Style.END}")
-
         with best_result.checkpoint.as_directory() as checkpoint_dir:
-            print(f"Checkpoint directory: {checkpoint_dir}")
             checkpoint_name = os.path.basename(checkpoint_dir)
-            checkpoint_dir = Path(checkpoint_dir).parent
-
-            # Get evaluation environment name
-            eval_env_name = eval_config.get('env_name', 'l2rpn_case14_sandbox_val')
-
-            # Calculate number of episodes
-            num_episodes_config = eval_config.get('num_episodes', 'all')
-            if num_episodes_config == 'all' or num_episodes_config is None:
-                num_episodes = get_num_available_episodes(eval_env_name)
-            else:
-                num_episodes = int(num_episodes_config)
-
-            print(f"Evaluation environment: {eval_env_name}")
-            print(f"Number of episodes: {num_episodes}")
-
+            num_episodes = (
+                get_num_available_episodes(post_eval.env_name)
+                if post_eval.num_episodes in ("all", None)
+                else int(post_eval.num_episodes)
+            )
+            print(f"Evaluation environment: {post_eval.env_name}  |  Episodes: {num_episodes}")
             try:
                 evaluate_rllib_checkpoint(
-                    checkpoint_path=checkpoint_dir,
+                    checkpoint_path=Path(checkpoint_dir).parent,
                     policy_name="reinforcement_learning_policy",
                     checkpoint_name=checkpoint_name,
-                    env_name_override=eval_env_name,
+                    env_name_override=post_eval.env_name,
                     num_episodes=num_episodes,
-                    visualize=eval_config.get('visualize', False)
+                    visualize=post_eval.visualize,
                 )
                 print(f"{Style.BOLD}Evaluation completed successfully!{Style.END}")
             except Exception as e:
                 print(f"{Style.BOLD}Warning: Evaluation failed: {e}{Style.END}")
                 traceback.print_exc()
-        print(f"{Style.BOLD}{'='*80}{Style.END}\n")
-
+        print(f"{Style.BOLD}{'=' * 80}{Style.END}\n")
 
     return result_grid

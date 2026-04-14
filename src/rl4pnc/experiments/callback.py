@@ -25,10 +25,7 @@ from ray.tune.experimental.output import (
 )
 from tabulate import tabulate
 
-from src.common.env import G2OpGymEnv
-from src.common.observation_space import BusConnectivityGraphObsSpace
-from src.nri.utils import prior_from_env
-from src.ra_agents.pretrain_encoder import train, create_dataset
+from src.grid2op_env.observation_converter import GraphObservationConverter
 from src.visualization import visualize_graph, PlottingArgs, get_node_styles
 
 
@@ -67,10 +64,10 @@ class CustomMetricsCallback(DefaultCallbacks):
     ) -> None:
         self.log_level = algorithm.my_log_level
         self.curr_level = 0
-        self.node_styles = get_node_styles(grid2op.make("l2rpn_case14_sandbox"), BusConnectivityGraphObsSpace)
+        self.node_styles = get_node_styles(grid2op.make("l2rpn_case14_sandbox"), GraphObservationConverter)
         env = grid2op.make("l2rpn_case14_sandbox")
-        obs_space = BusConnectivityGraphObsSpace(env.observation_space)
-        self.powerline_edge_index = obs_space.get_edge_index(env.reset())
+        obs_space = GraphObservationConverter(env.observation_space)
+        self.powerline_edge_index = obs_space._get_edge_index(env.reset())
         if algorithm.curriculum_training:
             print(f"Start with curriculum level {self.curr_level}")
 
@@ -227,15 +224,15 @@ class AnnealingCallback(DefaultCallbacks):
             return
 
         # Get values
-        tau_start = policy.config['model']['custom_model_config']['sampling']['tau_start']
-        beta_start = policy.config['relation_awareness']['beta_start']
-        beta_non_graph_edges_start = policy.config['relation_awareness']['beta_non_graph_edges_start']
+        tau_start = policy.config['relation_awareness']['sampling']['tau_start']
+        beta_start = policy.config['relation_awareness']['loss']['beta_graph_edges_start']
+        beta_non_graph_edges_start = policy.config['relation_awareness']['loss']['beta_non_graph_edges_start']
 
         # Set initial tau and beta in model on all workers
         def set_initial_values(worker):
             policy = worker.policy_map.get("reinforcement_learning_policy")
             policy.current_tau = tau_start
-            policy.current_beta = beta_start
+            policy.current_beta_graph = beta_start
             policy.current_beta_non_graph_edges = beta_non_graph_edges_start
             if policy and hasattr(policy, 'model') and hasattr(policy.model, 'set_tau'):
                 policy.model.set_tau(tau_start)
@@ -345,7 +342,7 @@ class AnnealingCallback(DefaultCallbacks):
                 policy.current_tau = new_tau
 
                 # Update model's GumbelSoftmax tau (for functional effect)
-                policy.current_beta = new_beta
+                policy.current_beta_graph = new_beta
                 policy.current_beta_non_graph_edges = new_beta_non_graph_edges
                 if hasattr(policy, 'model') and hasattr(policy.model, 'set_tau'):
                     policy.model.set_tau(new_tau)
@@ -355,83 +352,6 @@ class AnnealingCallback(DefaultCallbacks):
 
         # Update on remote workers
         algorithm.workers.foreach_worker(update_annealing_params)
-
-
-class EncoderPretrainCallback(DefaultCallbacks):
-    """Callback that pretrains the encoder before RL training starts."""
-
-    # Class variable to track if pretraining has been done
-    _pretrain_done = False
-
-    def on_algorithm_init(self, *, algorithm: Algorithm, **kwargs) -> None:
-        """Pretrain encoder only once in the driver, then sync weights to all workers."""
-        super().on_algorithm_init(algorithm=algorithm, **kwargs)
-
-        # Skip if already pretrained
-        if EncoderPretrainCallback._pretrain_done:
-            return
-
-        # Mark pretraining as done
-        EncoderPretrainCallback._pretrain_done = True
-
-        # Get policy
-        policy = algorithm.get_policy("reinforcement_learning_policy")
-        if policy is None:
-            print("reinforcement_learning_policy not found, skipping encoder pretraining")
-            return
-
-        # Check if we have an encoder
-        if not hasattr(policy, 'model') or not hasattr(policy.model, 'ragnn') or not hasattr(policy.model.ragnn, "encoder"):
-            print("Not using RAGNN model, skipping encoder pretraining")
-            return
-
-        # Get config
-        pretrain_config = policy.config.get("encoder_pretrain", {})
-        ra_config = policy.config.get("relation_awareness", {})
-        env_config = policy.config["env_config"]
-
-        if not pretrain_config.get("enabled", False):
-            print("Encoder pretraining disabled in config")
-            return
-
-        # Create environment for data collection
-        env = G2OpGymEnv(
-            env_name = env_config["env_name"],
-            obs_space_creation=lambda _: policy.observation_space,
-            rule_config = {},
-        )
-
-        # Create prior
-        prior = prior_from_env(
-            prob_graph_edge_exists=ra_config.get("prior_for_graph_edges_existing", 0.9),
-            env=env,
-            temperature=ra_config.get("temperature", 0.2),
-            verbose=True,
-            num_edge_types=algorithm.config["model"]["custom_model_config"]["encoder"]["num_edge_types"]
-        )
-
-        # Create datasets
-        train_ds = create_dataset(
-            env=env,
-            prior=prior,
-            ds_size=pretrain_config.get("ds_size", 1000),
-            verbose=True
-        )
-
-        # Pretrain encoder
-        encoder = policy.model.ragnn.encoder
-
-        train(
-            encoder=encoder,
-            ds=train_ds,
-            batch_size=pretrain_config.get("batch_size", 32),
-            num_epochs=pretrain_config.get("num_epochs", 40),
-            lr=pretrain_config.get("learning_rate", 0.005),
-            verbose=True,
-        )
-
-        # Synchronize weights to all workers
-        algorithm.workers.sync_weights()
 
 
 class TuneCallback(TuneReporterBase):

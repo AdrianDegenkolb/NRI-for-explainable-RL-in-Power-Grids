@@ -1,0 +1,134 @@
+"""
+RAFeatureExtractor: combines an NRI encoder with RAGNN.
+
+This is the central nn.Module for the RARL pipeline:
+  1. Encoder predicts edge-type logits for the fully-connected graph.
+  2. Softmax gives the posterior p(z|x) that is used in the KL loss.
+  3. Gumbel-Softmax samples differentiable discrete edge-type assignments.
+  4. RAGNN performs conditioned message passing to produce a graph embedding.
+"""
+
+from typing import Optional, Tuple
+
+import torch
+import torch.nn.functional as F
+from torch import nn, Tensor
+from torch_geometric.utils import to_dense_batch
+
+from .encoder import GraphormerNRIEncoder
+from .ragnn import RAGNN
+from .sampling import GumbelSoftmax
+from ..graph import fully_connected_edge_index_per_batch
+
+
+class RAFeatureExtractor(nn.Module):
+    """
+    Relation-Aware feature extractor.
+
+    :param x_dim: Input node feature dimension.
+    :param graph_max_degree: Maximum node degree in the input graph (used for graph transformer encodings).
+    :param graph_max_path_distance: Maximum shortest-path distance in the input graph (used for graph transformer encodings).
+    :param hidden_dim_enc: Hidden dimension for the encoder.
+    :param num_layers_enc: Number of encoder layers.
+    :param num_attention_heads_enc: Number of attention heads in the encoder (except last enc layer).
+    :param num_edge_types: Number of edge types K (and therefore number of attention head in the last layer)
+    :param hidden_dim_gnn: Hidden dimension for the RAGNN.
+    :param num_layers_gnn: Number of RAGNN message-passing layers.
+    :param x_out_dim: Graph-level output embedding dimension.
+    :param dropout_prob: Dropout probability.
+    :param tau: Initial Gumbel-Softmax temperature.
+    :param residual: Use residual connections in RAGNN.
+    """
+
+    def __init__(
+        self,
+        x_dim: int,
+        graph_max_degree: int,
+        graph_max_path_distance: int,
+        hidden_dim_enc: int,
+        num_layers_enc: int,
+        num_attention_heads_enc: int,
+        num_edge_types: int,
+        hidden_dim_gnn: int,
+        num_layers_gnn: int,
+        x_out_dim: int,
+        dropout_prob: float = 0.0,
+        tau: float = 1.0,
+        residual: bool = True,
+    ):
+        super().__init__()
+
+        self.encoder: nn.Module = GraphormerNRIEncoder(
+            x_dim=x_dim,
+            hidden_dim=hidden_dim_enc,
+            num_edge_types=num_edge_types,
+            max_degree=graph_max_degree,
+            max_path_distance=graph_max_path_distance,
+            num_layers=num_layers_enc,
+            num_attention_heads=num_attention_heads_enc
+        )
+        self.gumbel_softmax = GumbelSoftmax(tau=tau)
+        self.gnn = RAGNN(
+            x_dim=x_dim,
+            hidden_dim=hidden_dim_gnn,
+            x_out_dim=x_out_dim,
+            num_layers=num_layers_gnn,
+            num_edge_types=num_edge_types,
+            dropout_prob=dropout_prob,
+            residual=residual,
+            skip_last=True,
+        )
+        self.x_out_dim = x_out_dim
+
+    def set_tau(self, tau: float) -> None:
+        """Update the Gumbel-Softmax temperature (called by the annealing callback)."""
+        self.gumbel_softmax.tau = tau
+
+    def forward(
+        self,
+        x: Tensor,
+        batch: Optional[Tensor] = None,
+        powerline_edge_index: Optional[Tensor] = None,
+        edge_set: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Forward pass.
+
+        :param x: Node features [B*N, x_dim].
+        :param batch: Batch vector [B*N]. Defaults to single graph.
+        :param powerline_edge_index: Known graph edges [2, B*E'] for the
+            graph-edge marker and the prior mask at loss time.
+        :param edge_set: Edges to infer [2, B*E]. Must have a consistent
+            number of edges per graph element. Defaults to fully-connected.
+        :return:
+            - ``embeddings``: Graph-level features [B, x_out_dim].
+            - ``batched_posterior``: Soft edge-type posterior [B, E, K].
+        """
+        BxN = x.shape[0]
+        if batch is None:
+            batch = torch.zeros(BxN, dtype=torch.long, device=x.device)
+        if edge_set is None:
+            edge_set = fully_connected_edge_index_per_batch(batch, x.device)
+
+        # --- Encoder: predict edge-type logits ---
+        logits: Tensor = self.encoder(
+            x=x, batch=batch, edge_set=edge_set, powerline_edge_index=powerline_edge_index
+        )  # [B*E, K]
+
+        posterior: Tensor = F.softmax(logits, dim=-1)          # [B*E, K]
+        sampled: Tensor = self.gumbel_softmax(logits)           # [B*E, K]
+
+        # --- RAGNN: conditioned message passing ---
+        embeddings: Tensor = self.gnn(
+            x=x, edge_index=edge_set, edge_type_posterior=sampled, batch=batch
+        )  # [B, x_out_dim]
+
+        # --- Reshape posterior to [B, E, K] ---
+        edge_batch = batch[edge_set[0]]
+        batched_posterior, mask = to_dense_batch(posterior, edge_batch)
+        assert torch.all(mask), (
+            "Inconsistent number of edges across batch elements — "
+            "ensure edge_set has the same edge count per graph."
+        )
+
+        return embeddings, batched_posterior

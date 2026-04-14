@@ -1,0 +1,7 @@
+num_rollout_workers: 1
+num_learner_workers: 1
+count_steps_by: agent_steps
+keep_per_episode_custom_metrics: true
+framework: torch
+exploration_config:
+  type: StochasticSampling

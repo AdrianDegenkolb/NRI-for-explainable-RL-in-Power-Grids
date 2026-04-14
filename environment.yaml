@@ -37,8 +37,11 @@ dependencies:
       - asttokens==3.0.1
       - async-timeout==5.0.1
       - attrs==25.4.0
+      - backports-tarfile==1.2.0
       - bottle==0.13.4
+      - build==1.4.2
       - certifi==2025.11.12
+      - cffi==2.0.0
       - charset-normalizer==3.4.4
       - click==8.3.1
       - cloudpickle==3.1.2
@@ -46,12 +49,14 @@ dependencies:
       - comm==0.2.3
       - commonmark==0.9.1
       - contourpy==1.3.2
+      - cryptography==46.0.7
       - cycler==0.12.1
       - debugpy==1.8.19
       - decorator==5.2.1
       - deepdiff==8.6.1
       - dill==0.4.0
       - dm-tree==0.1.8
+      - docutils==0.22.4
       - exceptiongroup==1.3.1
       - executing==2.2.1
       - farama-notifications==0.0.4
@@ -65,18 +70,26 @@ dependencies:
       - grid2op==1.10.5
       - grpcio==1.76.0
       - gymnasium==0.29.1
+      - gymnasium-notices==0.0.1
       - hydra-core==1.3.2
+      - id==1.6.1
       - idna==3.11
       - imageio==2.37.2
+      - importlib-metadata==9.0.0
       - ipykernel==7.1.0
       - ipython==8.37.0
+      - jaraco-classes==3.4.0
+      - jaraco-context==6.1.2
+      - jaraco-functools==4.4.0
       - jedi==0.19.2
+      - jeepney==0.9.0
       - jinja2==3.1.6
       - joblib==1.5.3
       - jsonschema==4.25.1
       - jsonschema-specifications==2025.9.1
       - jupyter-client==8.7.0
       - jupyter-core==5.9.1
+      - keyring==25.7.0
       - kiwisolver==1.4.9
       - l2rpn-baselines==0.8.0
       - lightsim2grid==0.11.0
@@ -87,12 +100,14 @@ dependencies:
       - markupsafe==3.0.3
       - matplotlib==3.10.8
       - matplotlib-inline==0.2.1
+      - more-itertools==11.0.2
       - mpmath==1.3.0
       - msgpack==1.1.2
       - multidict==6.7.0
       - multiprocess==0.70.18
       - nest-asyncio==1.6.0
       - networkx==3.4.2
+      - nh3==0.3.4
       - numba==0.63.1
       - numpy==1.24.4
       - nvidia-cublas-cu12==12.8.4.1
@@ -133,18 +148,23 @@ dependencies:
       - pure-eval==0.2.3
       - pyarrow==13.0.0
       - pybind11==3.0.1
+      - pycparser==3.0
       - pydantic==2.12.5
       - pydantic-core==2.41.5
       - pygments==2.19.2
       - pyparsing==3.2.5
+      - pyproject-hooks==1.2.0
       - python-dateutil==2.9.0.post0
       - pytz==2025.2
       - pywavelets==1.8.0
       - pyyaml==6.0.3
       - pyzmq==27.1.0
       - ray==2.10.0
+      - readme-renderer==44.0
       - referencing==0.37.0
       - requests==2.32.5
+      - requests-toolbelt==1.0.0
+      - rfc3986==2.0.0
       - rich==12.1.0
       - rpds-py==0.30.0
       - scienceplots==2.2.0
@@ -153,6 +173,7 @@ dependencies:
       - scikit-network==0.30.0
       - scipy==1.8.0
       - seaborn==0.13.2
+      - secretstorage==3.5.0
       - sentry-sdk==2.48.0
       - setuptools==80.10.2
       - shellingham==1.5.4
@@ -176,6 +197,7 @@ dependencies:
       - tqdm==4.67.1
       - traitlets==5.14.3
       - triton==3.4.0
+      - twine==6.2.0
       - typeguard==4.0.0
       - typer==0.20.0
       - typing-extensions==4.15.0
@@ -186,4 +208,5 @@ dependencies:
       - wcwidth==0.2.14
       - werkzeug==3.1.4
       - yarl==1.22.0
+      - zipp==3.23.0
 prefix: /home/adrian/.conda/envs/L2RPN

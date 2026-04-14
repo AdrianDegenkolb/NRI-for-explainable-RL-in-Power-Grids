@@ -1,9 +1,0 @@
-final:
-    nb_episodes: 1
-    max_episode_length: 20
-    num_samples_for_edge_average: 1
-during_training:
-    active: true
-    num_evaluations_during_training: 1
-    nb_episodes: 1
-    max_episode_length: 20

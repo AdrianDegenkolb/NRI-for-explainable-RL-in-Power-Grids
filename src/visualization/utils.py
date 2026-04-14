@@ -16,8 +16,10 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from src.common.observation_space import GraphObservationSpace, BusConnectivityGraphObsSpace
-from src.nri.utils import fully_connected_edge_index
+from src.grid2op_env.observation_converter import GraphObservationConverter
+
+from src.grid2op_env.observation_converter import ObservationConverter
+from src.rarl import fully_connected_edge_index
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +82,14 @@ def visualize_agent_survival(datasets: List[AgentMetrics], save_to: Optional[Pat
     df = pd.DataFrame(records)
 
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.2)
-    plt.figure(figsize=(3 * len(datasets), 4))
+    plt.figure(figsize=(2 * len(datasets), 4))
     # --- Boxplot ---
     sns.boxplot(
         data=df,
         x="Agent",
         y="Survival Duration",
         hue="Agent",
-        palette=["#4878D0", "#63BE5D", "#82C6E2", "#956CB4"],
+        palette="muted",#["#4878D0", "#63BE5D", "#82C6E2", "#956CB4"],
         legend=False
     )
 
@@ -670,7 +672,7 @@ def latent_edge_hist(accumulated_edge_probabilities: npt.NDArray, skip_last_edge
     return fig
 
 
-def get_node_styles(env: Environment, observation_space: type[GraphObservationSpace]) -> List[NodeStyle]:
+def get_node_styles(env: Environment, observation_space: type[ObservationConverter]) -> List[NodeStyle]:
     """
     For a given environment and observation space class, return a list of node style objects. Each node style object
     contains position, color and shape.
@@ -678,7 +680,7 @@ def get_node_styles(env: Environment, observation_space: type[GraphObservationSp
     :param observation_space: the class of the observation space that dictates which entities are nodes
     :return: a list of node positions similar to the ones used by the grid2op plots
     """
-    if observation_space == BusConnectivityGraphObsSpace:
+    if observation_space == GraphObservationConverter:
         plot_helper = PlotMatplot(env.observation_space)
 
         r = 20.0

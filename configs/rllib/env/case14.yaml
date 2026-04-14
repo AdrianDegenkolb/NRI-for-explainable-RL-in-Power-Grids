@@ -1,0 +1,17 @@
+# Base name — training script appends _train / _val automatically.
+env_name: l2rpn_case14_sandbox
+
+action_space: medha
+mask: 5
+rho_threshold: 0.4
+n_history: 1
+danger: 0.9
+prio: false
+use_ffw: true
+reset_topo: 0.9
+line_reco: true
+line_disc: false
+penalty_game_over: 0
+reward_finish: 0
+curriculum_training: false
+curriculum_thresholds: [150, 300]

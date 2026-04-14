@@ -20,15 +20,15 @@ from ray.rllib.evaluation.rollout_worker import RolloutWorker
 from yaml.loader import FullLoader, Loader, UnsafeLoader
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
-from src.rl4pnc.experiments.callback import CustomMetricsCallback, EncoderPretrainCallback, AnnealingCallback
-from src.rl4pnc.experiments.rewards import (
+from src.rl4pnc.experiments.callback import CustomMetricsCallback, AnnealingCallback
+from src.grid2op_env.rewards import (
     LossReward,
     ScaledL2RPNReward,
     AlphaZeroRW,
     RewardRho,
     ConstantReward,
 )
-from src.rl4pnc.multi_agent.policy import policy_mapping_fn
+from src.grid2op_env import policy_mapping_fn
 
 
 # Observation space tag constructors
@@ -125,13 +125,6 @@ def custom_metrics_callback_constructor(
 ) -> DefaultCallbacks:
     """Custom constructor for CustomMetricsCallback"""
     return CustomMetricsCallback
-
-
-def encoder_pretrain_callback_constructor(
-    loader: Union[Loader, FullLoader, UnsafeLoader], node: MappingNode
-) -> DefaultCallbacks:
-    """Custom constructor for EncoderPretrainCallback"""
-    return EncoderPretrainCallback
 
 
 def annealing_callback_constructor(
@@ -296,7 +289,6 @@ def add_constructors() -> None:
     yaml.FullLoader.add_constructor("!ConstantReward", constant_reward_constructor)
     yaml.FullLoader.add_constructor("!policy_mapping_fn", policy_mapping_fn_constructor)
     yaml.FullLoader.add_constructor("!CustomMetricsCallback", custom_metrics_callback_constructor)
-    yaml.FullLoader.add_constructor("!EncoderPretrainCallback", encoder_pretrain_callback_constructor)
     yaml.FullLoader.add_constructor("!AnnealingCallback", annealing_callback_constructor)
     yaml.FullLoader.add_constructor("!CombinedCallbacks", combined_callbacks_constructor)
     yaml.FullLoader.add_constructor("!Discrete", discrete_constructor)
