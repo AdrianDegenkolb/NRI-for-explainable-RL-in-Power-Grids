@@ -19,15 +19,14 @@ from grid2op.Environment import Environment
 from grid2op.Observation import BaseObservation
 from tabulate import tabulate
 
-from src.common.observation_space import BusConnectivityGraphObsSpace
-from experiments import (
-    MetricVisualizer,
-    PosteriorDistributionVisualizer, KLDivergenceVisualizer,
-    DegreeDistributionVisualizer, ClusteringCoefficientVisualizer, SymmetryMetricVisualizer, BetweennessVisualizer
-)
-from experiments import PosteriorAnalyzer, LatentGraphAnalysisAgent
 from experiments.utils import AgentSpec, load_agent_from_spec
-from src.nri.utils import fully_connected_edge_index, get_priors, get_prior_tensor
+from src.analysis.analyze_latent_graphs.Metrics import DegreeDistributionVisualizer, ClusteringCoefficientVisualizer, \
+    PosteriorDistributionVisualizer, KLDivergenceVisualizer, SymmetryMetricVisualizer, BetweennessVisualizer, \
+    MetricVisualizer
+from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer, LatentGraphAnalysisAgent
+from src.grid2op_env.observation_converter import GraphObservationConverter
+from src.rarl import fully_connected_edge_index
+from src.rarl.prior import get_priors, get_prior_tensor
 from src.visualization import get_node_styles
 from src.visualization.utils import NodeStyle
 
@@ -444,7 +443,7 @@ def main():
         analyzers_to_run = [
             PosteriorMetrics(
                 save_dir=save_dir,
-                node_styles=get_node_styles(env, BusConnectivityGraphObsSpace),
+                node_styles=get_node_styles(env, GraphObservationConverter),
                 prior_for_graph_edges=config.get("relation_awareness", {}).get("prior_prob_for_graph_edge", 0.9),
                 temperature=config.get("relation_awareness", {}).get("temperature", 0.5),
                 num_edge_types=config.get("model", {}).get("custom_model_config", {}).get("encoder", {}).get(
@@ -461,7 +460,7 @@ def main():
         config = agent._rllib_agent.config
         analyzer = PosteriorMetrics(
             save_dir=save_dir,
-            node_styles=get_node_styles(env, BusConnectivityGraphObsSpace),
+            node_styles=get_node_styles(env, GraphObservationConverter),
             prior_for_graph_edges=config.get("relation_awareness", {}).get("prior_prob_for_graph_edge", 0.9),
             temperature=config.get("relation_awareness", {}).get("temperature", 0.5),
             num_edge_types=config.get("model", {}).get("custom_model_config", {}).get("encoder", {}).get(

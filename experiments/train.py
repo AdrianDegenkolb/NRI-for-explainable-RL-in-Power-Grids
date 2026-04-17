@@ -38,14 +38,16 @@ from ray.rllib.algorithms import ppo, sac
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
+from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
 from src.grid2op_env.env import CustomizedGrid2OpEnvironment
+from src.core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
 from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from src.grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from src.grid2op_env import policy_mapping_fn
-from src.rarl_rllib import make_rarl_policy
-from src.rl4pnc.experiments.utils import run_training
+from src.rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
+from src.core.train import run_training
 
 logger = logging.getLogger(__name__)
 
@@ -140,45 +142,54 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     """Build the multi-agent policies dict."""
     custom_model = cfg.model.custom_model
 
-    if algorithm == "ppo" and custom_model == "ragnn_model":
-        policy_class = make_rarl_policy(PPOTorchPolicy)
-    else:
-        # SAC uses its own built-in policy; PPO with non-RARL models uses the
-        # algorithm default as well.
-        policy_class = None
+    if custom_model == "ragnn_model":
+        logger.info(f"Using custom RAGNN model with {algorithm.upper()}")
+        model_override = {"model": {"custom_model": "ragnn_model"}}
+        if algorithm == "ppo":
+            policy_class = RAPPOTorchPolicy
+        elif algorithm == "sac":
+            policy_class = RASACTorchPolicy
+        else:
+            raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'ragnn_model'")
 
-    if algorithm == "sac" and custom_model not in (None, "null"):
-        logger.warning(
-            "custom_model=%s is not compatible with SAC (requires SACTorchModel). "
-            "Ignoring custom model — use model=mlp with SAC.",
-            custom_model,
-        )
+    elif custom_model == "gnn_model":
+        logger.info(f"Using custom GNN model with {algorithm.upper()}")
+        model_override = {"model": {"custom_model": "gnn_model"}}
+        if algorithm == "ppo":
+            policy_class = RAPPOTorchPolicy
+        elif algorithm == "sac":
+            policy_class = RASACTorchPolicy
+        else:
+            raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'gnn_model'")
+
+    elif custom_model is None or custom_model == "mlp_model":
+        logger.info(f"Using standard model with {algorithm.upper()}")
         model_override = {}
+        if algorithm == "ppo":
+            policy_class = PPOTorchPolicy
+        elif algorithm == "sac":
+            policy_class = SACTorchPolicy
+        else:
+            raise ValueError(f"Unsupported algorithm '{algorithm}'")
+
     else:
-        model_override = (
-            {"model": {"custom_model": custom_model}} if custom_model not in (None, "null") else {}
-        )
+        raise ValueError(f"Unsupported custom_model '{custom_model}'. Supported options: 'ragnn_model', 'gnn_model'")
+
 
     return {
-        "high_level_policy": PolicySpec(
+        HIGH_LEVEL_POLICY: PolicySpec(
             policy_class=SelectAgentPolicy,
             config=(
                 AlgorithmConfig()
-                .training(
-                    model={
-                        "custom_model_config": {
-                            "rho_threshold": cfg.env.rho_threshold
-                        }
-                    }
-                )
+                .training(model={"custom_model_config": {"rho_threshold": cfg.env.rho_threshold}})
                 .rollouts(preprocessor_pref=None)
             ),
         ),
-        "reinforcement_learning_policy": PolicySpec(
+        RL_POLICY: PolicySpec(
             policy_class=policy_class,
             config=model_override,
         ),
-        "do_nothing_policy": PolicySpec(
+        DO_NOTHING_POLICY: PolicySpec(
             policy_class=DoNothingPolicy,
             config=AlgorithmConfig(),
         ),
@@ -249,7 +260,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     # --- Multi-agent ---
     rllib_cfg["policies"] = _build_policies(cfg, algorithm)
     rllib_cfg["policy_mapping_fn"] = policy_mapping_fn
-    rllib_cfg["policies_to_train"] = ["reinforcement_learning_policy"]
+    rllib_cfg["policies_to_train"] = [RL_POLICY]
 
     # --- Misc ---
     rllib_cfg["my_log_level"] = cfg.experiment.my_log_level
@@ -275,7 +286,7 @@ def _setup_grid2op_dir(workdir: str, env_name: str) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-@hydra.main(version_base=None, config_path="configs/rllib", config_name="config")
+@hydra.main(version_base=None, config_path="../configs/rllib", config_name="config")
 def main(cfg: DictConfig) -> None:
     OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)  # fail fast on missing values
 

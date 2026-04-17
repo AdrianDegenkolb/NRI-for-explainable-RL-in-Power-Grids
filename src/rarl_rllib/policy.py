@@ -1,312 +1,314 @@
 """
-make_rarl_policy: factory that wraps any RLlib TorchPolicy to add RARL.
+RAPPOTorchPolicy and RASACTorchPolicy — concrete RA-augmented RLlib policies.
 
-How it works
-------------
-The factory creates a subclass that overrides ``loss()`` to append the
-KL regularization term from :func:`rarl.loss.compute_ra_kl_loss`, and
-overrides ``stats_fn()`` to expose all RA-specific metrics for TensorBoard.
+Both policies augment their respective base algorithm with:
+  - KL regularization on the discrete latent edge distribution (from the RAGNN encoder)
+  - Annealing-ready attributes (current_beta_graph, current_beta_non_graph, current_tau)
+  - RA-specific TensorBoard metrics
 
-The wrapped policy expects:
-  - ``model`` to be a :class:`rarl_rllib.model.RARLModel` (i.e. exposes
-    ``get_posterior()`` and ``set_tau()``).
-  - ``self.config["relation_awareness"]`` with the keys described below.
-  - ``self.observation_space`` to have a ``num_nodes`` attribute.
+RAPPOTorchPolicy extends PPOTorchPolicy (TorchPolicyV2, on-policy).
+RASACTorchPolicy is built via build_policy_class (TorchPolicy V1 API, off-policy).
 
 Config schema (under ``relation_awareness``)::
 
     relation_awareness:
       sampling:
-        tau: 0.2                      # or tau_end for annealing
+        tau: 0.2
       prior:
         prior_prob_for_graph_edge: 0.9
         temperature: 0.2
       loss:
-        beta_graph_edges: 5.0         # or beta_graph_edges_end for annealing
-        beta_non_graph_edges: 5.0     # or beta_non_graph_edges_end for annealing
+        beta_graph_edges: 5.0
+        beta_non_graph_edges: 5.0
       latent_space:
         num_edge_types: 2
-
-Example::
-
-    from ray.rllib.algorithms.ppo import PPOTorchPolicy
-    from rarl_rllib import make_rarl_policy, RARLModel
-
-    RARLPPOPolicy = make_rarl_policy(PPOTorchPolicy)
-    # Register and use just like a regular RLlib policy.
 """
 
-from typing import Dict, List, Type
+from typing import Dict, List, Tuple
 
-import gymnasium as gym
+import ray.rllib.algorithms.sac.sac
 import torch
 from ray.rllib import SampleBatch
+from ray.rllib.algorithms.ppo import PPOTorchPolicy
+from ray.rllib.algorithms.sac.sac_torch_policy import (
+    ComputeTDErrorMixin,
+    TargetNetworkMixin,
+    _get_dist_class,
+    action_distribution_fn,
+    actor_critic_loss,
+    apply_grad_clipping,
+    concat_multi_gpu_td_errors,
+    optimizer_fn,
+    postprocess_trajectory,
+    setup_late_mixins,
+    stats as _sac_stats,
+    validate_spaces,
+)
+from ray.rllib.models.modelv2 import ModelV2
+from ray.rllib.policy.policy_template import build_policy_class
 from ray.rllib.policy.torch_policy_v2 import TorchPolicyV2
 from ray.rllib.utils.annotations import override
-from ray.rllib.utils.typing import AlgorithmConfigDict, TensorType
+from ray.rllib.utils.typing import TensorType
 from torch import Tensor
 
-from src.core.observation_space import EDGE_INDEX, EDGE_MASK, NODES
+from src.grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from src.rarl.graph import fully_connected_edge_index
 from src.rarl.loss import compute_ra_kl_loss
 from src.rarl.prior import get_prior_tensor, get_priors
-from src.rarl_rllib import RARLModel
+from src.rarl_rllib.model import RASACTorchModel
+
 
 # ---------------------------------------------------------------------------
-# Policy factory
+# Shared RA helpers
 # ---------------------------------------------------------------------------
 
-def make_rarl_policy(base_policy_cls: Type[TorchPolicyV2]) -> Type[TorchPolicyV2]:
+def _init_ra_config(policy, config: dict) -> None:
+    """Store RA annealing attributes on *policy* from its config dict."""
+    ra_cfg = config["relation_awareness"]
+    policy._loss_cfg = ra_cfg["loss"]
+    policy._sampling_cfg = ra_cfg["sampling"]
+    policy._prior_cfg = ra_cfg["prior"]
+    policy._latent_cfg = ra_cfg["latent_space"]
+
+    policy.current_beta_graph = _get_from_conf_with_fallback(
+        policy._loss_cfg, "beta_graph_edges", "beta_graph_edges_end")
+    policy.current_beta_non_graph = _get_from_conf_with_fallback(
+        policy._loss_cfg, "beta_non_graph_edges", "beta_non_graph_edges_end")
+    policy.current_tau = _get_from_conf_with_fallback(
+        policy._sampling_cfg, "tau", "tau_end")
+    policy.num_edge_types = policy._latent_cfg["num_edge_types"]
+    policy.prior_prob_for_graph_edge = policy._prior_cfg["prior_prob_for_graph_edge"]
+    policy.temperature = policy._prior_cfg["temperature"]
+
+
+def _build_prior_and_graph_masks(
+    policy,
+    all_graph_edges: Tensor,
+    edge_masks_obs: Tensor,
+) -> Tuple[Tensor, Tensor]:
+    """Compute batched prior tensor and graph-edge affiliation masks."""
+    N, _ = policy.observation_space[NODES].shape
+    all_edges = fully_connected_edge_index(N)
+
+    batched_priors: List[Tensor] = []
+    batched_graph_masks: List[Tensor] = []
+
+    for i in range(all_graph_edges.shape[0]):
+        valid_edges = all_graph_edges[i][:, edge_masks_obs[i].bool()]
+
+        g_prior, ng_prior = get_priors(
+            prob_graph_edges_exist=policy.prior_prob_for_graph_edge,
+            num_graph_edges=valid_edges.shape[1],
+            num_non_graph_edges=all_edges.shape[1] - valid_edges.shape[1],
+            temperature=policy.temperature,
+        )
+        prior, gmask = get_prior_tensor(
+            graph_edges=valid_edges,
+            all_edges=all_edges,
+            prior_for_graph_edges=g_prior,
+            prior_for_non_graph_edges=ng_prior,
+            num_edge_types=policy.num_edge_types,
+            return_mask=True,
+        )
+        batched_priors.append(prior.to(device=policy.device, dtype=torch.float32))
+        batched_graph_masks.append(gmask.to(device=policy.device))
+
+    return torch.stack(batched_priors), torch.stack(batched_graph_masks)
+
+
+def _store_ra_tower_stats(
+    model: ModelV2,
+    kl_loss: Tensor,
+    kl_stats: dict,
+    prior_tensor: Tensor,
+    posteriors: Tensor,
+    policy,
+) -> None:
+    """Write RARL metrics into model.tower_stats for later aggregation."""
+    model.tower_stats.update({
+        "ra_kl_loss":                  kl_loss,
+        "ra_kl_graph":                 kl_stats["kl_graph_edges"],
+        "ra_kl_latent":                kl_stats["kl_latent_edges"],
+        "ra_kl_unweighted":            kl_stats["kl_unweighted"],
+        "ra_fraction_graph":           kl_stats["fraction_graph_edges"],
+        "ra_fraction_latent":          kl_stats["fraction_latent_edges"],
+        "ra_mean_prior":               prior_tensor.mean(0),
+        "ra_mean_posterior":           posteriors.mean(0),
+        "ra_posteriors":               posteriors,
+        "ra_current_beta":             torch.as_tensor(policy.current_beta_graph,     dtype=torch.float32),
+        "ra_current_beta_non_graph":   torch.as_tensor(policy.current_beta_non_graph, dtype=torch.float32),
+        "ra_current_tau":              torch.as_tensor(policy.current_tau,            dtype=torch.float32),
+        "ra_gnn_stats":                model.ragnn.gnn.stats,
+    })
+
+
+def _apply_ra_kl_loss(
+    policy,
+    model: ModelV2,
+    train_batch: SampleBatch,
+    base_loss: TensorType,
+) -> TensorType:
+    """Add KL regularization term to *base_loss* and store RA tower stats."""
+    obs = train_batch["obs"]
+    prior_tensor, graph_edge_masks = _build_prior_and_graph_masks(
+        policy, obs[EDGE_INDEX], obs[EDGE_MASK]
+    )
+    posteriors: Tensor = model.get_posterior()
+
+    kl_loss, kl_stats = compute_ra_kl_loss(
+        posteriors=posteriors,
+        prior_tensor=prior_tensor,
+        graph_edge_masks=graph_edge_masks,
+        beta=policy.current_beta_graph,
+        beta_non_graph=policy.current_beta_non_graph,
+    )
+    _store_ra_tower_stats(model, kl_loss, kl_stats, prior_tensor, posteriors, policy)
+    return base_loss + kl_loss
+
+
+def _build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
+    """Build the RA-specific metrics dict from tower stats."""
+    stats = {
+        "relation_awareness/kl_loss":               _tower_mean(towers, "ra_kl_loss"),
+        "relation_awareness/kl_unweighted":         _tower_mean(towers, "ra_kl_unweighted"),
+        "relation_awareness/kl_graph_edges":        _tower_mean(towers, "ra_kl_graph"),
+        "relation_awareness/kl_latent_edges":       _tower_mean(towers, "ra_kl_latent"),
+        "relation_awareness/fraction_graph_edges":  _tower_mean(towers, "ra_fraction_graph"),
+        "relation_awareness/fraction_latent_edges": _tower_mean(towers, "ra_fraction_latent"),
+        "relation_awareness/current_beta":          _tower_mean(towers, "ra_current_beta"),
+        "relation_awareness/current_beta_non_graph":_tower_mean(towers, "ra_current_beta_non_graph"),
+        "relation_awareness/current_tau":           _tower_mean(towers, "ra_current_tau"),
+        "relation_awareness/prior_existence_probs": (
+            _tower_stack_mean(towers, "ra_mean_prior")[:, 0].cpu().tolist()
+        ),
+        "relation_awareness/posterior_existence_probs": (
+            _tower_stack_mean(towers, "ra_mean_posterior")[:, 0].cpu().tolist()
+        ),
+        "relation_awareness/posterior_mean": (
+            _tower_cat_stat(towers, "ra_posteriors").mean(dim=0).cpu().tolist()
+        ),
+        "relation_awareness/posterior_var": (
+            _tower_cat_stat(towers, "ra_posteriors").var(dim=0).cpu().tolist()
+        ),
+    }
+    for key in towers[0].tower_stats["ra_gnn_stats"]:
+        stats[f"relation_awareness/gnn/{key}"] = torch.mean(
+            torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
+        ).item()
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# RAPPOTorchPolicy
+# ---------------------------------------------------------------------------
+
+class RAPPOTorchPolicy(PPOTorchPolicy):
+    """PPO policy augmented with RAGNN KL regularization and RA metrics."""
+
+    def __init__(self, observation_space, action_space, config):
+        _init_ra_config(self, config)
+        super().__init__(observation_space, action_space, config)
+
+    @override(PPOTorchPolicy)
+    def loss(
+        self,
+        model: ModelV2,
+        dist_class,
+        train_batch: SampleBatch,
+    ) -> TensorType:
+        base_loss = super().loss(model, dist_class, train_batch)
+        return _apply_ra_kl_loss(self, model, train_batch, base_loss)
+
+    @override(PPOTorchPolicy)
+    def stats_fn(self, train_batch: SampleBatch) -> Dict[str, TensorType]:
+        stats = super().stats_fn(train_batch)
+        stats.update(_build_ra_stats_dict(self.model_gpu_towers))
+        return stats
+
+
+# ---------------------------------------------------------------------------
+# RASACTorchPolicy helpers
+# ---------------------------------------------------------------------------
+
+def _build_ra_sac_model_and_action_dist(policy, obs_space, action_space, config):
+    """Model builder for RASACTorchPolicy — constructs RASACTorchModel directly."""
+    policy_model_config = {**config["model"], **config["policy_model_config"]}
+    q_model_config = {**config["model"], **config["q_model_config"]}
+    custom_cfg = config["model"].get("custom_model_config", {})
+
+    def _make(name: str) -> RASACTorchModel:
+        return RASACTorchModel(
+            obs_space=obs_space,
+            action_space=action_space,
+            num_outputs=None,
+            model_config=config["model"],
+            name=name,
+            policy_model_config=policy_model_config,
+            q_model_config=q_model_config,
+            twin_q=config["twin_q"],
+            initial_alpha=config["initial_alpha"],
+            target_entropy=config["target_entropy"],
+            **custom_cfg,
+        )
+
+    model = _make("ra_sac_model")
+    policy.target_model = _make("target_ra_sac_model")
+    return model, _get_dist_class(policy, config, action_space)
+
+
+def _ra_sac_actor_critic_loss(policy, model, dist_class, train_batch):
+    """SAC actor-critic loss augmented with RA KL regularization.
+
+    actor_critic_loss calls model.forward() on both CUR_OBS and NEXT_OBS,
+    leaving the cached posterior pointing to NEXT_OBS. We re-run the encoder
+    on CUR_OBS afterwards so that get_posterior() returns the correct
+    distribution for the KL loss.
     """
-    Return a relation-aware subclass of *base_policy_cls*.
+    base_loss = actor_critic_loss(policy, model, dist_class, train_batch)
 
-    The subclass extends ``loss()`` with KL regularization and ``stats_fn()``
-    with RARL-specific metrics. Optional annealing of beta/tau is handled separately
-    by :class:`rarl_rllib.callback.AnnealingCallback`.
+    # Re-run encoder on current obs to get the correct posterior for KL.
+    model(SampleBatch(obs=train_batch[SampleBatch.CUR_OBS], _is_training=True), [], None)
 
-    :param base_policy_cls: Any RLlib TorchPolicyV2 subclass (e.g. PPOTorchPolicy).
-    :return: New policy class with RARL loss augmentation.
-    """
+    return _apply_ra_kl_loss(policy, model, train_batch, base_loss)
 
-    class RARLPolicy(base_policy_cls):
 
-        def __init__(
-            self,
-            observation_space: gym.spaces.Dict,
-            action_space: gym.spaces.Discrete,
-            config: AlgorithmConfigDict,
-            *args,
-            **kwargs,
-        ):
-            """Unpack RARL sub-configs and initialize the base policy."""
-            ra_cfg = config["relation_awareness"]
+def _ra_sac_before_loss_init(policy, obs_space, action_space, config):
+    """Initialize RA annealing attributes, then run SAC's standard mixin setup."""
+    _init_ra_config(policy, config)
+    setup_late_mixins(policy, obs_space, action_space, config)
 
-            # Convenience references to nested sub-configs
-            self._loss_cfg = ra_cfg["loss"]
-            self._sampling_cfg = ra_cfg["sampling"]
-            self._prior_cfg = ra_cfg["prior"]
-            self._latent_cfg = ra_cfg["latent_space"]
 
-            # Annealed scalars — support both fixed and end-of-annealing keys
-            self.current_beta_graph = _get_from_conf_with_fallback(
-                self._loss_cfg, "beta_graph_edges", "beta_graph_edges_end")
-            self.current_beta_non_graph = _get_from_conf_with_fallback(
-                self._loss_cfg, "beta_non_graph_edges", "beta_non_graph_edges_end"
-            )
-            self.current_tau = _get_from_conf_with_fallback(
-                self._sampling_cfg, "tau", "tau_end"
-            )
-
-            self.num_edge_types: int = self._latent_cfg["num_edge_types"]
-            self.prior_prob_for_graph_edge: float = self._prior_cfg["prior_prob_for_graph_edge"]
-            self.temperature: float = self._prior_cfg["temperature"]
-
-            super().__init__(
-                observation_space=observation_space,
-                action_space=action_space,
-                config=config,
-                *args,
-                **kwargs,
-            )
-
-        # -------------------------------------------------------------------
-        # Loss
-        # -------------------------------------------------------------------
-
-        @override(base_policy_cls)
-        def loss(
-            self,
-            model: RARLModel,
-            dist_class,
-            train_batch: SampleBatch,
-        ) -> TensorType:
-            """
-            Augment the base policy loss with RARL KL regularization.
-
-            Adds a weighted KL divergence between the posterior edge-type
-            distribution (from the GNN) and the prior derived from the
-            observed graph structure.
-            """
-            total_loss = super().loss(model, dist_class, train_batch)
-
-            obs = train_batch["obs"]
-            all_graph_edges: Tensor = obs[EDGE_INDEX]   # [B, 2, E_max]
-            edge_masks_obs: Tensor = obs[EDGE_MASK]     # [B, E_max]
-
-            # RLlib calls loss() once with a dummy batch during initialization.
-            # That batch may have all-false edge masks, which would produce empty
-            # tensors downstream. We force at least one valid edge to avoid this.
-            #if not edge_masks_obs.any():
-            #    return total_loss
-
-            prior_tensor, graph_edge_masks = self._build_prior_and_graph_masks(
-                all_graph_edges, edge_masks_obs
-            )
-            posteriors: Tensor = model.get_posterior()  # [B, E, K]
-
-            kl_loss, stats = compute_ra_kl_loss(
-                posteriors=posteriors,
-                prior_tensor=prior_tensor,
-                graph_edge_masks=graph_edge_masks,
-                beta=self.current_beta_graph,
-                beta_non_graph=self.current_beta_non_graph,
-            )
-
-            self._store_tower_stats(model, kl_loss, stats, prior_tensor, posteriors)
-
-            return total_loss + kl_loss
-
-        def _build_prior_and_graph_masks(
-            self,
-            all_graph_edges: Tensor,
-            edge_masks_obs: Tensor,
-        ) -> tuple[Tensor, Tensor]:
-            """
-            Compute the batched prior tensor and graph-edge affiliation masks.
-
-            For each sample in the batch, valid graph edges are extracted using
-            *edge_masks_obs*, then prior probabilities over edge types are derived
-            from those edges against the fully-connected reference graph.
-
-            :param all_graph_edges: Padded edge indices of shape [B, 2, E_max].
-            :param edge_masks_obs:  Binary validity mask of shape [B, E_max].
-            :return: Tuple of (prior_tensor [B, E, K], graph_edge_masks [B, E]).
-            """
-            N, _ = self.observation_space[NODES].shape
-            all_edges = fully_connected_edge_index(N)  # same for every sample
-
-            batched_priors: List[Tensor] = []
-            batched_graph_masks: List[Tensor] = []
-
-            for i in range(all_graph_edges.shape[0]):
-                prior, gmask = self._prior_for_sample(
-                    all_graph_edges[i],
-                    edge_masks_obs[i],
-                    all_edges,
-                )
-                batched_priors.append(prior.to(device=self.device, dtype=torch.float32))
-                batched_graph_masks.append(gmask.to(device=self.device))
-
-            prior_tensor = torch.stack(batched_priors)       # [B, E, K]
-            graph_edge_masks = torch.stack(batched_graph_masks)  # [B, E]
-            return prior_tensor, graph_edge_masks
-
-        def _prior_for_sample(
-            self,
-            graph_edges_padded: Tensor,
-            edge_mask: Tensor,
-            all_edges: Tensor,
-        ) -> tuple[Tensor, Tensor]:
-            """
-            Compute the prior and graph-affiliation mask for a single observation.
-
-            :param graph_edges_padded: Padded edge index of shape [2, E_max].
-            :param edge_mask:          Boolean validity mask of shape [E_max].
-            :param all_edges:          Full edge index for the N-node graph [2, E_full].
-            :return: Tuple of (prior [E_full, K], graph_mask [E_full]).
-            """
-            valid_edges = graph_edges_padded[:, edge_mask.bool()]  # [2, E_valid]
-
-            g_prior, ng_prior = get_priors(
-                prob_graph_edges_exist=self.prior_prob_for_graph_edge,
-                num_graph_edges=valid_edges.shape[1],
-                num_non_graph_edges=all_edges.shape[1] - valid_edges.shape[1],
-                temperature=self.temperature,
-            )
-
-            return get_prior_tensor(
-                graph_edges=valid_edges,
-                all_edges=all_edges,
-                prior_for_graph_edges=g_prior,
-                prior_for_non_graph_edges=ng_prior,
-                num_edge_types=self.num_edge_types,
-                return_mask=True,
-            )
-
-        def _store_tower_stats(
-            self,
-            model: RARLModel,
-            kl_loss: Tensor,
-            stats: dict,
-            prior_tensor: Tensor,
-            posteriors: Tensor,
-        ) -> None:
-            """
-            Write all RARL metrics into *model.tower_stats* for later aggregation
-            in :meth:`stats_fn`.
-            """
-            model.tower_stats.update({
-                "ra_kl_loss":                  kl_loss,
-                "ra_kl_graph":                 stats["kl_graph_edges"],
-                "ra_kl_latent":                stats["kl_latent_edges"],
-                "ra_kl_unweighted":            stats["kl_unweighted"],
-                "ra_fraction_graph":           stats["fraction_graph_edges"],
-                "ra_fraction_latent":          stats["fraction_latent_edges"],
-                "ra_mean_prior":               prior_tensor.mean(0),
-                "ra_mean_posterior":           posteriors.mean(0),
-                "ra_posteriors":               posteriors,
-                "ra_current_beta":             torch.as_tensor(self.current_beta_graph,     dtype=torch.float32),
-                "ra_current_beta_non_graph":   torch.as_tensor(self.current_beta_non_graph, dtype=torch.float32),
-                "ra_current_tau":              torch.as_tensor(self.current_tau,            dtype=torch.float32),
-                "ra_gnn_stats":                model.ragnn.gnn.stats,
-            })
-
-        # -------------------------------------------------------------------
-        # Stats
-        # -------------------------------------------------------------------
-
-        @override(base_policy_cls)
-        def stats_fn(self, train_batch: SampleBatch) -> Dict[str, TensorType]:
-            """Extend base stats with all RARL-specific TensorBoard metrics."""
-            stats = super().stats_fn(train_batch)
-            towers = self.model_gpu_towers
-
-            stats.update({
-                # Scalar KL terms and annealing parameters
-                "relation_awareness/kl_loss":              _tower_mean(towers, "ra_kl_loss"),
-                "relation_awareness/kl_unweighted":        _tower_mean(towers, "ra_kl_unweighted"),
-                "relation_awareness/kl_graph_edges":       _tower_mean(towers, "ra_kl_graph"),
-                "relation_awareness/kl_latent_edges":      _tower_mean(towers, "ra_kl_latent"),
-                "relation_awareness/fraction_graph_edges": _tower_mean(towers, "ra_fraction_graph"),
-                "relation_awareness/fraction_latent_edges":_tower_mean(towers, "ra_fraction_latent"),
-                "relation_awareness/current_beta":         _tower_mean(towers, "ra_current_beta"),
-                "relation_awareness/current_beta_non_graph":_tower_mean(towers, "ra_current_beta_non_graph"),
-                "relation_awareness/current_tau":          _tower_mean(towers, "ra_current_tau"),
-
-                # Per-edge-type prior / posterior distributions
-                "relation_awareness/prior_existence_probs": (
-                    _tower_stack_mean(towers, "ra_mean_prior")[:, 0].cpu().tolist()
-                ),
-                "relation_awareness/posterior_existence_probs": (
-                    _tower_stack_mean(towers, "ra_mean_posterior")[:, 0].cpu().tolist()
-                ),
-
-                # Full posterior statistics across all samples and towers
-                "relation_awareness/posterior_mean": (
-                    _tower_cat_stat(towers, "ra_posteriors").mean(dim=0).cpu().tolist()
-                ),
-                "relation_awareness/posterior_var": (
-                    _tower_cat_stat(towers, "ra_posteriors").var(dim=0).cpu().tolist()
-                ),
-            })
-
-            # Per-key GNN stats (keys vary by model, so added dynamically)
-            for key in towers[0].tower_stats["ra_gnn_stats"]:
-                stats[f"relation_awareness/gnn/{key}"] = torch.mean(
-                    torch.stack([
-                        t.tower_stats["ra_gnn_stats"][key].detach() for t in towers
-                    ])
-                ).item()
-
-            return stats
-
-    RARLPolicy.__name__ = f"RARL{base_policy_cls.__name__}"
-    RARLPolicy.__qualname__ = f"RARL{base_policy_cls.__qualname__}"
-    return RARLPolicy
+def _ra_sac_stats(policy, train_batch: SampleBatch) -> Dict[str, TensorType]:
+    """Combine base SAC stats with RA-specific metrics."""
+    stats = _sac_stats(policy, train_batch)
+    stats.update(_build_ra_stats_dict(policy.model_gpu_towers))
+    return stats
 
 
 # ---------------------------------------------------------------------------
-# Tower-stat aggregation helpers (stateless, live outside the policy class)
+# RASACTorchPolicy
+# ---------------------------------------------------------------------------
+
+RASACTorchPolicy = build_policy_class(
+    name="RASACTorchPolicy",
+    framework="torch",
+    loss_fn=_ra_sac_actor_critic_loss,
+    get_default_config=lambda: ray.rllib.algorithms.sac.sac.SACConfig(),
+    stats_fn=_ra_sac_stats,
+    postprocess_fn=postprocess_trajectory,
+    extra_grad_process_fn=apply_grad_clipping,
+    optimizer_fn=optimizer_fn,
+    validate_spaces=validate_spaces,
+    before_loss_init=_ra_sac_before_loss_init,
+    make_model_and_action_dist=_build_ra_sac_model_and_action_dist,
+    extra_learn_fetches_fn=concat_multi_gpu_td_errors,
+    mixins=[TargetNetworkMixin, ComputeTDErrorMixin],
+    action_distribution_fn=action_distribution_fn,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tower-stat aggregation helpers
 # ---------------------------------------------------------------------------
 
 def _tower_mean(towers: list, key: str) -> float:
@@ -330,11 +332,7 @@ def _tower_cat_stat(towers: list, key: str, dim: int = 0) -> Tensor:
 
 
 def _get_from_conf_with_fallback(config: dict, key: str, fallback_key: str) -> float:
-    """
-    Return the value for *key*, falling back to *fallback_key*.
-
-    Supports configs that store a single fixed value (``key``) or an end
-    value used after annealing (``fallback_key``).
+    """Return *key* from config, falling back to *fallback_key*.
 
     :raises AssertionError: If neither key is present.
     """

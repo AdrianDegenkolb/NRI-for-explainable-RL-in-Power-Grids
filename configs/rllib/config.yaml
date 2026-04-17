@@ -1,9 +1,9 @@
 defaults:
   - experiment: default
-  - training: ppo
+  - training: sac
   - model: ragnn
   - obs_space: graph
-  - reward: rho
+  - reward: constant
   - relation_awareness: default
   - env: case14
   - opponent: disabled
@@ -17,4 +17,4 @@ hydra:
   job:
     chdir: false
   run:
-    dir: ${experiment.storage_path}/${experiment.experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${experiment.storage_path}/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}

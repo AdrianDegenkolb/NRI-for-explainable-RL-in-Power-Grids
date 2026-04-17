@@ -5,7 +5,7 @@ nb_timesteps: 1000
 checkpoint_freq: 100
 ray_local_mode: true
 folder_name: test_minimal
-experiment_name: test_minimal
+name: test_minimal
 
 post_training_evaluation:
   enabled: true

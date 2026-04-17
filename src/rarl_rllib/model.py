@@ -18,6 +18,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from gymnasium.spaces import Box, Discrete, Dict
+from ray.rllib.algorithms.sac.sac_torch_model import SACTorchModel
 from ray.rllib.models import ModelCatalog
 from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
@@ -180,6 +181,133 @@ class RARLModel(TorchModelV2, nn.Module):
     def value_function(self) -> Tensor:
         # RLlib expects shape [B]
         return self.mlp.value_function()
+
+
+class RASACTorchModel(SACTorchModel):
+    """
+    SAC model that uses RAFeatureExtractor (encoder + RAGNN) as the shared
+    backbone for both the actor and Q-networks.
+
+    Architecture
+    ------------
+    Graph obs → RAFeatureExtractor (encoder → RAGNN) → embedding [B, gnn_out_dim]
+    embedding → action_model (inherited) → action distribution params
+    embedding → q_net      (inherited) → Q-values
+
+    The encoder runs once in forward(), returning an embedding that replaces
+    the raw observation for all downstream SAC heads. The posterior p(z|x) is
+    cached and retrieved via get_posterior() for KL loss computation.
+
+    The SAC actor/Q heads (action_model, q_net, twin_q_net) are built by the
+    parent SACTorchModel on the embedding space (Box [gnn_out_dim]), so they
+    receive correctly-sized input from forward().
+
+    Configuration (under custom_model_config)
+    -----------------------------------------
+    Same encoder/gnn/sampling schema as RARLModel.
+    """
+
+    def __init__(
+        self,
+        obs_space: gymnasium.spaces.Dict,
+        action_space,
+        num_outputs: Optional[int],
+        model_config: ModelConfigDict,
+        name: str,
+        policy_model_config: Optional[dict] = None,
+        q_model_config: Optional[dict] = None,
+        twin_q: bool = False,
+        initial_alpha: float = 1.0,
+        target_entropy: Optional[float] = None,
+        **kwargs,
+    ):
+        cfg = kwargs  # encoder, gnn, sampling from custom_model_config
+        enc_cfg = cfg["encoder"]
+        gnn_cfg = cfg["gnn"]
+        samp_cfg = cfg.get("sampling", {})
+        gnn_out_dim = gnn_cfg["out_dim"]
+
+        # Build SAC actor/Q heads sized for the GNN embedding, not the raw graph obs.
+        embedding_space = Box(-np.inf, np.inf, shape=(gnn_out_dim,), dtype=np.float32)
+        super().__init__(
+            embedding_space, action_space, num_outputs, model_config, name,
+            policy_model_config=policy_model_config,
+            q_model_config=q_model_config,
+            twin_q=twin_q,
+            initial_alpha=initial_alpha,
+            target_entropy=target_entropy,
+        )
+        # Restore the real obs space so RLlib internals see the correct space.
+        self.obs_space = obs_space
+
+        x_dim = assert_graph_obs_space_and_get_x_dim(obs_space)
+        self.ragnn = RAFeatureExtractor(
+            x_dim=x_dim,
+            graph_max_degree=enc_cfg["max_degree"],
+            graph_max_path_distance=enc_cfg["max_path_distance"],
+            hidden_dim_enc=enc_cfg["hidden_dim"],
+            num_layers_enc=enc_cfg["num_layers"],
+            num_attention_heads_enc=enc_cfg.get("num_attention_heads", 2),
+            num_edge_types=enc_cfg.get("num_edge_types", 2),
+            hidden_dim_gnn=gnn_cfg["hidden_dim"],
+            num_layers_gnn=gnn_cfg["num_layers"],
+            x_out_dim=gnn_out_dim,
+            dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
+            residual=gnn_cfg.get("residual", True),
+            tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
+        )
+        self.batched_p_z_given_x: Optional[Tensor] = None
+
+    def forward(
+        self,
+        input_dict: typing.Dict[str, TensorType],
+        state: List[TensorType],
+        seq_lens: TensorType,
+    ) -> Tuple[TensorType, List[TensorType]]:
+        """
+        Run the RA encoder on graph obs and return the graph embedding.
+
+        Returns embedding of shape [B, gnn_out_dim] as model_out, which is
+        then consumed by the inherited get_action_model_outputs() and
+        get_q_values() methods.
+        """
+        obs = input_dict["obs"]
+        node_features_batch = obs[NODES]    # [B, N, node_in_dim]
+        edge_index_batch = obs[EDGE_INDEX]  # [B, 2, E_max]
+        edge_mask = obs[EDGE_MASK]          # [B, E_max]
+
+        B, N, _ = node_features_batch.shape
+        device = node_features_batch.device
+
+        x = node_features_batch.reshape(B * N, -1)
+        batch = torch.arange(B, device=device).repeat_interleave(N)
+
+        valid_edges = edge_mask.bool()
+        edge_index_batch = edge_index_batch.permute(1, 0, 2)  # [2, B, E_max]
+        edge_index_batch = edge_index_batch[:, valid_edges]    # [2, total_E]
+
+        offsets = (torch.arange(B, device=device) * N).repeat_interleave(valid_edges.sum(1))
+        edge_index_batch += offsets.unsqueeze(0)
+
+        embedding, self.batched_p_z_given_x = self.ragnn(
+            x=x,
+            batch=batch,
+            powerline_edge_index=edge_index_batch.to(dtype=torch.long),
+        )
+        return embedding, state  # [B, gnn_out_dim]
+
+    def get_posterior(self) -> Tensor:
+        """Returns p(z|x) from the most recent forward pass. Shape: [B, E, K]."""
+        assert self.batched_p_z_given_x is not None, "Posterior not computed yet."
+        return self.batched_p_z_given_x
+
+    def set_tau(self, tau: float) -> None:
+        """Update the Gumbel-Softmax temperature in the encoder."""
+        self.ragnn.set_tau(tau)
+
+    # get_action_model_outputs, get_q_values, get_twin_q_values are all inherited
+    # from SACTorchModel and operate on the embedding returned by forward().
+
 
 class GNNBaselineModel(TorchModelV2, nn.Module):
     def __init__(self,

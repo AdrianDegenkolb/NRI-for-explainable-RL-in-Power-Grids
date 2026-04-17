@@ -10,7 +10,7 @@ project_root = Path.cwd().parent.parent  # Adjusts for notebook being in src/vis
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.nri.utils import fully_connected_edge_index
+from src.rarl.graph import fully_connected_edge_index
 
 
 import numpy as np

@@ -16,18 +16,12 @@ from ray.rllib.evaluation.episode_v2 import EpisodeV2
 from ray.rllib.utils.typing import MultiAgentDict
 from ray.tune.registry import register_env
 
+from src.core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT, DO_NOTHING_POLICY, RL_POLICY, \
+    HIGH_LEVEL_POLICY
+from src.core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
 from src.grid2op_env.action_converters import CustomDiscreteActions, setup_converter, load_actions
 from src.grid2op_env.observation_converter import make_observation_converter, ObservationConverter
 from src.grid2op_env.utils import make_g2op_env
-
-# the agents in this environment:
-DO_NOTHING_AGENT = "do_nothing_agent"
-RL_AGENT = "reinforcement_learning_agent"
-HIGH_LEVEL_AGENT = "high_level_agent"
-
-DO_NOTHING_POLICY = "do_nothing_policy"
-RL_POLICY = "reinforcement_learning_policy"
-HIGH_LEVEL_POLICY = "high_level_policy"
 
 # Environment configuration per curriculum level:
 ENV_CUR_MAP = [
@@ -220,70 +214,25 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
         return all(self.observation_space.contains(val) for val in x.values())
 
     def reconnect_lines(self, g2op_action: BaseAction) -> BaseAction:
-        """
-        Enriches given action by line reconnections where possible
-        """
-        line_stat_s = self.cur_g2op_obs.line_status
-        cooldown = self.cur_g2op_obs.time_before_cooldown_line
-        can_be_reco = ~line_stat_s & (cooldown == 0)
-        if can_be_reco.any():
-            sim_obs = self.cur_g2op_obs.simulate(g2op_action)[0]
-            cur_max_rho = sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2
-            for id_ in can_be_reco.nonzero()[0]:
-                # reconnect all lines that improve the current action
-                action = g2op_action + self.env_g2op.action_space({"set_line_status": [(id_, +1)]})
-                sim_obs = self.cur_g2op_obs.simulate(action)[0]
-                if cur_max_rho > (sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2):
-                    self.reconnect_count += 1
-                    g2op_action = action
+        """Enriches given action by line reconnections where simulation indicates improvement."""
+        result = reconnection_rule(self.cur_g2op_obs, g2op_action, self.env_g2op.action_space)
+        if result is not g2op_action:
+            self.reconnect_count += 1
+        return result
 
-        return g2op_action
+    def disconnect_lines(self, g2op_action: BaseAction) -> BaseAction:
+        """Manually disconnects an overloaded line when simulation indicates improvement."""
+        result = disconnection_rule(self.cur_g2op_obs, g2op_action, self.env_g2op.action_space)
+        if result is not g2op_action:
+            self.disconnect_count += 1
+        return result
 
-    def disconnect_lines(self, g2op_action: BaseAction):
-        """
-        This method manually disconnect a line during sustained periods of overflow in order to avoid permanent
-        damage. Reconnect the line back soon after the cooldown period ends.
-        This can help when parameters.NB_TIMESTEP_RECONNECTION > parameters.NB_TIMESTEP_COOLDOWN_LINE
-        """
-        if np.any(self.cur_g2op_obs.timestep_overflow > 1):
-            sim_obs = self.cur_g2op_obs.simulate(g2op_action)[0]
-            cur_max_rho = sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2
-            # Manually disconnect lines that are overflowed for more than 1 time step.
-            id_ = self.cur_g2op_obs.timestep_overflow.argmax()
-            action = g2op_action + self.env_g2op.action_space({"set_line_status": [(id_, -1)]})
-            sim_obs = self.cur_g2op_obs.simulate(action)[0]
-            if cur_max_rho > (sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2):
-                # only disconnect when this benefits the current action.
-                self.disconnect_count += 1
-                g2op_action = action
-
-        return g2op_action
-
-    def reset_ref_topo(self, g2op_action: BaseAction):
-        """
-        In safe states the environment can transition back into the reference topology (if beneficial). This method
-        enriches a given action by reverting the topology to the reference topology when the grid is in a safe state.
-        """
-        # The environment goes back to the reference topology when safe
-        if (self.cur_g2op_obs.rho.max() < self.reset_topo) and (self.cur_g2op_obs.current_step < self.cur_g2op_obs.max_step-1):
-            # Get all subs that are not in default topology
-            subs_changed = np.unique(self.cur_g2op_obs._topo_vect_to_sub[self.cur_g2op_obs.topo_vect != 1])
-            if len(subs_changed) > 0:
-                sim_obs = self.cur_g2op_obs.simulate(g2op_action)[0]
-                cur_max_rho = sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2
-                for sub_id in subs_changed:
-                    # reset the topology of the substation to the default one if this benefits the current action
-                    action = g2op_action + self.env_g2op.action_space({
-                        "set_bus": {
-                            "substations_id": [(sub_id, np.ones(self.cur_g2op_obs.sub_info[sub_id], dtype=int))]
-                        }
-                    })
-                    sim_obs = self.cur_g2op_obs.simulate(action)[0]
-                    if cur_max_rho > (sim_obs.rho.max() if sim_obs.rho.max() > 0 else 2):
-                        self.reset_count += 1
-                        g2op_action = action
-
-        return g2op_action
+    def reset_ref_topo(self, g2op_action: BaseAction) -> BaseAction:
+        """Reverts substations to reference topology in safe states when simulation indicates improvement."""
+        result = revert_to_reference_topo(self.cur_g2op_obs, g2op_action, self.env_g2op.action_space, self.reset_topo)
+        if result is not g2op_action:
+            self.reset_count += 1
+        return result
 
     def set_curriculum(self, level: int):
         print("Change curriculum to level: ", level)

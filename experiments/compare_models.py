@@ -15,13 +15,13 @@ def main():
 
     cwd = os.getcwd()
 
-    model1 = AgentSpec(name="RAPPO", load_path=Path(cwd, "results/agents/CustomPPO_0_426b7_2026-01-19_10-28-48"), checkpoint_name="checkpoint_000020")
-    model2 = AgentSpec(name="MLP", load_path=Path(cwd, "results/agents/CustomPPO_0_48ac9_2026-01-19_14-39-31_MLP"), checkpoint_name="checkpoint_000020")
-    model3 = AgentSpec(name="GNN", load_path=Path(cwd, "results/agents/CustomPPO_0_4cbd2_2026-01-19_14-39-38_GNN"), checkpoint_name="checkpoint_000023")
+    model1 = AgentSpec(name="RAPPO", load_path=Path(cwd, "../results/agents/CustomPPO_0_426b7_2026-01-19_10-28-48"), checkpoint_name="checkpoint_000020")
+    model2 = AgentSpec(name="MLP", load_path=Path(cwd, "../results/agents/CustomPPO_0_48ac9_2026-01-19_14-39-31_MLP"), checkpoint_name="checkpoint_000020")
+    model3 = AgentSpec(name="GNN", load_path=Path(cwd, "../results/agents/CustomPPO_0_4cbd2_2026-01-19_14-39-38_GNN"), checkpoint_name="checkpoint_000023")
 
     num_episodes = 50
 
-    results_dir = Path("results/cross_validation")
+    results_dir = Path("../results/cross_validation")
     save_results_to = results_dir / "cross_validate_models.json"
     save_heatmap_to = results_dir / "cross_validate_models.svg"
     save_connectivity_to = results_dir / "failing_edges_connectivity.svg"

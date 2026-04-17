@@ -1,7 +1,6 @@
-import logging
+import random
 import tempfile
 from pathlib import Path
-import random
 from typing import Optional
 
 import numpy as np
@@ -13,17 +12,43 @@ NRI_DATASETS_PATH = Path("results/nri_datasets")
 EVAL_PATH = Path("results/evaluations")
 EDGE_PROBS_PATH = Path("results/edge_probs")
 
+# agent and policy keys:
+DO_NOTHING_AGENT = "do_nothing_agent"
+RL_AGENT = "reinforcement_learning_agent"
+HIGH_LEVEL_AGENT = "high_level_agent"
+DO_NOTHING_POLICY = "do_nothing_policy"
+RL_POLICY = "reinforcement_learning_policy"
+HIGH_LEVEL_POLICY = "high_level_policy"
+
+class Style:
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    DARKCYAN = '\033[36m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+
 SEED = 42
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+
+
+def set_seed(seed):
+    global SEED
+    SEED = seed
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+
+
+set_seed(42)
 
 _testing = False
-
-logger: logging.Logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 def set_experiment_name(experiment_name: Optional[str]):
     global LOGS_PATH, MODELS_PATH, NRI_DATASETS_PATH, EVAL_PATH, EDGE_PROBS_PATH

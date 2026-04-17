@@ -3,10 +3,11 @@ Implement PPO in Rllib with an accurate batch size.
 """
 
 import logging
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Callable
 import numpy as np
 import os
 
+from ray.rllib.algorithms import AlgorithmConfig
 from ray.rllib.evaluation.worker_set import WorkerSet
 from ray.util.debug import log_once
 from ray.rllib.algorithms.algorithm import Algorithm
@@ -56,9 +57,9 @@ class CustomPPO(PPO):
     """
     def __init__(
             self,
-            config: Optional["AlgorithmConfig"] = None,
+            config: Optional[AlgorithmConfig] = None,
             env=None,  # deprecated arg
-            logger_creator: Optional["Callable[[], Logger]"] = None,
+            logger_creator: Optional[Callable[[], logging.Logger]] = None,
             **kwargs,
     ):
         print("my_log_level: ", config["my_log_level"])

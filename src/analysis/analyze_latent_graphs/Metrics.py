@@ -13,7 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
 import seaborn as sns
 
-from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
+from src.grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
 from src.visualization import visualize_graph, PlottingArgs
 from src.visualization.utils import NodeStyle
 
@@ -802,7 +802,7 @@ class PosteriorDistributionVisualizer(MetricVisualizer[Tuple[npt.NDArray, Option
             axes = [axes]  # Make it iterable
         import grid2op
         env = grid2op.make("l2rpn_case14_sandbox")
-        powerline_edges = BusConnectivityGraphObsSpace(grid2op_observation_space=env.observation_space).to_gym(env.reset())[EDGE_INDEX]
+        powerline_edges = GraphObservationConverter(g2op_obs_space=env.observation_space).to_gym(env.reset())[EDGE_INDEX]
 
         # Right: Graph visualization
         visualize_graph(PlottingArgs(

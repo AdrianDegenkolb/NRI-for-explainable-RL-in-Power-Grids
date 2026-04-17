@@ -13,10 +13,9 @@ from scipy.stats import spearmanr, kendalltau
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
-from experiments import PosteriorAnalyzer
-from experiments import get_risk_vector
-from src.nri.utils import fully_connected_edge_index
+from src.analysis.analyze_latent_graphs.build_coupling_matrices import get_risk_vector
+from src.grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
+from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
 from src.visualization import visualize_graph, PlottingArgs, get_node_styles
 
 logger = logging.getLogger(__name__)
@@ -164,10 +163,10 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         environment: Environment,
         action: BaseAction,
     ):
-        # Capture env and powerline edge index once for later graph visualisation
+        # Capture env and powerline edge index once for later graph visualization
         if self._environment is None:
             self._environment = environment
-            obs_space = BusConnectivityGraphObsSpace(grid2op_observation_space=environment.observation_space)
+            obs_space = GraphObservationConverter(g2op_obs_space=environment.observation_space)
             self._powerline_edge_index = obs_space.to_gym(environment.current_obs)[EDGE_INDEX]
 
         # Accumulate per-node risk vector r(s_t): shape [n_nodes]
@@ -380,7 +379,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
           3. Time-averaged prior existence probability  (baseline)
         """
         env = self._environment
-        obs_space = BusConnectivityGraphObsSpace(grid2op_observation_space=env.observation_space)
+        obs_space = GraphObservationConverter(g2op_obs_space=env.observation_space)
         node_styles = get_node_styles(env, obs_space.__class__)
         powerline_edge_index = self._powerline_edge_index
         N = 2 * env.n_line + env.n_gen + env.n_load

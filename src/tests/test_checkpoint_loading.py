@@ -1,5 +1,5 @@
 """
-Test script to verify that BusConnectivityGraphObsSpace is correctly preserved
+Test script to verify that GraphObsSpace is correctly preserved
 when loading from RLlib checkpoints.
 """
 
@@ -8,10 +8,11 @@ import tempfile
 from pathlib import Path
 from pprint import pprint
 
-from gymnasium.spaces import Dict, Box
 import numpy as np
+from gymnasium.spaces import Dict
 
-from src.common.observation_space import BusConnectivityGraphObsSpace
+from src.core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT
+
 
 def fml():
     picklefile = "/home/adrian/Dev/NRI-for-explainable-RL-in-Power-Grids/results/experiments/test_minimal_run/CustomPPO_TEsTING_b8c191ee_2026-01-07_15-44-08/checkpoint_000000/policies/reinforcement_learning_policy/policy_state.pkl"
@@ -35,8 +36,8 @@ def test_pickle_serialization():
     mock_obs_space = MockObsSpace()
 
     # Create the custom observation space
-    print("\n1. Creating BusConnectivityGraphObsSpace...")
-    original_space = BusConnectivityGraphObsSpace(
+    print("\n1. Creating GraphObsSpace...")
+    original_space = GraphObsSpace(
         grid2op_observation_space=mock_obs_space,
         normalization_boundaries={
             'active_power_forecast': (-100, 100),
@@ -70,7 +71,7 @@ def test_pickle_serialization():
     # Verify restoration
     print(f"\n3. Verifying restored space...")
     print(f"   Type: {type(restored_space).__name__}")
-    print(f"   Is BusConnectivityGraphObsSpace: {isinstance(restored_space, BusConnectivityGraphObsSpace)}")
+    print(f"   Is GraphObsSpace: {isinstance(restored_space, GraphObsSpace)}")
     print(f"   x_dim: {restored_space.x_dim}")
     print(f"   num_nodes: {restored_space.num_nodes}")
     print(f"   max_num_edges: {restored_space.max_num_edges}")
@@ -78,8 +79,8 @@ def test_pickle_serialization():
     print(f"   Has normalization_max: {hasattr(restored_space, 'normalization_max')}")
 
     # Verify attributes match
-    assert isinstance(restored_space, BusConnectivityGraphObsSpace), \
-        f"Expected BusConnectivityGraphObsSpace, got {type(restored_space).__name__}"
+    assert isinstance(restored_space, GraphObsSpace), \
+        f"Expected GraphObsSpace, got {type(restored_space).__name__}"
     assert restored_space.x_dim == original_space.x_dim, \
         f"x_dim mismatch: {restored_space.x_dim} != {original_space.x_dim}"
     assert restored_space.num_nodes == original_space.num_nodes, \
@@ -118,7 +119,7 @@ def test_multi_agent_dict_wrapper():
 
     # Create the custom observation space
     print("\n1. Creating multi-agent observation space...")
-    graph_obs_space = BusConnectivityGraphObsSpace(
+    graph_obs_space = GraphObsSpace(
         grid2op_observation_space=mock_obs_space,
         normalization_boundaries=None,
         verbose=False
@@ -127,9 +128,9 @@ def test_multi_agent_dict_wrapper():
     # Wrap in multi-agent Dict (as done in training)
     from gymnasium.spaces import Discrete
     multi_agent_obs_space = Dict({
-        "high_level_agent": Discrete(2),
-        "reinforcement_learning_agent": graph_obs_space,
-        "do_nothing_agent": Discrete(1),
+        HIGH_LEVEL_AGENT: Discrete(2),
+        RL_AGENT: graph_obs_space,
+        DO_NOTHING_AGENT: Discrete(1),
     })
 
     print(f"   Multi-agent space type: {type(multi_agent_obs_space).__name__}")
@@ -149,16 +150,16 @@ def test_multi_agent_dict_wrapper():
     print(f"   Multi-agent space type: {type(restored_multi_agent_space).__name__}")
     rl_agent_space = restored_multi_agent_space.spaces['reinforcement_learning_agent']
     print(f"   RL agent space type: {type(rl_agent_space).__name__}")
-    print(f"   Is BusConnectivityGraphObsSpace: {isinstance(rl_agent_space, BusConnectivityGraphObsSpace)}")
+    print(f"   Is GraphObsSpace: {isinstance(rl_agent_space, GraphObsSpace)}")
 
-    if isinstance(rl_agent_space, BusConnectivityGraphObsSpace):
+    if isinstance(rl_agent_space, GraphObsSpace):
         print(f"   x_dim: {rl_agent_space.x_dim}")
         print(f"   num_nodes: {rl_agent_space.num_nodes}")
         print(f"   max_num_edges: {rl_agent_space.max_num_edges}")
         print("\n✓ Multi-agent Dict wrapper test PASSED!")
     else:
         print(f"\n✗ Multi-agent Dict wrapper test FAILED!")
-        print(f"   Expected BusConnectivityGraphObsSpace, got {type(rl_agent_space).__name__}")
+        print(f"   Expected GraphObsSpace, got {type(rl_agent_space).__name__}")
         return False
 
     # Cleanup
@@ -170,7 +171,7 @@ def test_multi_agent_dict_wrapper():
 def main():
     """Run all tests."""
     print("\n" + "=" * 80)
-    print("Testing BusConnectivityGraphObsSpace Checkpoint Serialization")
+    print("Testing GraphObsSpace Checkpoint Serialization")
     print("=" * 80)
 
     try:

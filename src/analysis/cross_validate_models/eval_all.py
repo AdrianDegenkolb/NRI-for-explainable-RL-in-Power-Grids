@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from src.rl4pnc.evaluation.evaluate_rllib_agent import evaluate_rllib_checkpoint
+from src.core.evaluate import evaluate_rllib_checkpoint
 from experiments.utils import AgentSpec
+from src.core.constants import RL_POLICY
 
 
 def main():
@@ -32,7 +33,7 @@ def main():
                 print(f"Result will we saved under: {save_path}")
                 evaluate_rllib_checkpoint(
                     checkpoint_path=model.load_path,
-                    policy_name="reinforcement_learning_policy",
+                    policy_name=RL_POLICY,
                     checkpoint_name=model.checkpoint_name,
                     env_name_override=eval_env_name,
                     num_episodes=num_episodes,

@@ -44,7 +44,7 @@ class MLP(nn.Module):
                 m.bias.data.zero_()
 
     def _apply_bn(self, x: Tensor) -> Tensor:
-        # BatchNorm1d expects 2-D input; flatten batch dims, normalise, reshape.
+        # BatchNorm1d expects 2-D input; flatten batch dims, normalize, reshape.
         batch_shape = x.shape[:-1]
         flat = x.view(int(np.prod(batch_shape)), -1)
         return self.bn(flat).view(x.shape)

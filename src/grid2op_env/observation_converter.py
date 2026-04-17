@@ -14,12 +14,17 @@ from grid2op.Observation import BaseObservation, ObservationSpace
 from grid2op.gym_compat import GymEnv
 from gymnasium.wrappers.normalize import RunningMeanStd
 
-from src.core.observation_space import NODES, EDGE_INDEX, EDGE_MASK, GLOBAL
 from src.grid2op_env.utils import get_attr_list
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+NODES = "node_features"
+EDGES = "edge_features"
+EDGE_INDEX = "edge_index"
+EDGE_MASK = "edge_mask"
+GLOBAL = "global_features"
 
 
 class ObservationConverter(ABC, Generic[T]):

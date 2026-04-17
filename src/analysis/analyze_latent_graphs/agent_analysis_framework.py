@@ -12,9 +12,10 @@ from grid2op.Environment import Environment
 from grid2op.Observation import BaseObservation
 from tqdm import tqdm
 
-from src.common.observation_space import EDGE_INDEX, EDGE_MASK
-from src.nri.utils import get_priors, get_prior_tensor, fully_connected_edge_index
-from src.rl4pnc.evaluation.evaluation_agents import RllibAgent
+from src.agents import RllibAgent
+from src.grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK
+from src.rarl.graph import fully_connected_edge_index
+from src.rarl.prior import get_priors, get_prior_tensor
 from src.grid2op_env.observation_converter import ObservationConverter
 
 # Configure logging
