@@ -10,7 +10,7 @@ from pathlib import Path
 from time import time
 from typing import Any, Dict, List, OrderedDict, Union
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 import grid2op
 import numpy as np
@@ -27,6 +27,7 @@ from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
 from src.algorithms.custom_ppo import CustomPPO
+from src.algorithms.custom_sac import CustomSAC
 from src.algorithms.optuna_search import MyOptunaSearch
 from src.rarl_rllib import make_rarl_policy, RARLModel
 from src.rarl_rllib.model import GNNBaselineModel
@@ -40,6 +41,11 @@ logger = logging.getLogger(__name__)
 POLICIES["rappo_torch_policy"] = make_rarl_policy(PPOTorchPolicy)
 ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
 ModelCatalog.register_custom_model("ragnn_model", RARLModel)
+
+_TRAINABLE_MAP = {
+    "ppo": CustomPPO,
+    "sac": CustomSAC,
+}
 
 
 def get_num_available_episodes(env_name: str) -> int:
@@ -415,6 +421,11 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
 
     rllib_cfg["total_timesteps"] = exp.nb_timesteps
 
+    algorithm = OmegaConf.select(cfg, "training.algorithm", default="ppo")
+    trainable_cls = _TRAINABLE_MAP.get(algorithm)
+    if trainable_cls is None:
+        raise ValueError(f"No trainable class registered for algorithm '{algorithm}'.")
+
     # --- Build TuneConfig ---
     shared_tune_kwargs = dict(
         trial_name_creator=lambda t: trial_str_creator(t, job_id),
@@ -435,7 +446,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
 
     # --- Build Tuner ---
     tuner = tune.Tuner(
-        trainable=CustomPPO,
+        trainable=trainable_cls,
         param_space=rllib_cfg,
         run_config=air.RunConfig(
             name=exp.experiment_name,

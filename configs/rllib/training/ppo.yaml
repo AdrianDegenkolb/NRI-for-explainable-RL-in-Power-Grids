@@ -1,3 +1,4 @@
+algorithm: ppo
 checkpoint_trainable_policies_only: true
 gamma: 0.99
 lr: 0.0001

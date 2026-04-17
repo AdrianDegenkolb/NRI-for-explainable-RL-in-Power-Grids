@@ -1,22 +1,29 @@
 """
-Trains a PPO agent using Hydra for config composition.
+Trains an RL agent using Hydra for config composition.
+
+Algorithm is selected via the training config group:
+  training=ppo   (default) — CustomPPO, on-policy
+  training=sac             — CustomSAC, off-policy; requires model=mlp
 
 Usage examples
 --------------
-# Default RAGNN run:
-  python training_scripts/train_ppo_hydra.py
+# Default RAGNN/PPO run:
+  python train.py
+
+# SAC with MLP model:
+  python train.py training=sac model=mlp relation_awareness=disabled
 
 # Quick test run (minimal timesteps, local Ray mode):
-  python training_scripts/train_ppo_hydra.py experiment=test_minimal training=ppo_test
+  python train.py experiment=test_minimal training=ppo_test
 
 # MLP baseline:
-  python training_scripts/train_ppo_hydra.py model=mlp obs_space=flat relation_awareness=disabled
+  python train.py model=mlp obs_space=flat relation_awareness=disabled
 
 # Optuna hyperparameter search:
-  python training_scripts/train_ppo_hydra.py optimization=optuna
+  python train.py optimization=optuna
 
 # Single-key override via CLI:
-  python training_scripts/train_ppo_hydra.py experiment.nb_timesteps=500000 training.lr=3e-4
+  python train.py experiment.nb_timesteps=500000 training.lr=3e-4
 """
 
 import logging
@@ -27,7 +34,7 @@ import grid2op
 import hydra
 from hydra.utils import get_class
 from omegaconf import DictConfig, OmegaConf
-from ray.rllib.algorithms import ppo
+from ray.rllib.algorithms import ppo, sac
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
@@ -41,6 +48,11 @@ from src.rarl_rllib import make_rarl_policy
 from src.rl4pnc.experiments.utils import run_training
 
 logger = logging.getLogger(__name__)
+
+_ALGORITHM_CONFIG_CLS = {
+    "ppo": ppo.PPOConfig,
+    "sac": sac.SACConfig,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -124,18 +136,28 @@ def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
     }
 
 
-def _build_policies(cfg: DictConfig) -> dict:
+def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     """Build the multi-agent policies dict."""
     custom_model = cfg.model.custom_model
 
-    if custom_model == "ragnn_model":
+    if algorithm == "ppo" and custom_model == "ragnn_model":
         policy_class = make_rarl_policy(PPOTorchPolicy)
     else:
+        # SAC uses its own built-in policy; PPO with non-RARL models uses the
+        # algorithm default as well.
         policy_class = None
 
-    model_override = (
-        {"model": {"custom_model": custom_model}} if custom_model not in (None, "null") else {}
-    )
+    if algorithm == "sac" and custom_model not in (None, "null"):
+        logger.warning(
+            "custom_model=%s is not compatible with SAC (requires SACTorchModel). "
+            "Ignoring custom model — use model=mlp with SAC.",
+            custom_model,
+        )
+        model_override = {}
+    else:
+        model_override = (
+            {"model": {"custom_model": custom_model}} if custom_model not in (None, "null") else {}
+        )
 
     return {
         "high_level_policy": PolicySpec(
@@ -164,12 +186,19 @@ def _build_policies(cfg: DictConfig) -> dict:
 
 
 def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
-    """Translate the assembled Hydra config into a flat RLLib PPO config dict."""
-    rllib_cfg = ppo.PPOConfig().to_dict()
+    """Translate the assembled Hydra config into a flat RLLib algorithm config dict."""
+    # Extract algorithm name before merging (it is a meta-key, not an RLLib param).
+    training = OmegaConf.to_container(cfg.training, resolve=True)
+    algorithm = training.pop("algorithm", "ppo")
+
+    algo_config_cls = _ALGORITHM_CONFIG_CLS.get(algorithm)
+    if algo_config_cls is None:
+        raise ValueError(f"Unsupported algorithm '{algorithm}'. Choose from: {list(_ALGORITHM_CONFIG_CLS)}")
+
+    rllib_cfg = algo_config_cls().to_dict()
     rllib_cfg["_disable_preprocessor_api"] = True
 
     # --- Training hyperparameters ---
-    training = OmegaConf.to_container(cfg.training, resolve=True)
     rllib_cfg.update(training)
 
     # --- Model ---
@@ -204,10 +233,11 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
         logger.warning("Val chronics path not found (%s); defaulting evaluation_duration=50", chronics_path)
 
     # --- Rollouts / resources ---
+    # The training config may override count_steps_by (e.g. SAC uses env_steps).
     rollouts = cfg.rollouts
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
-    rllib_cfg["count_steps_by"] = rollouts.count_steps_by
+    rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework
     rllib_cfg["exploration_config"] = OmegaConf.to_container(rollouts.exploration_config, resolve=True)
@@ -217,7 +247,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["callbacks"] = make_multi_callbacks(callback_classes)
 
     # --- Multi-agent ---
-    rllib_cfg["policies"] = _build_policies(cfg)
+    rllib_cfg["policies"] = _build_policies(cfg, algorithm)
     rllib_cfg["policy_mapping_fn"] = policy_mapping_fn
     rllib_cfg["policies_to_train"] = ["reinforcement_learning_policy"]
 
