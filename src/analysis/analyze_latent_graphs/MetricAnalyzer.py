@@ -20,15 +20,15 @@ from grid2op.Observation import BaseObservation
 from tabulate import tabulate
 
 from experiments.utils import AgentSpec, load_agent_from_spec
-from src.analysis.analyze_latent_graphs.Metrics import DegreeDistributionVisualizer, ClusteringCoefficientVisualizer, \
+from analysis.analyze_latent_graphs.Metrics import DegreeDistributionVisualizer, ClusteringCoefficientVisualizer, \
     PosteriorDistributionVisualizer, KLDivergenceVisualizer, SymmetryMetricVisualizer, BetweennessVisualizer, \
     MetricVisualizer
-from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer, LatentGraphAnalysisAgent
-from src.grid2op_env.observation_converter import GraphObservationConverter
-from src.rarl import fully_connected_edge_index
-from src.rarl.prior import get_priors, get_prior_tensor
-from src.visualization import get_node_styles
-from src.visualization.utils import NodeStyle
+from analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer, LatentGraphAnalysisAgent
+from grid2op_env.observation_converter import GraphObservationConverter
+from rarl import fully_connected_edge_index
+from rarl.prior import get_priors, get_prior_tensor
+from visualization import get_node_styles
+from visualization.utils import NodeStyle
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

@@ -45,13 +45,13 @@ from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
 from rarl_rllib import RADQNTorchPolicy
-from src.grid2op_env.env import CustomizedGrid2OpEnvironment
-from src.core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
-from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
-from src.grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
-from src.grid2op_env import policy_mapping_fn
+from grid2op_env.env import CustomizedGrid2OpEnvironment
+from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
+from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
+from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
+from grid2op_env import policy_mapping_fn
 from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
-from src.core.train import run_training
+from core.train import run_training
 
 logger = logging.getLogger(__name__)
 

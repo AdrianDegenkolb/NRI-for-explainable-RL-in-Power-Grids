@@ -1,1 +1,1 @@
-_target_: src.grid2op_env.rewards.AlphaZeroRW
+_target_: grid2op_env.rewards.AlphaZeroRW

@@ -13,10 +13,10 @@ from scipy.stats import spearmanr, kendalltau
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from src.analysis.analyze_latent_graphs.build_coupling_matrices import get_risk_vector
-from src.grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
-from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
-from src.visualization import visualize_graph, PlottingArgs, get_node_styles
+from analysis.analyze_latent_graphs.build_coupling_matrices import get_risk_vector
+from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
+from analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
+from visualization import visualize_graph, PlottingArgs, get_node_styles
 
 logger = logging.getLogger(__name__)
 

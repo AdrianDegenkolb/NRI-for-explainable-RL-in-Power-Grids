@@ -16,10 +16,10 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from src.grid2op_env.observation_converter import GraphObservationConverter
+from grid2op_env.observation_converter import GraphObservationConverter
 
-from src.grid2op_env.observation_converter import ObservationConverter
-from src.rarl import fully_connected_edge_index
+from grid2op_env.observation_converter import ObservationConverter
+from rarl import fully_connected_edge_index
 
 logger = logging.getLogger(__name__)
 

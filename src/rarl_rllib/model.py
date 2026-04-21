@@ -29,9 +29,9 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import Tensor, nn
 
-from src.grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
-from src.rarl import BaselineGNN
-from src.rarl.nn import RAFeatureExtractor
+from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
+from rarl import BaselineGNN
+from rarl.nn import RAFeatureExtractor
 
 
 class RARLModel(abc.ABC, nn.Module):

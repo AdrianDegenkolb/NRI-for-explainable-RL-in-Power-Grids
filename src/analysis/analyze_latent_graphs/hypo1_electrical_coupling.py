@@ -13,8 +13,8 @@ from scipy.stats import spearmanr, kendalltau
 from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
-from src.analysis.analyze_latent_graphs.build_coupling_matrices import get_PTDF_based_coupling_index
+from analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
+from analysis.analyze_latent_graphs.build_coupling_matrices import get_PTDF_based_coupling_index
 
 logger = logging.getLogger(__name__)
 

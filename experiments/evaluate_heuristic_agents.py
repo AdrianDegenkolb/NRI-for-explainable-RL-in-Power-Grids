@@ -6,9 +6,9 @@ from grid2op.Agent import RecoPowerlineAgent, DoNothingAgent
 from lightsim2grid import LightSimBackend
 from omegaconf import DictConfig
 
-from src.core.evaluate import evaluate_agent
-from src.core.constants import EVAL_PATH, SEED
-from src.grid2op_env.rewards import ScaledL2RPNReward
+from core.evaluate import evaluate_agent
+from core.constants import EVAL_PATH, SEED
+from grid2op_env.rewards import ScaledL2RPNReward
 
 
 def evaluate(cfg: DictConfig):

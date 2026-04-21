@@ -13,9 +13,9 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
 import seaborn as sns
 
-from src.grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
-from src.visualization import visualize_graph, PlottingArgs
-from src.visualization.utils import NodeStyle
+from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
+from visualization import visualize_graph, PlottingArgs
+from visualization.utils import NodeStyle
 
 T = TypeVar("T")  # generic type for computed metric
 

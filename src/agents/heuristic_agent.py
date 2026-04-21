@@ -6,7 +6,7 @@ from grid2op.Action import ActionSpace, BaseAction
 from grid2op.Agent import BaseAgent
 from grid2op.Observation import BaseObservation
 
-from ..core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
+from core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
 
 
 class HeuristicsAgent(BaseAgent):

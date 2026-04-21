@@ -47,10 +47,10 @@ from ray.tune.experimental.output import (
 )
 from tabulate import tabulate
 
-from src.core.constants import RL_POLICY, Style
-from src.grid2op_env.observation_converter import GraphObservationConverter
-from src.rarl.annealing import AnnealingState
-from src.visualization import PlottingArgs, visualize_graph, get_node_styles
+from core.constants import RL_POLICY, Style
+from grid2op_env.observation_converter import GraphObservationConverter
+from rarl.annealing import AnnealingState
+from visualization import PlottingArgs, visualize_graph, get_node_styles
 
 _POLICY_ID = "default_policy"
 

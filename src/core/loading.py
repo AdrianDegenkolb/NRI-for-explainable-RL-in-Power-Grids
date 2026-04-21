@@ -7,8 +7,8 @@ import logging
 import os
 from pathlib import Path
 
-from src.agents import RllibAgent
-from src.grid2op_env import CustomizedGrid2OpEnvironment
+from agents import RllibAgent
+from grid2op_env import CustomizedGrid2OpEnvironment
 
 logger = logging.getLogger(__name__)
 

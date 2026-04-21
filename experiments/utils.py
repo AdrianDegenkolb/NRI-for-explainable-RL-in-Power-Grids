@@ -7,9 +7,9 @@ import numpy as np
 from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 
-from src.core.loading import load_config, load_rllib_agent
-from src.grid2op_env.env import CustomizedGrid2OpEnvironment
-from src.core.constants import RL_POLICY
+from core.loading import load_config, load_rllib_agent
+from grid2op_env.env import CustomizedGrid2OpEnvironment
+from core.constants import RL_POLICY
 
 
 def sample_graph_from_posterior(posterior: npt.NDArray, all_edges: npt.NDArray, num_samples=1) -> List[nx.Graph]:
@@ -108,20 +108,3 @@ def load_agent_from_spec(agent_spec: AgentSpec, env_name: str = "l2rpn_case14_sa
         env_name=env_name,
         env_config=env_config
     )
-
-
-def delete_nested_key(d, path):
-    keys = path.split('/')
-    current = d
-
-    # Traverse through the dictionary using keys from the path
-    for key in keys[:-1]:  # Iterate until the second last key
-        if key in current:
-            current = current[key]
-        else:
-            return  # If any key is missing, return without making changes
-
-    # Now current points to the dictionary containing the key to be deleted
-    last_key = keys[-1]
-    if last_key in current:
-        del current[last_key]

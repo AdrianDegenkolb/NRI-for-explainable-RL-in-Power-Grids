@@ -23,19 +23,19 @@ from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
 from core.constants import DO_NOTHING_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY
-from experiments.utils import delete_nested_key
-from src.algorithms.custom_ppo import CustomPPO
-from src.algorithms.custom_sac import CustomSAC
-from src.algorithms.custom_dqn import CustomDQN
-from src.algorithms.optuna_search import MyOptunaSearch
-from src.core.constants import RL_POLICY, Style
-from src.core.evaluate import evaluate_rllib_checkpoint
-from src.rarl_rllib import RAActorCriticModel
+from core.utils import delete_nested_key
+from algorithms.custom_ppo import CustomPPO
+from algorithms.custom_sac import CustomSAC
+from algorithms.custom_dqn import CustomDQN
+from algorithms.optuna_search import MyOptunaSearch
+from core.constants import RL_POLICY, Style
+from core.evaluate import evaluate_rllib_checkpoint
+from rarl_rllib import RAActorCriticModel
 from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy, RADQNTorchPolicy
-from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
-from src.grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
-from src.rarl_rllib.callback import TuneCallback
-from src.rarl_rllib.model import GNNBaselineModel
+from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
+from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
+from rarl_rllib.callback import TuneCallback
+from rarl_rllib.model import GNNBaselineModel
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -14,7 +14,7 @@ from grid2op.Observation import BaseObservation, ObservationSpace
 from grid2op.gym_compat import GymEnv
 from gymnasium.wrappers.normalize import RunningMeanStd
 
-from src.grid2op_env.utils import get_attr_list
+from grid2op_env.utils import get_attr_list
 
 logger = logging.getLogger(__name__)
 

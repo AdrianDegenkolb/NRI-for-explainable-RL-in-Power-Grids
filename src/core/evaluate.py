@@ -12,10 +12,10 @@ from grid2op.Environment import Environment
 from grid2op.Runner import Runner
 from grid2op.Runner.runner import runner_returned_type
 
-from src.core.constants import SEED, RL_POLICY
-from src.core.loading import load_config, preprocess_config, load_rllib_agent
+from core.constants import SEED, RL_POLICY
+from core.loading import load_config, preprocess_config, load_rllib_agent
 
-from src.visualization import get_evaluation_metrics, visualize_agent_survival
+from visualization import get_evaluation_metrics, visualize_agent_survival
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

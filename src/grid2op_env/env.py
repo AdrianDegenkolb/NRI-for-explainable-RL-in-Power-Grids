@@ -16,12 +16,12 @@ from ray.rllib.evaluation.episode_v2 import EpisodeV2
 from ray.rllib.utils.typing import MultiAgentDict
 from ray.tune.registry import register_env
 
-from src.core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT, DO_NOTHING_POLICY, RL_POLICY, \
+from core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT, DO_NOTHING_POLICY, RL_POLICY, \
     HIGH_LEVEL_POLICY
-from src.core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
-from src.grid2op_env.action_converters import CustomDiscreteActions, setup_converter, load_actions
-from src.grid2op_env.observation_converter import make_observation_converter, ObservationConverter
-from src.grid2op_env.utils import make_g2op_env
+from core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
+from grid2op_env.action_converters import CustomDiscreteActions, setup_converter, load_actions
+from grid2op_env.observation_converter import make_observation_converter, ObservationConverter
+from grid2op_env.utils import make_g2op_env
 
 # Environment configuration per curriculum level:
 ENV_CUR_MAP = [

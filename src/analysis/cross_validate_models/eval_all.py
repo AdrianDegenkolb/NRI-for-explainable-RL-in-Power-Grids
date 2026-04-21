@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from src.core.evaluate import evaluate_rllib_checkpoint
+from core.evaluate import evaluate_rllib_checkpoint
 from experiments.utils import AgentSpec
-from src.core.constants import RL_POLICY
+from core.constants import RL_POLICY
 
 
 def main():

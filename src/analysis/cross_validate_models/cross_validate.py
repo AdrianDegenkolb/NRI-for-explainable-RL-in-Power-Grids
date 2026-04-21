@@ -11,10 +11,10 @@ from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 from tqdm import tqdm
 
-from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
+from common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
 from experiments import get_reconfigured_nodes
 from experiments.utils import AgentSpec, load_agent_from_spec
-from src.visualization import GridPlottingArgs, visualize_grid
+from visualization import GridPlottingArgs, visualize_grid
 
 logger = logging.getLogger(__name__)
 

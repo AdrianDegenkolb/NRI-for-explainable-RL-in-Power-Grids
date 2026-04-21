@@ -11,7 +11,7 @@ from grid2op.gym_compat import GymEnv
 from ray.rllib import Policy
 
 from .heuristic_agent import HeuristicsAgent
-from ..core.constants import RL_POLICY
+from core.constants import RL_POLICY
 
 
 class RllibAgent(HeuristicsAgent):

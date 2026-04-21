@@ -14,11 +14,11 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.metrics import roc_auc_score, average_precision_score
 from tabulate import tabulate
 
-from src.analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
-from src.analysis.analyze_latent_graphs.build_coupling_matrices import get_ptdf_from_env, compute_node_risk_vector
-from src.grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
-from src.rarl import fully_connected_edge_index
-from src.visualization import visualize_graph, PlottingArgs, get_node_styles
+from analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
+from analysis.analyze_latent_graphs.build_coupling_matrices import get_ptdf_from_env, compute_node_risk_vector
+from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
+from rarl import fully_connected_edge_index
+from visualization import visualize_graph, PlottingArgs, get_node_styles
 
 logger = logging.getLogger(__name__)
 
