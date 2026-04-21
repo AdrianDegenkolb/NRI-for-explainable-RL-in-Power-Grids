@@ -11,7 +11,8 @@ AnnealingCallback  – RLlib callback that anneals beta and tau.
 """
 
 from .model import RARLModel, RASACTorchModel
-from .policy import RAPPOTorchPolicy, RASACTorchPolicy
+from .policies.rasac import RASACTorchPolicy
+from .policies.rappo import RAPPOTorchPolicy
 from .callback import AnnealingCallback, CustomMetricsCallback, TuneCallback
 
 __all__ = [

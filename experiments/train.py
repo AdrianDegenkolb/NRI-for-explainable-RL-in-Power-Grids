@@ -46,7 +46,7 @@ from src.core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
 from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from src.grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from src.grid2op_env import policy_mapping_fn
-from src.rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
+from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
 from src.core.train import run_training
 
 logger = logging.getLogger(__name__)

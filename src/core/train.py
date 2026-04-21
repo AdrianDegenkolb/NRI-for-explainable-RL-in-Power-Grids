@@ -29,7 +29,8 @@ from src.algorithms.custom_sac import CustomSAC
 from src.algorithms.optuna_search import MyOptunaSearch
 from src.core.constants import RL_POLICY, Style
 from src.core.evaluate import evaluate_rllib_checkpoint
-from src.rarl_rllib import RARLModel, RAPPOTorchPolicy, RASACTorchPolicy
+from src.rarl_rllib import RARLModel
+from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
 from src.rarl_rllib.callback import TuneCallback
 from src.rarl_rllib.model import GNNBaselineModel
 
@@ -346,18 +347,18 @@ def trial_str_creator(trial: Trial, job_id=""):
         custom_id = "{}_{}".format(job_id, base_id)
     else:
         custom_id = base_id
-    logger.info('Creating trial with ID: ', custom_id)
+    logger.info(f'Creating trial with ID: {custom_id}')
     return "{}_{}".format(trial.trainable_name, custom_id)
 
 
 def trial_dir_name(trial: Trial):
-    logger.info("Trial name is: ", trial.custom_trial_name)
+    logger.info(f"Trial name is: {trial.custom_trial_name}")
     return "{}_{}".format(trial.custom_trial_name, datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
 def print_details(rllib_cfg: Dict[str, Any]) -> None:
-    logger.info("Using reward function:   ", rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__)
-    logger.info("Using action space:      ", rllib_cfg["env_config"]["action_space"])
-    logger.info("Using observation space: ", rllib_cfg["env_config"]["observation_space"])
+    logger.info(f'Using reward function:   {rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__}')
+    logger.info(f'Using action space:      {rllib_cfg["env_config"]["action_space"]}')
+    logger.info(f'Using observation space: {rllib_cfg["env_config"]["observation_space"]}')
 
 
 def _setup_ray(exp):

@@ -20,6 +20,8 @@ from gymnasium import spaces
 from gymnasium.spaces import Box, Discrete, Dict
 from ray.rllib.algorithms.sac.sac_torch_model import SACTorchModel
 from ray.rllib.models import ModelCatalog
+from ray.rllib.policy.sample_batch import SampleBatch
+from ray.rllib.policy.view_requirement import ViewRequirement
 from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
@@ -237,8 +239,12 @@ class RASACTorchModel(SACTorchModel):
             initial_alpha=initial_alpha,
             target_entropy=target_entropy,
         )
-        # Restore the real obs space so RLlib internals see the correct space.
+        # Restore the real obs space and view requirement.
+        # super().__init__ stored embedding_space in both self.obs_space and
+        # self.view_requirements[OBS], which would cause the policy to build
+        # dummy batches with flat [B, gnn_out_dim] tensors instead of graph dicts.
         self.obs_space = obs_space
+        self.view_requirements[SampleBatch.OBS] = ViewRequirement(shift=0, space=obs_space)
 
         x_dim = assert_graph_obs_space_and_get_x_dim(obs_space)
         self.ragnn = RAFeatureExtractor(
@@ -305,8 +311,17 @@ class RASACTorchModel(SACTorchModel):
         """Update the Gumbel-Softmax temperature in the encoder."""
         self.ragnn.set_tau(tau)
 
-    # get_action_model_outputs, get_q_values, get_twin_q_values are all inherited
-    # from SACTorchModel and operate on the embedding returned by forward().
+    def policy_variables(self):
+        """Return actor-head-only parameters for the actor optimizer.
+
+        The encoder (ragnn) is intentionally excluded here; it is updated by
+        a dedicated encoder optimizer via encoder_variables().
+        """
+        return list(self.action_model.parameters())
+
+    def encoder_variables(self):
+        """Return encoder parameters for the dedicated encoder optimizer."""
+        return list(self.ragnn.parameters())
 
 
 class GNNBaselineModel(TorchModelV2, nn.Module):

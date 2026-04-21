@@ -103,7 +103,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         self._observation_space = Dict({
             NODES: Box(low=-np.inf, high=np.inf, shape=(self._num_nodes, x_dim), dtype=np.float32),
-            EDGE_INDEX: Box(low=0, high=self._num_nodes, shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_INDEX: Box(low=0, high=self._num_nodes - 1, shape=(2, self._max_num_edges), dtype=np.int64),
             EDGE_MASK: Box(low=0, high=1, shape=(self._max_num_edges,), dtype=np.bool_),
             GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
         })

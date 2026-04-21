@@ -39,7 +39,6 @@ from ray.rllib.algorithms.algorithm import Algorithm
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.evaluation.episode_v2 import EpisodeV2
 from ray.tune.experiment import Trial
-# from grid2op.Environment import BaseEnv
 from ray.tune.experimental.output import (
     TuneReporterBase,
     get_air_verbosity,
@@ -327,21 +326,27 @@ class CustomMetricsCallback(DefaultCallbacks):
         result["custom_metrics"]["mean_disconnect_count"] = np.mean(result["custom_metrics"]["disconnect_count"])
         result["custom_metrics"]["mean_reset_count"] = np.mean(result["custom_metrics"]["reset_count"])
 
-        latent_edge_probs = result['info']["learner"]["reinforcement_learning_policy"]["learner_stats"].get("relation_awareness/latent_graph_probs_mean", None)
-        if latent_edge_probs is not None:
+        learner_stats = (result.get("info", {})
+                         .get("learner", {})
+                         .get(RL_POLICY, {})
+                         .get("learner_stats", {}))
+        posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
+        if posterior_mean is not None:
             result["relation_awareness/latent_graph_mean"] = fig_to_chw_uint8(
                 visualize_graph(PlottingArgs(
                     num_nodes=57,
                     node_styles=self.node_styles,
-                    latent_edge_probs=np.array(latent_edge_probs),
-                powerline_edge_index=self.powerline_edge_index,
+                    latent_edge_probs=np.array(posterior_mean),
+                    powerline_edge_index=self.powerline_edge_index,
             )))
 
+        posterior_var = learner_stats.get("relation_awareness/posterior_var")
+        if posterior_var is not None:
             result["relation_awareness/latent_graph_var"] = fig_to_chw_uint8(
                 visualize_graph(PlottingArgs(
                     num_nodes=57,
                     node_styles=self.node_styles,
-                    latent_edge_probs=np.array(latent_edge_probs),
+                    latent_edge_probs=np.array(posterior_var),
                     powerline_edge_index=self.powerline_edge_index,
             )))
 
