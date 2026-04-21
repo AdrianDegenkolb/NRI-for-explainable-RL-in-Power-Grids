@@ -10,15 +10,18 @@ RASACTorchPolicy   – SACTorchPolicy equivalent built with RAGNN KL regularizat
 AnnealingCallback  – RLlib callback that anneals beta and tau.
 """
 
-from .model import RARLModel, RASACTorchModel
+from .model import RAActorCriticModel, RASACTorchModel, RADQNTorchModel
 from .policies.rasac import RASACTorchPolicy
 from .policies.rappo import RAPPOTorchPolicy
+from .policies.radqn import RADQNTorchPolicy
 from .callback import AnnealingCallback, CustomMetricsCallback, TuneCallback
 
 __all__ = [
-    "RARLModel",
+    "RAActorCriticModel",
     "RASACTorchModel",
+    "RADQNTorchModel",
     "RAPPOTorchPolicy",
     "RASACTorchPolicy",
+    "RADQNTorchPolicy",
     "AnnealingCallback",
 ]

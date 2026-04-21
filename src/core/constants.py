@@ -19,6 +19,9 @@ HIGH_LEVEL_AGENT = "high_level_agent"
 DO_NOTHING_POLICY = "do_nothing_policy"
 RL_POLICY = "reinforcement_learning_policy"
 HIGH_LEVEL_POLICY = "high_level_policy"
+RAPPO_POLICY = "rappo_torch_policy"
+RASAC_POLICY = "rasac_torch_policy"
+RADQN_POLICY = "radqn_torch_policy"
 
 class Style:
     PURPLE = '\033[95m'

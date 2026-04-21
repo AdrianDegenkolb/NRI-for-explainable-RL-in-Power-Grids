@@ -14,7 +14,6 @@ import grid2op
 import ray
 from omegaconf import DictConfig, OmegaConf
 from ray import air, tune
-from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.registry import POLICIES
 from ray.rllib.models import ModelCatalog
 from ray.tune.experiment import Trial
@@ -23,14 +22,18 @@ from ray.tune.schedulers import ASHAScheduler
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
+from core.constants import DO_NOTHING_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY
 from experiments.utils import delete_nested_key
 from src.algorithms.custom_ppo import CustomPPO
 from src.algorithms.custom_sac import CustomSAC
+from src.algorithms.custom_dqn import CustomDQN
 from src.algorithms.optuna_search import MyOptunaSearch
 from src.core.constants import RL_POLICY, Style
 from src.core.evaluate import evaluate_rllib_checkpoint
-from src.rarl_rllib import RARLModel
-from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
+from src.rarl_rllib import RAActorCriticModel
+from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy, RADQNTorchPolicy
+from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
+from src.grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from src.rarl_rllib.callback import TuneCallback
 from src.rarl_rllib.model import GNNBaselineModel
 
@@ -38,14 +41,19 @@ from src.rarl_rllib.model import GNNBaselineModel
 logger = logging.getLogger(__name__)
 
 # register custom components
-POLICIES["rappo_torch_policy"] = RAPPOTorchPolicy
-POLICIES["rasac_torch_policy"] = RASACTorchPolicy
+POLICIES[RAPPO_POLICY] = RAPPOTorchPolicy
+POLICIES[RASAC_POLICY] = RASACTorchPolicy
+POLICIES[RADQN_POLICY] = RADQNTorchPolicy
+POLICIES[DO_NOTHING_POLICY] = DoNothingPolicy
+POLICIES[HIGH_LEVEL_POLICY] = SelectAgentPolicy
+
 ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("ragnn_model", RARLModel)
+ModelCatalog.register_custom_model("ragnn_model", RAActorCriticModel)
 
 _TRAINABLE_MAP = {
     "ppo": CustomPPO,
     "sac": CustomSAC,
+    "dqn": CustomDQN,
 }
 
 
@@ -222,20 +230,24 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
     for i, result in enumerate(result_grid):
         if not result.error:
             checkpoints_to_json = {
-                os.path.basename(checkpoint.path): metrics['evaluation']['custom_metrics']
+                os.path.basename(checkpoint.path): metrics.get('evaluation', {}).get('custom_metrics', {})
                 for checkpoint, metrics in result.best_checkpoints
             }
             with open(os.path.join(result.path, "checkpoint_results.json"), "w") as f:
                 json.dump(checkpoints_to_json, f)
             try:
-                print(
-                    Style.BOLD + f" *---- Trial {i} finished successfully ---*\n" + Style.END +
-                    tabulate(
-                        [[k] + list(v.values()) for k, v in checkpoints_to_json.items()],
-                        headers=['checkpoint'] + list(result.metrics['evaluation']['custom_metrics'].keys()),
-                        tablefmt='rounded_grid',
+                eval_metrics = result.metrics.get('evaluation', {}).get('custom_metrics', {})
+                if eval_metrics:
+                    print(
+                        Style.BOLD + f" *---- Trial {i} finished successfully ---*\n" + Style.END +
+                        tabulate(
+                            [[k] + list(v.values()) for k, v in checkpoints_to_json.items() if v],
+                            headers=['checkpoint'] + list(eval_metrics.keys()),
+                            tablefmt='rounded_grid',
+                        )
                     )
-                )
+                else:
+                    print(Style.BOLD + f" *---- Trial {i} finished successfully (no evaluation metrics) ---*" + Style.END)
             except Exception as e:
                 print("Could not print checkpoint results table: ", e)
         else:

@@ -24,7 +24,7 @@ from torch import Tensor
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl import compute_ra_kl_loss, fully_connected_edge_index, get_prior_tensor
 from rarl.prior import get_priors
-from rarl_rllib import RARLModel
+from rarl_rllib import RAActorCriticModel
 
 
 def init_ra_config(policy, config: dict) -> None:
@@ -48,7 +48,7 @@ def init_ra_config(policy, config: dict) -> None:
 
 def apply_ra_kl_loss(
     policy,
-    model: RARLModel,
+    model: RAActorCriticModel,
     train_batch: SampleBatch,
     base_loss: TensorType,
 ) -> TensorType:
@@ -108,7 +108,7 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
 
 
 def store_ra_tower_stats(
-    model: RARLModel,
+    model: RAActorCriticModel,
     kl_loss: Tensor,
     kl_stats: dict,
     prior_tensor: Tensor,

@@ -3,7 +3,8 @@ Trains an RL agent using Hydra for config composition.
 
 Algorithm is selected via the training config group:
   training=ppo   (default) — CustomPPO, on-policy
-  training=sac             — CustomSAC, off-policy; requires model=mlp
+  training=sac             — CustomSAC, off-policy
+  training=dqn             — CustomDQN, off-policy, discrete actions
 
 Usage examples
 --------------
@@ -34,13 +35,16 @@ import grid2op
 import hydra
 from hydra.utils import get_class
 from omegaconf import DictConfig, OmegaConf
-from ray.rllib.algorithms import ppo, sac
+from ray.rllib.algorithms import ppo, sac, dqn
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
+from ray.rllib.algorithms.dqn import DQNTorchPolicy as _DQNTorchPolicyBase
+from rarl_rllib.policies.dqn_postprocessing import postprocess_nstep_and_prio as _dict_obs_postprocess
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
+from rarl_rllib import RADQNTorchPolicy
 from src.grid2op_env.env import CustomizedGrid2OpEnvironment
 from src.core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
 from src.grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
@@ -51,9 +55,17 @@ from src.core.train import run_training
 
 logger = logging.getLogger(__name__)
 
+
+class DQNTorchPolicy(_DQNTorchPolicyBase):
+    """DQNTorchPolicy with dict-observation-aware n-step postprocessing."""
+
+    def postprocess_trajectory(self, sample_batch, other_agent_batches=None, episode=None):
+        return _dict_obs_postprocess(self, sample_batch, other_agent_batches, episode)
+
 _ALGORITHM_CONFIG_CLS = {
     "ppo": ppo.PPOConfig,
     "sac": sac.SACConfig,
+    "dqn": dqn.DQNConfig,
 }
 
 
@@ -149,6 +161,8 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
             policy_class = RAPPOTorchPolicy
         elif algorithm == "sac":
             policy_class = RASACTorchPolicy
+        elif algorithm == "dqn":
+            policy_class = RADQNTorchPolicy
         else:
             raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'ragnn_model'")
 
@@ -156,9 +170,11 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
         logger.info(f"Using custom GNN model with {algorithm.upper()}")
         model_override = {"model": {"custom_model": "gnn_model"}}
         if algorithm == "ppo":
-            policy_class = RAPPOTorchPolicy
+            policy_class = PPOTorchPolicy
         elif algorithm == "sac":
-            policy_class = RASACTorchPolicy
+            policy_class = SACTorchPolicy
+        elif algorithm == "dqn":
+            policy_class = DQNTorchPolicy
         else:
             raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'gnn_model'")
 
@@ -169,6 +185,8 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
             policy_class = PPOTorchPolicy
         elif algorithm == "sac":
             policy_class = SACTorchPolicy
+        elif algorithm == "dqn":
+            policy_class = DQNTorchPolicy
         else:
             raise ValueError(f"Unsupported algorithm '{algorithm}'")
 
@@ -298,4 +316,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    logging.getLogger("pandapower").setLevel(logging.WARNING)
     main()
