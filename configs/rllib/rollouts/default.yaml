@@ -1,5 +1,6 @@
-num_rollout_workers: 1
-num_learner_workers: 1
+num_rollout_workers: 100
+num_learner_workers: 8
+
 count_steps_by: agent_steps
 keep_per_episode_custom_metrics: true
 framework: torch
