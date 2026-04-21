@@ -15,10 +15,11 @@ sbatch << EOF
 #SBATCH --output=results/experiments/${experiment_name}/out/sac_gnn_s${seed}.%j.log
 #SBATCH --error=results/experiments/${experiment_name}/out/error_sac_gnn_s${seed}.%j.log
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=111
+#SBATCH --cpus-per-task=64
 #SBATCH --time=20:00:00
 #SBATCH --mem=200G
-#SBATCH --partition=cpu,cpu_il
+#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300
+#SBATCH --gres=gpu:4
 
 module load devel/miniforge
 conda activate L2RPN
