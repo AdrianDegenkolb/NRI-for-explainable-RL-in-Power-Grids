@@ -9,9 +9,19 @@ dict observation spaces.
 """
 
 import numpy as np
+import ray
 from ray.rllib import SampleBatch
+from ray.rllib.algorithms.dqn.dqn_torch_policy import (
+    build_q_model_and_distribution, build_q_losses, build_q_stats,
+    ComputeTDErrorMixin, get_distribution_inputs_and_class,
+    grad_process_and_td_error_fn, extra_action_out_fn, setup_early_mixins,
+    before_loss_init, adam_optimizer,
+)
 from ray.rllib.evaluation.postprocessing import adjust_nstep as _adjust_nstep_orig
+from ray.rllib.policy import build_policy_class
 from ray.rllib.policy.policy import Policy
+from ray.rllib.policy.torch_mixins import TargetNetworkMixin, LearningRateSchedule
+from ray.rllib.utils.torch_utils import concat_multi_gpu_td_errors
 from ray.rllib.algorithms.dqn.dqn_tf_policy import PRIO_WEIGHTS
 
 
@@ -84,3 +94,26 @@ def postprocess_nstep_and_prio(
         batch[PRIO_WEIGHTS] = np.ones_like(batch[SampleBatch.REWARDS])
 
     return batch
+
+
+DictObsDQNTorchPolicy = build_policy_class(
+    name="DictObsDQNTorchPolicy",
+    framework="torch",
+    loss_fn=build_q_losses,
+    get_default_config=lambda: ray.rllib.algorithms.dqn.dqn.DQNConfig(),
+    make_model_and_action_dist=build_q_model_and_distribution,
+    postprocess_fn=postprocess_nstep_and_prio,
+    stats_fn=build_q_stats,
+    action_distribution_fn=get_distribution_inputs_and_class,
+    optimizer_fn=adam_optimizer,
+    extra_grad_process_fn=grad_process_and_td_error_fn,
+    extra_learn_fetches_fn=concat_multi_gpu_td_errors,
+    extra_action_out_fn=extra_action_out_fn,
+    before_init=setup_early_mixins,
+    before_loss_init=before_loss_init,
+    mixins=[
+        TargetNetworkMixin,
+        ComputeTDErrorMixin,
+        LearningRateSchedule,
+    ],
+)

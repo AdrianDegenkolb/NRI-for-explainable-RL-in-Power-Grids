@@ -35,7 +35,7 @@ from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy, RADQNTorchPolicy
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from rarl_rllib.callback import TuneCallback
-from rarl_rllib.model import GNNBaselineModel
+from rarl_rllib.model import GNNBaselineModel, RASACTorchModel, RADQNTorchModel, GNNBaselineDQNModel
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -47,8 +47,11 @@ POLICIES[RADQN_POLICY] = RADQNTorchPolicy
 POLICIES[DO_NOTHING_POLICY] = DoNothingPolicy
 POLICIES[HIGH_LEVEL_POLICY] = SelectAgentPolicy
 
+ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
+ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
+ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
 ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("ragnn_model", RAActorCriticModel)
+ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
 
 _TRAINABLE_MAP = {
     "ppo": CustomPPO,
@@ -314,6 +317,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
                 if post_eval.num_episodes in ("all", None)
                 else int(post_eval.num_episodes)
             )
+            max_episode_length = post_eval.max_episode_length
             print(f"Evaluation environment: {post_eval.env_name}  |  Episodes: {num_episodes}")
             try:
                 evaluate_rllib_checkpoint(
@@ -322,6 +326,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
                     checkpoint_name=checkpoint_name,
                     env_name_override=post_eval.env_name,
                     num_episodes=num_episodes,
+                    max_episode_length=max_episode_length,
                     visualize=post_eval.visualize,
                 )
                 print(f"{Style.BOLD}Evaluation completed successfully!{Style.END}")

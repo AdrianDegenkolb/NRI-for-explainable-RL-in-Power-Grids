@@ -10,6 +10,7 @@ from grid2op.Observation import BaseObservation
 from grid2op.gym_compat import GymEnv
 from ray.rllib import Policy
 
+import rarl_rllib.policies.dqn_postprocessing  # noqa: F401 — register DictObsDQNTorchPolicy for checkpoint deserialization
 from .heuristic_agent import HeuristicsAgent
 from core.constants import RL_POLICY
 

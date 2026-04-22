@@ -57,7 +57,7 @@ def make_g2op_env(env_config: dict[str, Any]) -> BaseEnv:
     env.chronics_handler.set_chunk_size(100)
 
     if "seed" in env_config:
-        env.seed(env_config["seed"])
+        env.seed(int(env_config["seed"]))
 
     # *** RENAME THE ENVIRONMENT *** excl _train / _val etc
     # such that it can gather the action space and normalization/scaling parameters

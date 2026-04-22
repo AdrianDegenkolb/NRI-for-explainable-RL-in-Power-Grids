@@ -28,6 +28,7 @@ def evaluate_rllib_checkpoint(
         checkpoint_name: str = "checkpoint_000000",
         env_name_override: str = None,
         num_episodes: int = 50,
+        max_episode_length: Optional[int] = None,
         visualize: bool = True,
         save_to_path: Optional[Path] = None
 ):
@@ -40,6 +41,7 @@ def evaluate_rllib_checkpoint(
     :param env_name_override: Override environment name for evaluation (default: None, uses params.json)
     :param num_episodes: Number of evaluation episodes (default: 50)
     :param visualize: Whether to show visualization after evaluation (default: True)
+    :param max_episode_length: the maximum length up to which episodes are played
     :param save_to_path: Optional path to save results (default: None, saves in checkpoint directory)
     :return: Path to results directory
     """
@@ -73,6 +75,7 @@ def evaluate_rllib_checkpoint(
         env=g2op_env,
         path_results=results_path,
         num_episodes=num_episodes,
+        max_episode_length=max_episode_length,
         verbose=True
     )
 

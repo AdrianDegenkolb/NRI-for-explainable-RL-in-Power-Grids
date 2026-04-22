@@ -38,13 +38,13 @@ from omegaconf import DictConfig, OmegaConf
 from ray.rllib.algorithms import ppo, sac, dqn
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
-from ray.rllib.algorithms.dqn import DQNTorchPolicy as _DQNTorchPolicyBase
-from rarl_rllib.policies.dqn_postprocessing import postprocess_nstep_and_prio as _dict_obs_postprocess
+from rarl_rllib.policies.dqn_postprocessing import DictObsDQNTorchPolicy
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
 from rarl_rllib import RADQNTorchPolicy
+from rarl_rllib.policies.gnn_dqn import GNNBaselineDQNPolicy
 from grid2op_env.env import CustomizedGrid2OpEnvironment
 from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
@@ -55,12 +55,6 @@ from core.train import run_training
 
 logger = logging.getLogger(__name__)
 
-
-class DQNTorchPolicy(_DQNTorchPolicyBase):
-    """DQNTorchPolicy with dict-observation-aware n-step postprocessing."""
-
-    def postprocess_trajectory(self, sample_batch, other_agent_batches=None, episode=None):
-        return _dict_obs_postprocess(self, sample_batch, other_agent_batches, episode)
 
 _ALGORITHM_CONFIG_CLS = {
     "ppo": ppo.PPOConfig,
@@ -174,7 +168,7 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
         elif algorithm == "sac":
             policy_class = SACTorchPolicy
         elif algorithm == "dqn":
-            policy_class = DQNTorchPolicy
+            policy_class = GNNBaselineDQNPolicy
         else:
             raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'gnn_model'")
 
@@ -186,7 +180,7 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
         elif algorithm == "sac":
             policy_class = SACTorchPolicy
         elif algorithm == "dqn":
-            policy_class = DQNTorchPolicy
+            policy_class = DictObsDQNTorchPolicy
         else:
             raise ValueError(f"Unsupported algorithm '{algorithm}'")
 
