@@ -18,7 +18,7 @@ from ray.rllib.models import ModelV2
 from ray.rllib.utils import override
 from ray.rllib.utils.typing import TensorType
 
-from rarl_rllib.policies.common import init_ra_config, apply_ra_kl_loss, build_ra_stats_dict
+from rarl_rllib.common import init_ra_config, apply_ra_kl_loss, build_ra_stats_dict
 
 
 class RAPPOTorchPolicy(PPOTorchPolicy):

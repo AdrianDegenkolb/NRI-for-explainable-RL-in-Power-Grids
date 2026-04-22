@@ -118,8 +118,7 @@ class AnnealingCallback(DefaultCallbacks):
         tau = self._state.tau
 
         def _update(worker):
-            p = worker.policy_map.get("default_policy") or \
-                worker.policy_map.get(RL_POLICY)
+            p = worker.policy_map.get("default_policy") or worker.policy_map.get(RL_POLICY)
             if p is None or not hasattr(p, "current_beta"):
                 return
             p.current_beta_graph = beta

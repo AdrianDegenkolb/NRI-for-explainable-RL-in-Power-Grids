@@ -17,8 +17,9 @@ from ray.rllib.algorithms.dqn.dqn_torch_policy import (
 from ray.rllib.policy.torch_mixins import TargetNetworkMixin, LearningRateSchedule
 from ray.rllib.utils.torch_utils import concat_multi_gpu_td_errors
 
-from rarl_rllib.model import GNNBaselineDQNModel
-from rarl_rllib.policies.dqn_postprocessing import postprocess_nstep_and_prio
+from core.constants import DQN_GNN_POLICY
+from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
+from rarl_rllib.dqn.mlp_dqn_policy import postprocess_nstep_and_prio
 
 
 def _build_gnn_dqn_model_and_action_dist(policy, obs_space, action_space, config):
@@ -50,7 +51,7 @@ def _build_gnn_dqn_model_and_action_dist(policy, obs_space, action_space, config
 
 
 GNNBaselineDQNPolicy = build_policy_class(
-    name="GNNBaselineDQNPolicy",
+    name=DQN_GNN_POLICY,
     framework="torch",
     loss_fn=build_q_losses,
     get_default_config=lambda: ray.rllib.algorithms.dqn.dqn.DQNConfig(),

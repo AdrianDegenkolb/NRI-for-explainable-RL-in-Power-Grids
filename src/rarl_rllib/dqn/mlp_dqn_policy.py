@@ -24,6 +24,8 @@ from ray.rllib.policy.torch_mixins import TargetNetworkMixin, LearningRateSchedu
 from ray.rllib.utils.torch_utils import concat_multi_gpu_td_errors
 from ray.rllib.algorithms.dqn.dqn_tf_policy import PRIO_WEIGHTS
 
+from core.constants import DQN_MLP_POLICY
+
 
 def _slice_obs_dict(obs_dict: dict, slc: slice) -> dict:
     """Apply a slice to every array in an observation dict."""
@@ -97,7 +99,7 @@ def postprocess_nstep_and_prio(
 
 
 DictObsDQNTorchPolicy = build_policy_class(
-    name="DictObsDQNTorchPolicy",
+    name=DQN_MLP_POLICY,
     framework="torch",
     loss_fn=build_q_losses,
     get_default_config=lambda: ray.rllib.algorithms.dqn.dqn.DQNConfig(),

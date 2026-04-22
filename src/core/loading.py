@@ -7,6 +7,8 @@ import logging
 import os
 from pathlib import Path
 
+from ray.rllib.models import ModelCatalog
+
 from agents import RllibAgent
 from grid2op_env import CustomizedGrid2OpEnvironment
 
@@ -98,6 +100,18 @@ def load_rllib_agent(
 
     # Get the underlying Grid2Op environment for evaluation
     g2op_env = gym_wrapper.env_gym.init_env
+
+    # Re-register custom models (ray.shutdown() clears the ModelCatalog registry)
+    from rarl_rllib import RAActorCriticModel, RASACTorchModel, RADQNTorchModel
+    from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
+    from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
+    from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
+    ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
+    ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
+    ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
+    ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
+    ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
+    ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
 
     # Load the RLlib agent
     agent = RllibAgent(

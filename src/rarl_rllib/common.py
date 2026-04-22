@@ -17,6 +17,7 @@ RASACTorchPolicy rely on:
 from typing import Dict, Tuple, List
 
 import torch
+from gymnasium import spaces
 from ray.rllib import SampleBatch
 from ray.rllib.utils.typing import TensorType
 from torch import Tensor
@@ -24,7 +25,7 @@ from torch import Tensor
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl import compute_ra_kl_loss, fully_connected_edge_index, get_prior_tensor
 from rarl.prior import get_priors
-from rarl_rllib import RAActorCriticModel
+from rarl_rllib.model import RARLModel
 
 
 def init_ra_config(policy, config: dict) -> None:
@@ -48,7 +49,7 @@ def init_ra_config(policy, config: dict) -> None:
 
 def apply_ra_kl_loss(
     policy,
-    model: RAActorCriticModel,
+    model: RARLModel,
     train_batch: SampleBatch,
     base_loss: TensorType,
 ) -> TensorType:
@@ -108,7 +109,7 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
 
 
 def store_ra_tower_stats(
-    model: RAActorCriticModel,
+    model: RARLModel,
     kl_loss: Tensor,
     kl_stats: dict,
     prior_tensor: Tensor,
@@ -198,3 +199,19 @@ def _tower_stack_mean(towers: list, key: str, dim: int = 0) -> Tensor:
 def _tower_cat_stat(towers: list, key: str, dim: int = 0) -> Tensor:
     """Concatenate a tensor tower stat across towers along *dim*."""
     return torch.cat([t.tower_stats[key].detach() for t in towers], dim=dim)
+
+
+def assert_graph_obs_space_and_get_x_dim(obs_space: spaces.Dict) -> int:
+    """
+    Checks that the given dict space is a graph obs space and returns the node feature dimension.
+    :param obs_space: the observation space to check,
+    :return: the node feature dimension (x_dim) if the checks pass
+    :raise AssertionError: if the obs_space does not contain node features, edge index and edge mask subspaces
+    """
+
+    assert NODES in obs_space.spaces, f"obs_space must contain '{NODES}' key for node features"
+    assert EDGE_INDEX in obs_space.spaces, f"obs_space must contain '{EDGE_INDEX}' key for edge indices"
+    assert EDGE_MASK in obs_space.spaces, f"obs_space must contain '{EDGE_MASK}' key for edge masks"
+
+    _, x_dim = obs_space[NODES].shape
+    return x_dim

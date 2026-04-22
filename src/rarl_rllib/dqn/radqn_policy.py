@@ -9,24 +9,24 @@ from typing import Dict
 
 import ray
 from ray.rllib import SampleBatch
-from ray.rllib.algorithms.dqn.dqn_torch_policy import build_q_stats
 from ray.rllib.algorithms.dqn.dqn_torch_model import DQNTorchModel
-from ray.rllib.models.torch.torch_action_dist import get_torch_categorical_class_with_temperature
-from ray.rllib.policy import build_policy_class
 from ray.rllib.algorithms.dqn.dqn_torch_policy import ComputeTDErrorMixin, build_q_losses, \
     get_distribution_inputs_and_class, grad_process_and_td_error_fn, extra_action_out_fn, setup_early_mixins, \
     before_loss_init, adam_optimizer
+from ray.rllib.algorithms.dqn.dqn_torch_policy import build_q_stats
+from ray.rllib.models.torch.torch_action_dist import get_torch_categorical_class_with_temperature
+from ray.rllib.policy import build_policy_class
 from ray.rllib.policy.torch_mixins import TargetNetworkMixin, LearningRateSchedule
 from ray.rllib.utils.torch_utils import concat_multi_gpu_td_errors
-from torch import Tensor
 from ray.rllib.utils.typing import TensorType
+from torch import Tensor
 
+from core.constants import RADQN_POLICY
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK
 from rarl import compute_ra_kl_loss
-from rarl_rllib import RADQNTorchModel
-from rarl_rllib.policies.common import build_prior_and_graph_masks, store_ra_tower_stats, build_ra_stats_dict, \
-    init_ra_config
-from rarl_rllib.policies.dqn_postprocessing import postprocess_nstep_and_prio
+from rarl_rllib.common import build_prior_and_graph_masks, store_ra_tower_stats, build_ra_stats_dict, init_ra_config
+from .mlp_dqn_policy import postprocess_nstep_and_prio
+from .radqn_model import RADQNTorchModel
 
 
 def _ra_build_q_losses(policy, model, dist_class, train_batch):
@@ -93,7 +93,7 @@ def _build_ra_dqn_model_and_action_dist(policy, obs_space, action_space, config)
 
 
 RADQNTorchPolicy = build_policy_class(
-    name="RADQNTorchPolicy",
+    name=RADQN_POLICY,
     framework="torch",
     loss_fn=_ra_build_q_losses,
     get_default_config=lambda: ray.rllib.algorithms.dqn.dqn.DQNConfig(),

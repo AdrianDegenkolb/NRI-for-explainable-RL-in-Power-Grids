@@ -41,16 +41,19 @@ from ray.rllib.algorithms.callbacks import make_multi_callbacks
 from ray.rllib.algorithms.registry import POLICIES
 from ray.rllib.models import ModelCatalog
 
-from rarl_rllib.model import GNNBaselineModel, GNNBaselineDQNModel, GNNBaselineSACModel
-from rarl_rllib.policies.dqn_postprocessing import DictObsDQNTorchPolicy
+from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
+from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
+from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
+from rarl_rllib.dqn.mlp_dqn_policy import DictObsDQNTorchPolicy
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
 from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
-from rarl_rllib.policies.gnn_dqn import GNNBaselineDQNPolicy
+from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
 from grid2op_env.env import CustomizedGrid2OpEnvironment
-from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY
+from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
+    DQN_GNN_POLICY, DQN_MLP_POLICY
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from grid2op_env import policy_mapping_fn
@@ -66,6 +69,8 @@ ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
 ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
 ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
 
+POLICIES[DQN_GNN_POLICY] = GNNBaselineDQNPolicy
+POLICIES[DQN_MLP_POLICY] = DictObsDQNTorchPolicy
 POLICIES[RAPPO_POLICY] = RAPPOTorchPolicy
 POLICIES[RASAC_POLICY] = RASACTorchPolicy
 POLICIES[RADQN_POLICY] = RADQNTorchPolicy
@@ -163,6 +168,7 @@ def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
 def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     """Build the multi-agent policies dict."""
     custom_model = cfg.model.custom_model
+    model_override = {}
 
     if custom_model == "ragnn_model" and algorithm == "ppo":
         policy_class = RAPPOTorchPolicy
@@ -195,8 +201,8 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     else:
         raise ValueError(f"Unsupported algorithm-model combination '{algorithm}'+'{custom_model}")
 
-    logger.info(f"Using model {model_override['model']['custom_model']} with {algorithm.upper()}")
-
+    logger.info(f"Using algorithm {policy_class}")
+    logger.info(f"Using model {model_override.get('model', {}).get('custom_model', {}) or 'default model'}")
 
     return {
         HIGH_LEVEL_POLICY: PolicySpec(

@@ -27,10 +27,11 @@ from ray.rllib.utils.torch_utils import apply_grad_clipping, concat_multi_gpu_td
 from ray.rllib.utils.typing import TensorType
 from torch import Tensor
 
+from core.constants import RASAC_POLICY
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK
 from rarl import compute_ra_kl_loss
-from rarl_rllib import RASACTorchModel
-from rarl_rllib.policies.common import build_prior_and_graph_masks, store_ra_tower_stats, build_ra_stats_dict, \
+from rarl_rllib.sac.rasac_model import RASACTorchModel
+from rarl_rllib.common import build_prior_and_graph_masks, store_ra_tower_stats, build_ra_stats_dict, \
     init_ra_config
 
 
@@ -132,7 +133,7 @@ def _build_ra_sac_model_and_action_dist(policy, obs_space, action_space, config)
 
 
 RASACTorchPolicy = build_policy_class(
-    name="RASACTorchPolicy",
+    name=RASAC_POLICY,
     framework="torch",
     loss_fn=_ra_sac_actor_critic_loss,
     get_default_config=lambda: ray.rllib.algorithms.sac.sac.SACConfig(),

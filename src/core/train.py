@@ -14,28 +14,20 @@ import grid2op
 import ray
 from omegaconf import DictConfig, OmegaConf
 from ray import air, tune
-from ray.rllib.algorithms.registry import POLICIES
-from ray.rllib.models import ModelCatalog
 from ray.tune.experiment import Trial
 from ray.tune.result_grid import ResultGrid
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
-from core.constants import DO_NOTHING_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY
-from core.utils import delete_nested_key
+from algorithms.custom_dqn import CustomDQN
 from algorithms.custom_ppo import CustomPPO
 from algorithms.custom_sac import CustomSAC
-from algorithms.custom_dqn import CustomDQN
 from algorithms.optuna_search import MyOptunaSearch
 from core.constants import RL_POLICY, Style
 from core.evaluate import evaluate_rllib_checkpoint
-from rarl_rllib import RAActorCriticModel
-from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy, RADQNTorchPolicy
-from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
-from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
+from core.utils import delete_nested_key
 from rarl_rllib.callback import TuneCallback
-from rarl_rllib.model import GNNBaselineModel, RASACTorchModel, RADQNTorchModel, GNNBaselineDQNModel
 
 # Configure logging
 logger = logging.getLogger(__name__)
