@@ -38,15 +38,19 @@ from omegaconf import DictConfig, OmegaConf
 from ray.rllib.algorithms import ppo, sac, dqn
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
+from ray.rllib.algorithms.registry import POLICIES
+from ray.rllib.models import ModelCatalog
+
+from rarl_rllib.model import GNNBaselineModel, GNNBaselineDQNModel, GNNBaselineSACModel
 from rarl_rllib.policies.dqn_postprocessing import DictObsDQNTorchPolicy
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.policy.policy import PolicySpec
 
-from rarl_rllib import RADQNTorchPolicy
+from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
 from rarl_rllib.policies.gnn_dqn import GNNBaselineDQNPolicy
 from grid2op_env.env import CustomizedGrid2OpEnvironment
-from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY
+from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from grid2op_env import policy_mapping_fn
@@ -55,6 +59,18 @@ from core.train import run_training
 
 logger = logging.getLogger(__name__)
 
+ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
+ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
+ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
+ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
+ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
+ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
+
+POLICIES[RAPPO_POLICY] = RAPPOTorchPolicy
+POLICIES[RASAC_POLICY] = RASACTorchPolicy
+POLICIES[RADQN_POLICY] = RADQNTorchPolicy
+POLICIES[DO_NOTHING_POLICY] = DoNothingPolicy
+POLICIES[HIGH_LEVEL_POLICY] = SelectAgentPolicy
 
 _ALGORITHM_CONFIG_CLS = {
     "ppo": ppo.PPOConfig,
@@ -148,32 +164,25 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     """Build the multi-agent policies dict."""
     custom_model = cfg.model.custom_model
 
-    if custom_model == "ragnn_model":
-        logger.info(f"Using custom RAGNN model with {algorithm.upper()}")
-        model_override = {"model": {"custom_model": "ragnn_model"}}
-        if algorithm == "ppo":
-            policy_class = RAPPOTorchPolicy
-        elif algorithm == "sac":
-            policy_class = RASACTorchPolicy
-        elif algorithm == "dqn":
-            policy_class = RADQNTorchPolicy
-        else:
-            raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'ragnn_model'")
-
-    elif custom_model == "gnn_model":
-        logger.info(f"Using custom GNN model with {algorithm.upper()}")
+    if custom_model == "ragnn_model" and algorithm == "ppo":
+        policy_class = RAPPOTorchPolicy
+        model_override = {"model": {"custom_model": "ra_actor_critic_model"}}
+    elif custom_model == "ragnn_model" and algorithm == "sac":
+        policy_class = RASACTorchPolicy
+        model_override = {"model": {"custom_model": "rasac_model"}}
+    elif custom_model == "ragnn_model" and algorithm == "dqn":
+        policy_class = RADQNTorchPolicy
+        model_override = {"model": {"custom_model": "radqn_model"}}
+    elif custom_model == "gnn_model" and algorithm == "ppo":
+        policy_class = PPOTorchPolicy
         model_override = {"model": {"custom_model": "gnn_model"}}
-        if algorithm == "ppo":
-            policy_class = PPOTorchPolicy
-        elif algorithm == "sac":
-            policy_class = SACTorchPolicy
-        elif algorithm == "dqn":
-            policy_class = GNNBaselineDQNPolicy
-        else:
-            raise ValueError(f"Unsupported algorithm '{algorithm}' for custom_model 'gnn_model'")
-
+    elif custom_model == "gnn_model" and algorithm == "sac":
+        policy_class = SACTorchPolicy
+        model_override = {"model": {"custom_model": "gnn_sac_model"}}
+    elif custom_model == "gnn_model" and algorithm == "dqn":
+        policy_class = GNNBaselineDQNPolicy
+        model_override = {"model": {"custom_model": "gnn_dqn_model"}}
     elif custom_model is None or custom_model == "mlp_model":
-        logger.info(f"Using standard model with {algorithm.upper()}")
         model_override = {}
         if algorithm == "ppo":
             policy_class = PPOTorchPolicy
@@ -182,10 +191,11 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
         elif algorithm == "dqn":
             policy_class = DictObsDQNTorchPolicy
         else:
-            raise ValueError(f"Unsupported algorithm '{algorithm}'")
-
+            raise ValueError(f"Unsupported algorithm-model combination '{algorithm}'+'{custom_model}")
     else:
-        raise ValueError(f"Unsupported custom_model '{custom_model}'. Supported options: 'ragnn_model', 'gnn_model'")
+        raise ValueError(f"Unsupported algorithm-model combination '{algorithm}'+'{custom_model}")
+
+    logger.info(f"Using model {model_override['model']['custom_model']} with {algorithm.upper()}")
 
 
     return {

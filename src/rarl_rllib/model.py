@@ -21,11 +21,10 @@ from gymnasium import spaces
 from gymnasium.spaces import Box, Discrete, Dict
 from ray.rllib.algorithms.dqn.dqn_torch_model import DQNTorchModel
 from ray.rllib.algorithms.sac.sac_torch_model import SACTorchModel
-from ray.rllib.models import ModelCatalog
-from ray.rllib.policy.sample_batch import SampleBatch
-from ray.rllib.policy.view_requirement import ViewRequirement
 from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
+from ray.rllib.policy.sample_batch import SampleBatch
+from ray.rllib.policy.view_requirement import ViewRequirement
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import Tensor, nn
 
@@ -611,6 +610,61 @@ class GNNBaselineDQNModel(DQNTorchModel):
         return embedding, state
 
 
+class GNNBaselineSACModel(SACTorchModel, GNNBaselineModel):
+    """
+    SAC model that uses RAFeatureExtractor (encoder + RAGNN) as the shared
+    backbone for both the actor and Q-networks.
+
+    Architecture
+    ------------
+    Graph obs → RAFeatureExtractor (encoder → RAGNN) → embedding [B, gnn_out_dim]
+    embedding → action_model (inherited) → action distribution params
+    embedding → q_net      (inherited) → Q-values
+
+    The encoder runs once in forward(), returning an embedding that replaces
+    the raw observation for all downstream SAC heads. The posterior p(z|x) is
+    cached and retrieved via get_posterior() for KL loss computation.
+
+    The SAC actor/Q heads (action_model, q_net, twin_q_net) are built by the
+    parent SACTorchModel on the embedding space (Box [gnn_out_dim]), so they
+    receive correctly-sized input from forward().
+
+    Configuration (under custom_model_config)
+    -----------------------------------------
+    Same encoder/gnn/sampling schema as RARLModel.
+    """
+
+    def __init__(
+            self,
+            obs_space: gymnasium.spaces.Dict,
+            action_space,
+            num_outputs: Optional[int],
+            model_config: ModelConfigDict,
+            name: str,
+            policy_model_config: Optional[dict] = None,
+            q_model_config: Optional[dict] = None,
+            twin_q: bool = False,
+            initial_alpha: float = 1.0,
+            target_entropy: Optional[float] = None,
+            **kwargs,
+    ):
+        cfg = kwargs  # encoder, gnn, sampling from custom_model_config
+        gnn_cfg = cfg["gnn"]
+        gnn_out_dim = gnn_cfg["out_dim"]
+
+        # Build SAC actor/Q heads sized for the GNN embedding, not the raw graph obs.
+        embedding_space = Box(-np.inf, np.inf, shape=(gnn_out_dim,), dtype=np.float32)
+        super().__init__(
+            embedding_space, action_space, num_outputs, model_config, name,
+            policy_model_config=policy_model_config,
+            q_model_config=q_model_config,
+            twin_q=twin_q,
+            initial_alpha=initial_alpha,
+            target_entropy=target_entropy,
+        )
+
+
+
 def assert_graph_obs_space_and_get_x_dim(obs_space: spaces.Dict) -> int:
     """
     Checks that the given dict space is a graph obs space and returns the node feature dimension.
@@ -625,10 +679,3 @@ def assert_graph_obs_space_and_get_x_dim(obs_space: spaces.Dict) -> int:
 
     _, x_dim = obs_space[NODES].shape
     return x_dim
-
-
-ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
-ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
-ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
-ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)

@@ -40,19 +40,6 @@ from rarl_rllib.model import GNNBaselineModel, RASACTorchModel, RADQNTorchModel,
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# register custom components
-POLICIES[RAPPO_POLICY] = RAPPOTorchPolicy
-POLICIES[RASAC_POLICY] = RASACTorchPolicy
-POLICIES[RADQN_POLICY] = RADQNTorchPolicy
-POLICIES[DO_NOTHING_POLICY] = DoNothingPolicy
-POLICIES[HIGH_LEVEL_POLICY] = SelectAgentPolicy
-
-ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
-ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
-ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
-ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
-
 _TRAINABLE_MAP = {
     "ppo": CustomPPO,
     "sac": CustomSAC,
