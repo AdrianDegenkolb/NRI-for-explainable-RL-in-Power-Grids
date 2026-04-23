@@ -281,12 +281,18 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
         except RuntimeError as e:
             print(f"\n{Style.BOLD}{Style.RED}ERROR: Could not find best trial — {e}{Style.END}\n")
             return result_grid
+        if best_result.checkpoint is None:
+            print(f"{Style.BOLD}No checkpoint available (training may have been too short to trigger evaluation).{Style.END}")
+            return result_grid
         with best_result.checkpoint.as_directory() as checkpoint_dir:
             print("Best checkpoint: ", checkpoint_dir)
 
     # --- Post-training evaluation ---
     post_eval = exp.post_training_evaluation
     if post_eval.enabled:
+        if best_result.checkpoint is None:
+            print(f"{Style.BOLD}Skipping post-training evaluation: no checkpoint available.{Style.END}")
+            return result_grid
         print(f"\n{Style.BOLD}{'=' * 80}{Style.END}")
         print(f"{Style.BOLD}Evaluating best checkpoint...{Style.END}")
         with best_result.checkpoint.as_directory() as checkpoint_dir:
