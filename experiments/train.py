@@ -272,6 +272,9 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
     rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
+    # Old RLLib API (_enable_learner_api=False) uses num_gpus on the main process.
+    # Set it to the total GPU count so the trainer process can also utilize GPUs.
+    rllib_cfg["num_gpus"] = rollouts.num_gpus_per_learner_worker * rollouts.num_learner_workers
     rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework
