@@ -271,6 +271,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rollouts = cfg.rollouts
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
+    rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
     rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework
