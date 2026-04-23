@@ -3,14 +3,14 @@
 custom_model: ragnn_model
 fcnet_hiddens: [256, 256, 256]
 fcnet_activation: relu
-post_fcnet_hiddens: [256, 128]
+post_fcnet_hiddens: []
 _enable_learner_api: false
 
 encoder:
   max_degree: 8
   max_path_distance: 55
   use_graphormer: true
-  hidden_dim: 256
+  hidden_dim: 64
   num_layers: 2
 
 gnn:

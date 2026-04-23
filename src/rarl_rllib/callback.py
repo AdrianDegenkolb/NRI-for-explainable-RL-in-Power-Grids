@@ -312,18 +312,23 @@ class CustomMetricsCallback(DefaultCallbacks):
             result: dict,
             **kwargs,
     ) -> None:
-        mean_grid2op_end = int(np.mean(result["custom_metrics"]["grid2op_end"]))
-        std_grid2op_end = np.var(result["custom_metrics"]["grid2op_end"])
-        mean_episode_duration = int(np.mean(result["custom_metrics"]["corrected_ep_len"]))
-        result["custom_metrics"]["grid2op_end_mean"] = mean_grid2op_end
-        result["custom_metrics"]["grid2op_end_std"] = std_grid2op_end
-        result["custom_metrics"]["corrected_ep_len_mean"] = mean_episode_duration
-        result["custom_metrics"]["mean_interact_count"] = np.mean(result["custom_metrics"]["interact_count"])
-        result["custom_metrics"]["total_agent_interact"] = np.sum(result["custom_metrics"]["interact_count"])
-        result["custom_metrics"]["mean_active_dn_count"] = np.mean(result["custom_metrics"]["active_dn_count"])
-        result["custom_metrics"]["mean_reconnect_count"] = np.mean(result["custom_metrics"]["reconnect_count"])
-        result["custom_metrics"]["mean_disconnect_count"] = np.mean(result["custom_metrics"]["disconnect_count"])
-        result["custom_metrics"]["mean_reset_count"] = np.mean(result["custom_metrics"]["reset_count"])
+        custom = result.get("custom_metrics", {})
+        if "grid2op_end" in custom:
+            result["custom_metrics"]["grid2op_end_mean"] = int(np.mean(custom["grid2op_end"]))
+            result["custom_metrics"]["grid2op_end_std"] = np.var(custom["grid2op_end"])
+        if "corrected_ep_len" in custom:
+            result["custom_metrics"]["corrected_ep_len_mean"] = int(np.mean(custom["corrected_ep_len"]))
+        if "interact_count" in custom:
+            result["custom_metrics"]["mean_interact_count"] = np.mean(custom["interact_count"])
+            result["custom_metrics"]["total_agent_interact"] = np.sum(custom["interact_count"])
+        if "active_dn_count" in custom:
+            result["custom_metrics"]["mean_active_dn_count"] = np.mean(custom["active_dn_count"])
+        if "reconnect_count" in custom:
+            result["custom_metrics"]["mean_reconnect_count"] = np.mean(custom["reconnect_count"])
+        if "disconnect_count" in custom:
+            result["custom_metrics"]["mean_disconnect_count"] = np.mean(custom["disconnect_count"])
+        if "reset_count" in custom:
+            result["custom_metrics"]["mean_reset_count"] = np.mean(custom["reset_count"])
 
         learner_stats = (result.get("info", {})
                          .get("learner", {})

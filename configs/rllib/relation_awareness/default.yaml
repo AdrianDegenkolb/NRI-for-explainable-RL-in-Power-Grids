@@ -4,16 +4,16 @@ sampling:
   tau: 0.5         # fixed value used when annealing is disabled
 
 prior:
-  prior_prob_for_graph_edge: 0.5   # prior probability that a powerline edge exists
+  prior_prob_for_graph_edge: 0.9   # prior probability that a powerline edge exists
   temperature: 0.5                 # controls how many non-powerline edges the encoder adds
 
 loss:
   beta_graph_edges_start: 0.0
-  beta_graph_edges_end: 4.0
-  beta_graph_edges: 4.0            # KL weight for graph (powerline) edges
+  beta_graph_edges_end: 5.0
+  beta_graph_edges: 5.0            # KL weight for graph (powerline) edges
   beta_non_graph_edges_start: 0.0
-  beta_non_graph_edges_end: 4.0
-  beta_non_graph_edges: 4.0        # KL weight for non-graph edges
+  beta_non_graph_edges_end: 5.0
+  beta_non_graph_edges: 5.0        # KL weight for non-graph edges
 
 latent_space:
   num_edge_types: 2

@@ -2,8 +2,8 @@
 env_name: l2rpn_case14_sandbox
 
 action_space: medha
-mask: 5
-rho_threshold: 0.4
+mask: 3
+rho_threshold: 0.95
 n_history: 1
 danger: 0.9
 prio: false
