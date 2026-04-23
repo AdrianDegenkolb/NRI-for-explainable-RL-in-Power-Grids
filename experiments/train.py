@@ -100,15 +100,10 @@ def _build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         "observation_space": obs.observation_space,
         "g2op_input": list(obs.g2op_input),
         "custom_input": list(obs.custom_input),
-        "mask": env.mask,
         "lib_dir": os.getcwd(),
         "grid2op_kwargs": {"reward_class": reward_instance},
         "seed": cfg.experiment.seed,
         "rho_threshold": env.rho_threshold,
-        "n_history": env.n_history,
-        "danger": env.danger,
-        "prio": env.prio,
-        "use_ffw": env.use_ffw,
         "reset_topo": env.reset_topo,
         "line_reco": env.line_reco,
         "line_disc": env.line_disc,
@@ -258,9 +253,9 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     eval_cfg = cfg.evaluation
     rllib_cfg["evaluation_interval"] = eval_cfg.evaluation_interval
     rllib_cfg["evaluation_duration_unit"] = eval_cfg.evaluation_duration_unit
-    rllib_cfg["always_attach_evaluation_results"] = eval_cfg.always_attach_evaluation_results
+    rllib_cfg["always_attach_evaluation_results"] = True
     rllib_cfg["evaluation_num_workers"] = eval_cfg.evaluation_num_workers
-    rllib_cfg["evaluation_config"] = {"env_config": val_env_config}
+    rllib_cfg["evaluation_config"] = {"env_config": val_env_config, "explore": False}
 
     # Number of eval episodes = number of available chronics for the val env
     val_env_name = val_env_config["env_name"]
