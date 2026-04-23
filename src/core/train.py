@@ -371,4 +371,4 @@ def _setup_ray(exp):
     os.environ["WANDB_SILENT"] = "true"
     ray.init(local_mode=exp.ray_local_mode)
     logger.info(f"Ray initialized in {'local' if exp.ray_local_mode else 'cluster'} mode.")
-    logger.info(f"Ray sees GPUs:{ray.available_resources().get("GPU", 0)}")
+    logger.info(f"Ray sees GPUs:{ray.available_resources().get('GPU', 0)}")
