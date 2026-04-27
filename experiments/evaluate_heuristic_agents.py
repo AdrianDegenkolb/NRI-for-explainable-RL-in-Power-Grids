@@ -7,7 +7,7 @@ from lightsim2grid import LightSimBackend
 from omegaconf import DictConfig
 
 from core.evaluate import evaluate_agent
-from core.constants import EVAL_PATH, SEED
+from core.constants import EVAL_PATH, set_seed
 from grid2op_env.rewards import ScaledL2RPNReward
 
 
@@ -17,15 +17,18 @@ def evaluate(cfg: DictConfig):
 
     :param cfg: the hydra config
     """
+    seed = cfg.experiment.seed
+    set_seed(seed)
     for dataset in ["train", "test", "val"]:
         env = grid2op.make(f"{cfg.env.name}_{dataset}", backend=LightSimBackend(), reward_class=ScaledL2RPNReward)
-        env.seed(SEED)
+        env.seed(seed)
         for agent, name in zip([RecoPowerlineAgent(env.action_space), DoNothingAgent(env.action_space)], ["reco_powerline_agent", "do_nothing_agent"]):
             evaluate_agent(
                 agent=agent,
                 env=env,
                 num_episodes=cfg.rl.eval.final.nb_episodes,
-                path_results=Path(EVAL_PATH, "heuristic_agents", name, dataset)
+                path_results=Path(EVAL_PATH, "heuristic_agents", name, dataset),
+                seed=seed,
             )
 
 

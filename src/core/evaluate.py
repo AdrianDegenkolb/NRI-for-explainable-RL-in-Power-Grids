@@ -12,7 +12,8 @@ from grid2op.Environment import Environment
 from grid2op.Runner import Runner
 from grid2op.Runner.runner import runner_returned_type
 
-from core.constants import SEED, RL_POLICY
+from core import constants
+from core.constants import RL_POLICY
 from core.loading import load_config, preprocess_config, load_rllib_agent
 
 from visualization import get_evaluation_metrics, visualize_agent_survival
@@ -30,7 +31,8 @@ def evaluate_rllib_checkpoint(
         num_episodes: int = 50,
         max_episode_length: Optional[int] = None,
         visualize: bool = True,
-        save_to_path: Optional[Path] = None
+        save_to_path: Optional[Path] = None,
+        seed: Optional[int] = None,
 ):
     """
     Evaluate an RLlib checkpoint on a Grid2Op environment.
@@ -43,6 +45,7 @@ def evaluate_rllib_checkpoint(
     :param visualize: Whether to show visualization after evaluation (default: True)
     :param max_episode_length: the maximum length up to which episodes are played
     :param save_to_path: Optional path to save results (default: None, saves in checkpoint directory)
+    :param seed: Seed used for env_seeds. If None, falls back to constants.SEED at call time.
     :return: Path to results directory
     """
     params = load_config(checkpoint_path)
@@ -76,7 +79,8 @@ def evaluate_rllib_checkpoint(
         path_results=results_path,
         num_episodes=num_episodes,
         max_episode_length=max_episode_length,
-        verbose=True
+        verbose=True,
+        seed=seed,
     )
 
     logger.info("Evaluation completed!")
@@ -92,7 +96,8 @@ def evaluate_rllib_checkpoint(
 
 
 def evaluate_agent(agent: BaseAgent, env: Environment, path_results: Path, num_episodes: int,
-                   max_episode_length: Optional[int] = None, verbose=True) -> List[runner_returned_type]:
+                   max_episode_length: Optional[int] = None, verbose=True,
+                   seed: Optional[int] = None) -> List[runner_returned_type]:
     """
     Runs an agent on an environment for evaluation.
     :param agent: The agent
@@ -101,18 +106,20 @@ def evaluate_agent(agent: BaseAgent, env: Environment, path_results: Path, num_e
     :param path_results: where to store the results
     :param max_episode_length: the maximum number of steps to take per episode
     :param verbose: print extra explanatory or diagnostic information
+    :param seed: Seed used for env_seeds. If None, falls back to constants.SEED at call time.
     :return: the evaluation results from the runner
     """
     logging.getLogger("grid2op.Environment.baseEnv.grid2op_Runner").disabled = True
     runner = Runner(**env.get_params_for_runner(), agentInstance=agent, agentClass=None)
     path_results.mkdir(exist_ok=True, parents=True)
+    env_seed = seed if seed is not None else constants.SEED
     res = runner.run(
         nb_episode=num_episodes,
         max_iter=max_episode_length,
         path_save=path_results,
         add_detailed_output=True,
         pbar=verbose,
-        env_seeds=[SEED] * num_episodes,
+        env_seeds=[env_seed] * num_episodes,
     )
 
     if verbose:

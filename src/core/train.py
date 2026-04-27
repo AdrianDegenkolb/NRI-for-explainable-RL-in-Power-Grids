@@ -313,6 +313,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
                     num_episodes=num_episodes,
                     max_episode_length=max_episode_length,
                     visualize=post_eval.visualize,
+                    seed=exp.seed,
                 )
                 print(f"{Style.BOLD}Evaluation completed successfully!{Style.END}")
             except Exception as e:
