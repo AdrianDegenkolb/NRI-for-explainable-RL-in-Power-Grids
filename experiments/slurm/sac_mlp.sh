@@ -32,6 +32,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     model=mlp \
     obs_space=flat \
     relation_awareness=disabled \
+    experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed}
 EOF

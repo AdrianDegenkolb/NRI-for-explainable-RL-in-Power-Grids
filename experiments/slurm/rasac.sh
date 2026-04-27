@@ -32,6 +32,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     model=ragnn \
     obs_space=graph \
     relation_awareness=default \
+    experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed}
 EOF
