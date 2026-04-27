@@ -22,7 +22,7 @@ sbatch << EOF
 #SBATCH --gres=gpu:4
 
 module load devel/miniforge
-eval "$(conda shell.bash hook)"
+eval "\$(conda shell.bash hook)"
 conda activate L2RPN
 
 PYTHONPATH=\$(pwd)/src python experiments/train.py \
