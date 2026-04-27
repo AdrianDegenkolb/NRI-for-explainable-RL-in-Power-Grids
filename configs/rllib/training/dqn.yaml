@@ -1,3 +1,6 @@
+defaults:
+  - base.yaml
+
 algorithm: dqn
 
 # Rainbow DQN: dueling + double-Q + n-step + noisy nets + distributional (C51)
@@ -10,14 +13,7 @@ target_network_update_freq: 500
 tau: 1.0
 
 train_batch_size: 256
-# Each grid2op step = 2 RLLib env steps (high-level + RL/DN), so this must be
-# even. 200 RLLib steps = 100 grid2op steps collected before each gradient update.
-rollout_fragment_length: 200
 num_steps_sampled_before_learning_starts: 1000
-batch_mode: truncate_episodes
-
-# Override rollouts default (agent_steps) so timesteps_total tracks env steps.
-count_steps_by: env_steps
 
 lr: 5.0e-4
 adam_epsilon: 1.0e-8

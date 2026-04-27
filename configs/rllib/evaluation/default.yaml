@@ -1,4 +1,4 @@
-evaluation_interval: 5
+evaluation_interval: 10
 evaluation_duration_unit: episodes
 evaluation_num_workers: 8
 

@@ -1,3 +1,6 @@
+defaults:
+  - base.yaml
+
 algorithm: sac
 
 gamma: 0.99
@@ -9,14 +12,7 @@ target_network_update_freq: 1
 n_step: 1
 
 train_batch_size: 256
-# Each grid2op step = 2 RLLib env steps (high-level + RL/DN), so this must be
-# even. 200 RLLib steps = 100 grid2op steps collected before each gradient update.
-rollout_fragment_length: 200
-num_steps_sampled_before_learning_starts: 10
-batch_mode: truncate_episodes
-
-# Override rollouts default (agent_steps) so timesteps_total tracks env steps.
-count_steps_by: env_steps
+num_steps_sampled_before_learning_starts: 1000
 
 optimization:
   actor_learning_rate: 3.0e-4

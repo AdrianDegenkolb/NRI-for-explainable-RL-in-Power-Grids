@@ -9,4 +9,4 @@ line_disc: false
 penalty_game_over: 0
 reward_finish: 0
 curriculum_training: false
-curriculum_thresholds: [150, 300]
+curriculum_thresholds: [20000, 46667]

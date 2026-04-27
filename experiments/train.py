@@ -53,7 +53,7 @@ from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RA
 from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
 from grid2op_env.env import CustomizedGrid2OpEnvironment
 from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
-    DQN_GNN_POLICY, DQN_MLP_POLICY
+    DQN_GNN_POLICY, DQN_MLP_POLICY, set_seed
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
 from grid2op_env import policy_mapping_fn
@@ -231,6 +231,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
 
     rllib_cfg = algo_config_cls().to_dict()
     rllib_cfg["_disable_preprocessor_api"] = True
+    rllib_cfg["seed"] = cfg.experiment.seed
 
     # --- Training hyperparameters ---
     rllib_cfg.update(training)
@@ -316,6 +317,8 @@ def _setup_grid2op_dir(workdir: str, env_name: str) -> None:
 @hydra.main(version_base=None, config_path="../configs/rllib", config_name="config")
 def main(cfg: DictConfig) -> None:
     OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)  # fail fast on missing values
+
+    set_seed(cfg.experiment.seed)
 
     _setup_grid2op_dir(os.getcwd(), cfg.env.env_name + "_train")
 
