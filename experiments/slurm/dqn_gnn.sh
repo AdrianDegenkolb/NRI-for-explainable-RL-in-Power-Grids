@@ -25,6 +25,8 @@ module load devel/miniforge
 eval "\$(conda shell.bash hook)"
 conda activate L2RPN
 
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
 PYTHONPATH=\$(pwd)/src python experiments/train.py \
     training=dqn \
     model=gnn \

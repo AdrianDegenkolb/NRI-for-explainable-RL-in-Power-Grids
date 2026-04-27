@@ -338,6 +338,12 @@ class CustomMetricsCallback(DefaultCallbacks):
             del result["custom_metrics"]["reset_count"]
         if "chronic_id" in custom:
             del result["custom_metrics"]["chronic_id"]
+        # TBXLoggerCallback can't serialize a list-of-strings; drop it from the
+        # train-result dict. on_evaluate_end reads chronic_id from a separate
+        # evaluation_metrics path, so this only affects the training logger.
+        episode_media = result.get("episode_media", {})
+        if "chronic_id" in episode_media:
+            del result["episode_media"]["chronic_id"]
 
         learner_stats = (result.get("info", {})
                          .get("learner", {})
