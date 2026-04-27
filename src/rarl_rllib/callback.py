@@ -336,6 +336,8 @@ class CustomMetricsCallback(DefaultCallbacks):
         if "reset_count" in custom:
             result["custom_metrics"]["mean_reset_count"] = np.mean(custom["reset_count"])
             del result["custom_metrics"]["reset_count"]
+        if "chronic_id" in custom:
+            del result["custom_metrics"]["chronic_id"]
 
         learner_stats = (result.get("info", {})
                          .get("learner", {})
