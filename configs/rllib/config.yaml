@@ -17,4 +17,4 @@ hydra:
   job:
     chdir: false
   run:
-    dir: ${experiment.storage_path}/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${experiment.storage_path}/experiments/${experiment.name}

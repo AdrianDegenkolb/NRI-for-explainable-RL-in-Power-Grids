@@ -18,12 +18,14 @@ sbatch << EOF
 #SBATCH --cpus-per-task=64
 #SBATCH --time=20:00:00
 #SBATCH --mem=200G
-#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300
+#SBATCH --partition=gpu_h100,gpu_a100_il
 #SBATCH --gres=gpu:4
 
 module load devel/miniforge
 eval "\$(conda shell.bash hook)"
 conda activate L2RPN
+
+echo "Node: $(hostname), GPUs: $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'none found')"
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
