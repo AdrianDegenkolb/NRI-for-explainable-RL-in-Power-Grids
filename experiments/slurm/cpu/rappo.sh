@@ -18,7 +18,7 @@ sbatch << EOF
 #SBATCH --cpus-per-task=64
 #SBATCH --time=20:00:00
 #SBATCH --mem=200G
-#SBATCH --partition=dev_cpu_il,dev_cpu
+#SBATCH --partition=cpu_il,cpu
 
 module load devel/miniforge
 eval "\$(conda shell.bash hook)"

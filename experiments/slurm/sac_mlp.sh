@@ -18,7 +18,7 @@ sbatch << EOF
 #SBATCH --cpus-per-task=64
 #SBATCH --time=20:00:00
 #SBATCH --mem=200G
-#SBATCH --partition=gpu_h100,gpu_a100_il
+#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_h100_il
 #SBATCH --gres=gpu:4
 
 module load devel/miniforge
