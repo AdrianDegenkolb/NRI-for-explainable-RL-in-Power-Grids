@@ -78,7 +78,11 @@ def apply_ra_kl_loss(
 
 def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
     """Build the RA-specific metrics dict from tower stats."""
-    stats = {
+    prior = _tower_stack_mean(towers, "ra_mean_prior")
+    posterior = _tower_stack_mean(towers, "ra_mean_posterior")
+    posteriors = _tower_cat_stat(towers, "ra_posteriors")
+
+    candidates = {
         "relation_awareness/kl_loss":               _tower_mean(towers, "ra_kl_loss"),
         "relation_awareness/kl_unweighted":         _tower_mean(towers, "ra_kl_unweighted"),
         "relation_awareness/kl_graph_edges":        _tower_mean(towers, "ra_kl_graph"),
@@ -89,22 +93,26 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
         "relation_awareness/current_beta_non_graph":_tower_mean(towers, "ra_current_beta_non_graph"),
         "relation_awareness/current_tau":           _tower_mean(towers, "ra_current_tau"),
         "relation_awareness/prior_existence_probs": (
-            _tower_stack_mean(towers, "ra_mean_prior")[:, 0].cpu().tolist()
+            prior[:, 0].cpu().tolist() if prior is not None else None
         ),
         "relation_awareness/posterior_existence_probs": (
-            _tower_stack_mean(towers, "ra_mean_posterior")[:, 0].cpu().tolist()
+            posterior[:, 0].cpu().tolist() if posterior is not None else None
         ),
         "relation_awareness/posterior_mean": (
-            _tower_cat_stat(towers, "ra_posteriors").mean(dim=0).cpu().tolist()
+            posteriors.mean(dim=0).cpu().tolist() if posteriors is not None else None
         ),
         "relation_awareness/posterior_var": (
-            _tower_cat_stat(towers, "ra_posteriors").var(dim=0).cpu().tolist()
+            posteriors.var(dim=0).cpu().tolist() if posteriors is not None else None
         ),
     }
-    for key in towers[0].tower_stats["ra_gnn_stats"]:
-        stats[f"relation_awareness/gnn/{key}"] = torch.mean(
-            torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
-        ).item()
+    stats = {k: v for k, v in candidates.items() if v is not None}
+
+    gnn_stats = towers[0].tower_stats.get("ra_gnn_stats")
+    if gnn_stats is not None:
+        for key in gnn_stats:
+            stats[f"relation_awareness/gnn/{key}"] = torch.mean(
+                torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
+            ).item()
     return stats
 
 
@@ -182,14 +190,18 @@ def build_prior_and_graph_masks(
 
 
 def _tower_mean(towers: list, key: str) -> float:
-    """Average a scalar tower stat across all GPU towers."""
+    """Average a scalar tower stat across all GPU towers, or None if key is missing."""
+    if not all(key in t.tower_stats for t in towers):
+        return None
     return torch.mean(
         torch.stack([t.tower_stats[key].detach() for t in towers])
     ).item()
 
 
 def _tower_stack_mean(towers: list, key: str, dim: int = 0) -> Tensor:
-    """Stack a tensor tower stat across towers and reduce by mean."""
+    """Stack a tensor tower stat across towers and reduce by mean, or None if key is missing."""
+    if not all(key in t.tower_stats for t in towers):
+        return None
     return torch.mean(
         torch.stack([t.tower_stats[key].detach() for t in towers]),
         dim=dim,
@@ -197,7 +209,9 @@ def _tower_stack_mean(towers: list, key: str, dim: int = 0) -> Tensor:
 
 
 def _tower_cat_stat(towers: list, key: str, dim: int = 0) -> Tensor:
-    """Concatenate a tensor tower stat across towers along *dim*."""
+    """Concatenate a tensor tower stat across towers along *dim*, or None if key is missing."""
+    if not all(key in t.tower_stats for t in towers):
+        return None
     return torch.cat([t.tower_stats[key].detach() for t in towers], dim=dim)
 
 
