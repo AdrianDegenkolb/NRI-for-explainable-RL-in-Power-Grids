@@ -1,6 +1,6 @@
 #!/bin/bash
 # RADQN: Relation-Aware Rainbow DQN (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_radqn_36
+experiment_name=$(date +%Y_%m_%d)_radqn_118
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
@@ -32,12 +32,12 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     obs_space=graph \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
-    rollouts.num_rollout_workers=8 \
+    rollouts.num_rollout_workers=2 \
     experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
-    training.train_batch_size=16 \
-    env=case36 \
+    training.train_batch_size=4 \
+    env=case118 \
     model.encoder.max_degree=20 \
     model.encoder.max_path_distance=50
 EOF

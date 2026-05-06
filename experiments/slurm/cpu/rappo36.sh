@@ -38,6 +38,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     training.sgd_minibatch_size=16 \
     env=case36 rollouts=default \
     model.encoder.max_degree=20 \
-    model.encoder.max_path_distance=100
+    model.encoder.max_path_distance=50
 EOF
 done
