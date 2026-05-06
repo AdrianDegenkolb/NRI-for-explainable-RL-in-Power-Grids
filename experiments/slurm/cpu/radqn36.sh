@@ -32,6 +32,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     obs_space=graph \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
+    rollouts.num_rollout_workers=8 \
     experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
