@@ -350,24 +350,24 @@ class CustomMetricsCallback(DefaultCallbacks):
                          .get(RL_POLICY, {})
                          .get("learner_stats", {}))
         posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
-        if posterior_mean is not None:
-            result["relation_awareness/latent_graph_mean"] = fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=57,
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_mean),
-                    powerline_edge_index=self.powerline_edge_index,
-            )))
-
-        posterior_var = learner_stats.get("relation_awareness/posterior_var")
-        if posterior_var is not None:
-            result["relation_awareness/latent_graph_var"] = fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=57,
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_var),
-                    powerline_edge_index=self.powerline_edge_index,
-            )))
+        # if posterior_mean is not None:
+        #     result["relation_awareness/latent_graph_mean"] = fig_to_chw_uint8(
+        #         visualize_graph(PlottingArgs(
+        #             num_nodes=57,
+        #             node_styles=self.node_styles,
+        #             latent_edge_probs=np.array(posterior_mean),
+        #             powerline_edge_index=self.powerline_edge_index,
+        #     )))
+        #
+        # posterior_var = learner_stats.get("relation_awareness/posterior_var")
+        # if posterior_var is not None:
+        #     result["relation_awareness/latent_graph_var"] = fig_to_chw_uint8(
+        #         visualize_graph(PlottingArgs(
+        #             num_nodes=57,
+        #             node_styles=self.node_styles,
+        #             latent_edge_probs=np.array(posterior_var),
+        #             powerline_edge_index=self.powerline_edge_index,
+        #     )))
 
         if algorithm.curriculum_training:
             if self.curr_level < len(algorithm.curriculum_threshold) and \
