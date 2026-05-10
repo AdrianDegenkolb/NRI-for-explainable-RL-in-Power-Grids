@@ -7,8 +7,8 @@ post_fcnet_hiddens: []
 _enable_learner_api: false
 
 encoder:
-  max_degree: 8
-  max_path_distance: 55
+  max_degree: 20
+  max_path_distance: 50
   use_graphormer: true
   hidden_dim: 64
   num_layers: 2

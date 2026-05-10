@@ -9,7 +9,6 @@ name: test_minimal
 
 post_training_evaluation:
   enabled: true
-  env_name: l2rpn_case14_sandbox_test
   num_episodes: 1
   max_episode_length: 10 # only the first 10 steps
   visualize: false

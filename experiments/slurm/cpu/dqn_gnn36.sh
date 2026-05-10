@@ -1,6 +1,6 @@
 #!/bin/bash
-# RAPPO: Relation-Aware PPO (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_rappo118
+# DQN + GNN baseline (fixed graph edges, no NRI encoder) — CPU variant
+experiment_name=$(date +%Y_%m_%d)_dqn_gnn_36
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
@@ -11,9 +11,9 @@ mkdir -p results/experiments/${experiment_name}/out
 for seed in 0; do
 sbatch << EOF
 #!/bin/bash
-#SBATCH --job-name=rappo_s${seed}
-#SBATCH --output=results/experiments/${experiment_name}/out/rappo_s${seed}.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/error_rappo_s${seed}.%j.log
+#SBATCH --job-name=dqn_gnn_s${seed}
+#SBATCH --output=results/experiments/${experiment_name}/out/dqn_gnn_s${seed}.%j.log
+#SBATCH --error=results/experiments/${experiment_name}/out/error_dqn_gnn_s${seed}.%j.log
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=72:00:00
@@ -27,16 +27,16 @@ conda activate L2RPN
 echo "Node: $(hostname)"
 
 PYTHONPATH=\$(pwd)/src python experiments/train.py \
-    training=ppo \
-    model=ragnn \
+    training=dqn \
+    model=gnn \
     obs_space=graph \
-    relation_awareness=default \
+    relation_awareness=disabled \
     rollouts.num_gpus_per_learner_worker=0 \
+    experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
-    training.sgd_minibatch_size=1 \
-    rollouts.num_rollout_workers=1 \
-    env=case118 \
-    experiment.nb_timesteps=60000
+    training.train_batch_size=16 \
+    rollouts.num_rollout_workers=8 \
+    env=case36
 EOF
 done

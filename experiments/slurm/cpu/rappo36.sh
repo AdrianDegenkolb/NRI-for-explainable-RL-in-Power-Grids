@@ -17,7 +17,7 @@ sbatch << EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=72:00:00
-#SBATCH --mem=200G
+#SBATCH --mem=249G
 #SBATCH --partition=cpu_il,cpu
 
 module load devel/miniforge
@@ -31,15 +31,12 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     model=ragnn \
     obs_space=graph \
     experiment.nb_timesteps=105000 \
-    experiment.post_training_evaluation.env_name=l2rpn_wcci_2020_test \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
     rollouts.num_rollout_workers=8 \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
     training.sgd_minibatch_size=16 \
-    env=case36 rollouts=default \
-    model.encoder.max_degree=20 \
-    model.encoder.max_path_distance=50
+    env=case36 \
 EOF
 done

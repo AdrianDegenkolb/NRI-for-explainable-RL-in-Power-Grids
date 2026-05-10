@@ -289,6 +289,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
 
     # --- Post-training evaluation ---
     post_eval = exp.post_training_evaluation
+    test_env_name = rllib_cfg["env_config"]["env_name"].removesuffix("_train") + "_test"
     if post_eval.enabled:
         if best_result.checkpoint is None:
             print(f"{Style.BOLD}Skipping post-training evaluation: no checkpoint available.{Style.END}")
@@ -298,12 +299,12 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
         with best_result.checkpoint.as_directory() as checkpoint_dir:
             checkpoint_name = os.path.basename(checkpoint_dir)
             num_episodes = (
-                get_num_available_episodes(post_eval.env_name)
+                get_num_available_episodes(test_env_name)
                 if post_eval.num_episodes in ("all", None)
                 else int(post_eval.num_episodes)
             )
             max_episode_length = post_eval.max_episode_length
-            print(f"Evaluation environment: {post_eval.env_name}  |  Episodes: {num_episodes}")
+            print(f"Evaluation environment: {test_env_name}  |  Episodes: {num_episodes}")
             try:
                 evaluate_rllib_checkpoint(
                     checkpoint_path=Path(checkpoint_dir).parent,

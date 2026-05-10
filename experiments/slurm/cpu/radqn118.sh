@@ -38,7 +38,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.name=${experiment_name}_s${seed} \
     training.train_batch_size=1 \
     env=case118 \
-    model.encoder.max_degree=20 \
-    model.encoder.max_path_distance=50
+    experiment.nb_timesteps=20000000
 EOF
 done
