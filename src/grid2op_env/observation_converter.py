@@ -321,3 +321,9 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         )
     else:
         raise ValueError(f"Unknown observation space type: {mode}")
+
+if __name__ == "__main__":
+    import grid2op
+    env = grid2op.make("l2rpn_wcci_2022")
+    graph = GraphObservationConverter(env.observation_space)
+    print(graph.num_nodes)

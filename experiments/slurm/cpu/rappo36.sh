@@ -16,7 +16,7 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/error_rappo_s${seed}.%j.log
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
+#SBATCH --time=72:00:00
 #SBATCH --mem=200G
 #SBATCH --partition=cpu_il,cpu
 
@@ -30,6 +30,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     training=ppo \
     model=ragnn \
     obs_space=graph \
+    experiment.nb_timesteps=105000
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
     rollouts.num_rollout_workers=8 \
