@@ -16,7 +16,7 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/error_radqn_s${seed}.%j.log
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
+#SBATCH --time=72:00:00
 #SBATCH --mem=200G
 #SBATCH --partition=cpu_il,cpu
 
@@ -36,6 +36,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
+    experiment.post_training_evaluation.env_name=l2rpn_wcci_2020_test \
     training.train_batch_size=16 \
     env=case36 \
     model.encoder.max_degree=20 \

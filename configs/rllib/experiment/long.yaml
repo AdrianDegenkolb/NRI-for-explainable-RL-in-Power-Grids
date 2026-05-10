@@ -1,4 +1,4 @@
 defaults:
   - default
 
-nb_timesteps: 30_000_000
+nb_timesteps: 120_000_000
