@@ -31,6 +31,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     model=ragnn \
     obs_space=graph \
     experiment.nb_timesteps=105000 \
+    experiment.post_training_evaluation.env_name=l2rpn_wcci_2020_test \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
     rollouts.num_rollout_workers=8 \
