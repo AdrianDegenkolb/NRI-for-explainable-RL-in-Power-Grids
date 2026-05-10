@@ -16,7 +16,7 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/error_radqn_s${seed}.%j.log
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=70:00:00
+#SBATCH --time=72:00:00
 #SBATCH --mem=249G
 #SBATCH --partition=cpu_il,cpu
 
