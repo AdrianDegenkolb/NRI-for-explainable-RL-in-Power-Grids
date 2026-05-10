@@ -17,7 +17,7 @@ sbatch << EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=70:00:00
-#SBATCH --mem=200G
+#SBATCH --mem=249G
 #SBATCH --partition=cpu_il,cpu
 
 module load devel/miniforge
@@ -32,11 +32,11 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     obs_space=graph \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
-    rollouts.num_rollout_workers=2 \
+    rollouts.num_rollout_workers=1 \
     experiment=long \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
-    training.train_batch_size=4 \
+    training.train_batch_size=1 \
     env=case118 \
     model.encoder.max_degree=20 \
     model.encoder.max_path_distance=50
