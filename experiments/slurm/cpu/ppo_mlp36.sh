@@ -37,6 +37,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.name=${experiment_name}_s${seed} \
     env=case36 \
     training.sgd_minibatch_size=16 \
-    rollouts.num_rollout_workers=8 \
+    rollouts.num_rollout_workers=8
 EOF
 done

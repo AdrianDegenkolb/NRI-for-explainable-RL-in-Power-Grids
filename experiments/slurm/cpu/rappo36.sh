@@ -37,6 +37,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.seed=${seed} \
     experiment.name=${experiment_name}_s${seed} \
     training.sgd_minibatch_size=16 \
-    env=case36 \
+    env=case36
 EOF
 done
