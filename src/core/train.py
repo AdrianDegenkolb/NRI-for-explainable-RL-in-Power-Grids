@@ -310,7 +310,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
                     checkpoint_path=Path(checkpoint_dir).parent,
                     policy_name=RL_POLICY,
                     checkpoint_name=checkpoint_name,
-                    env_name_override=post_eval.env_name,
+                    env_name_override=test_env_name,
                     num_episodes=num_episodes,
                     max_episode_length=max_episode_length,
                     visualize=post_eval.visualize,
