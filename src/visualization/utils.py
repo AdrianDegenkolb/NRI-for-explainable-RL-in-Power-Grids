@@ -708,9 +708,9 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         pointing_towards_locs = [
             [layout[f"sub_{sid}"] for sid in env.line_ex_to_subid],
             [layout[f"sub_{sid}"] for sid in env.line_or_to_subid],
-            [layout[f"gen_{sid}_{gid}"] if f"gen_{sid}_{gid}" in layout else layout[f"sub_{sid}"] for gid, sid in enumerate(env.gen_to_subid)],
-            [layout[f"load_{sid}_{lid}"] if f"load_{sid}_{lid}" in layout else layout[f"sub_{sid}"] for lid, sid in enumerate(env.load_to_subid)],
-            [layout[f"storage_{sid}_{stor_id}"] if f"storage_{sid}_{stor_id}" in layout else layout[f"sub_{sid}"] for stor_id, sid in enumerate(env.storage_to_subid)],
+            [layout.get(f"gen_{sid}_{gid}", layout[f"sub_{sid}"]) for gid, sid in enumerate(env.gen_to_subid)],
+            [layout.get(f"load_{sid}_{lid}", layout[f"sub_{sid}"]) for lid, sid in enumerate(env.load_to_subid)],
+            [layout.get(f"storage_{sid}_{stor_id}", layout[f"sub_{sid}"]) for stor_id, sid in enumerate(env.storage_to_subid)],
         ]
         # filter out empty lists
         pointing_towards_locs = np.vstack([sub for sub in pointing_towards_locs if len(sub) > 0])
