@@ -28,6 +28,7 @@ Designed to be composed with other RLlib callbacks::
 """
 
 import time
+import traceback
 from typing import Dict, Optional, List, Any
 
 import grid2op
@@ -75,38 +76,44 @@ class AnnealingCallback(DefaultCallbacks):
     _state: AnnealingState | None = None
 
     def on_algorithm_init(self, *, algorithm: Algorithm, **kwargs) -> None:
-        super().on_algorithm_init(algorithm=algorithm, **kwargs)
-        policy = _get_policy(algorithm)
-        if policy is None or not hasattr(policy, "current_beta"):
-            return
+        try:
+            super().on_algorithm_init(algorithm=algorithm, **kwargs)
+            policy = _get_policy(algorithm)
+            if policy is None or not hasattr(policy, "current_beta"):
+                return
 
-        ra_cfg = policy.config.get("relation_awareness", {})
-        samp_cfg = policy.config["model"]["custom_model_config"].get("sampling", ra_cfg)
-        total = algorithm.config.get("total_timesteps", 1_000_000)
+            ra_cfg = policy.config.get("relation_awareness", {})
+            samp_cfg = policy.config["model"]["custom_model_config"].get("sampling", ra_cfg)
+            total = algorithm.config.get("total_timesteps", 1_000_000)
 
-        self._state = AnnealingState(
-            beta_start=ra_cfg.get("beta_start", 0.0),
-            beta_end=ra_cfg.get("beta_end", ra_cfg.get("beta", 1.0)),
-            beta_non_graph_start=ra_cfg.get("beta_non_graph_edges_start", 0.0),
-            beta_non_graph_end=ra_cfg.get("beta_non_graph_edges_end", ra_cfg.get("beta", 1.0)),
-            tau_start=samp_cfg.get("tau_start", 2.0),
-            tau_end=samp_cfg.get("tau_end", samp_cfg.get("temperature", 1.0)),
-            total_steps=total,
-            beta_anneal_steps=ra_cfg.get("beta_anneal_timesteps", total),
-            tau_anneal_steps=ra_cfg.get("tau_anneal_timesteps", total),
-        )
+            self._state = AnnealingState(
+                beta_start=ra_cfg.get("beta_start", 0.0),
+                beta_end=ra_cfg.get("beta_end", ra_cfg.get("beta", 1.0)),
+                beta_non_graph_start=ra_cfg.get("beta_non_graph_edges_start", 0.0),
+                beta_non_graph_end=ra_cfg.get("beta_non_graph_edges_end", ra_cfg.get("beta", 1.0)),
+                tau_start=samp_cfg.get("tau_start", 2.0),
+                tau_end=samp_cfg.get("tau_end", samp_cfg.get("temperature", 1.0)),
+                total_steps=total,
+                beta_anneal_steps=ra_cfg.get("beta_anneal_timesteps", total),
+                tau_anneal_steps=ra_cfg.get("tau_anneal_timesteps", total),
+            )
 
-        # Set initial values on all workers
-        self._sync(algorithm, step=0)
+            # Set initial values on all workers
+            self._sync(algorithm, step=0)
+        except Exception:
+            traceback.print_exc()
 
     def on_train_result(self, *, algorithm: Algorithm, result: dict, **kwargs) -> None:
-        super().on_train_result(algorithm=algorithm, result=result, **kwargs)
-        if self._state is None:
-            return
+        try:
+            super().on_train_result(algorithm=algorithm, result=result, **kwargs)
+            if self._state is None:
+                return
 
-        current_step = result.get("timesteps_total", 0)
-        self._state.step(current_step)
-        self._sync(algorithm, step=current_step)
+            current_step = result.get("timesteps_total", 0)
+            self._state.step(current_step)
+            self._sync(algorithm, step=current_step)
+        except Exception:
+            traceback.print_exc()
 
     def _sync(self, algorithm: Algorithm, step: int) -> None:
         """Push current annealing values to local + remote workers."""
@@ -230,15 +237,18 @@ class CustomMetricsCallback(DefaultCallbacks):
             algorithm: Algorithm,
             **kwargs,
     ) -> None:
-        self.log_level = algorithm.my_log_level
-        self.curr_level = 0
-        env_name = algorithm.config.env_config["env_name"]
-        env = grid2op.make(env_name)
-        self.node_styles = get_node_styles(env, GraphObservationConverter)
-        obs_space = GraphObservationConverter(env.observation_space)
-        self.powerline_edge_index = obs_space._get_edge_index(env.reset())
-        if hasattr(algorithm, "curriculum_training") and algorithm.curriculum_training:
-            print(f"Start with curriculum level {self.curr_level}")
+        try:
+            self.log_level = algorithm.my_log_level
+            self.curr_level = 0
+            env_name = algorithm.config.env_config["env_name"]
+            env = grid2op.make(env_name)
+            self.node_styles = get_node_styles(env, GraphObservationConverter)
+            obs_space = GraphObservationConverter(env.observation_space)
+            self.powerline_edge_index = obs_space._get_edge_index(env.reset())
+            if hasattr(algorithm, "curriculum_training") and algorithm.curriculum_training:
+                print(f"Start with curriculum level {self.curr_level}")
+        except Exception:
+            traceback.print_exc()
 
     def on_episode_end(
             self,
@@ -255,27 +265,30 @@ class CustomMetricsCallback(DefaultCallbacks):
          - grid2op episode length - RLlib counts extra steps because of high level agent.
          - chronic id.
         """
-        agents_steps = {k: len(v) for k, v in episode._agent_reward_history.items()}
+        try:
+            agents_steps = {k: len(v) for k, v in episode._agent_reward_history.items()}
 
-        episode.custom_metrics["corrected_ep_len"] = agents_steps["high_level_agent"]
-        envs = base_env.get_sub_environments()
-        grid2op_end = np.array([env.env_g2op.current_obs.current_step for env in envs]).mean()
-        chron_id = envs[0].env_g2op.chronics_handler.get_name()
-        episode.custom_metrics["grid2op_end"] = grid2op_end
-        episode.media["chronic_id"] = chron_id
+            episode.custom_metrics["corrected_ep_len"] = agents_steps["high_level_agent"]
+            envs = base_env.get_sub_environments()
+            grid2op_end = np.array([env.env_g2op.current_obs.current_step for env in envs]).mean()
+            chron_id = envs[0].env_g2op.chronics_handler.get_name()
+            episode.custom_metrics["grid2op_end"] = grid2op_end
+            episode.media["chronic_id"] = chron_id
 
-        # New extra metrics:
-        interact_count = np.array([env.interact_count for env in envs]).mean()
-        active_dn_count = np.array([env.active_dn_count for env in envs]).mean()
-        reconnect_count = np.array([env.reconnect_count for env in envs]).mean()
-        disconnect_count = np.array([env.disconnect_count for env in envs]).mean()
-        reset_count = np.array([env.reset_count for env in envs]).mean()
+            # New extra metrics:
+            interact_count = np.array([env.interact_count for env in envs]).mean()
+            active_dn_count = np.array([env.active_dn_count for env in envs]).mean()
+            reconnect_count = np.array([env.reconnect_count for env in envs]).mean()
+            disconnect_count = np.array([env.disconnect_count for env in envs]).mean()
+            reset_count = np.array([env.reset_count for env in envs]).mean()
 
-        episode.custom_metrics["interact_count"] = interact_count
-        episode.custom_metrics["active_dn_count"] = active_dn_count
-        episode.custom_metrics["reconnect_count"] = reconnect_count
-        episode.custom_metrics["disconnect_count"] = disconnect_count
-        episode.custom_metrics["reset_count"] = reset_count
+            episode.custom_metrics["interact_count"] = interact_count
+            episode.custom_metrics["active_dn_count"] = active_dn_count
+            episode.custom_metrics["reconnect_count"] = reconnect_count
+            episode.custom_metrics["disconnect_count"] = disconnect_count
+            episode.custom_metrics["reset_count"] = reset_count
+        except Exception:
+            traceback.print_exc()
 
     def on_evaluate_end(
             self,
@@ -284,27 +297,30 @@ class CustomMetricsCallback(DefaultCallbacks):
             evaluation_metrics: dict,
             **kwargs,
     ) -> None:
-        data = evaluation_metrics["evaluation"]
-        # Save summarized results
-        data["custom_metrics"]["grid2op_end_min"] = int(np.min(data["custom_metrics"]["grid2op_end"]))
-        data["custom_metrics"]["grid2op_end_mean"] = int(np.mean(data["custom_metrics"]["grid2op_end"]))
-        data["custom_metrics"]["grid2op_end_max"] = int(np.max(data["custom_metrics"]["grid2op_end"]))
-        data["custom_metrics"]["grid2op_end_std"] = np.std(data["custom_metrics"]["grid2op_end"])
-        # Extra metrics:
-        data["custom_metrics"]["mean_interact_count"] = np.mean(data["custom_metrics"]["interact_count"])
-        data["custom_metrics"]["total_agent_interact"] = np.sum(data["custom_metrics"]["interact_count"])
-        data["custom_metrics"]["mean_active_dn_count"] = np.mean(data["custom_metrics"]["active_dn_count"])
-        data["custom_metrics"]["mean_reconnect_count"] = np.mean(data["custom_metrics"]["reconnect_count"])
-        data["custom_metrics"]["mean_disconnect_count"] = np.mean(data["custom_metrics"]["disconnect_count"])
-        data["custom_metrics"]["mean_reset_count"] = np.mean(data["custom_metrics"]["reset_count"])
+        try:
+            data = evaluation_metrics["evaluation"]
+            # Save summarized results
+            data["custom_metrics"]["grid2op_end_min"] = int(np.min(data["custom_metrics"]["grid2op_end"]))
+            data["custom_metrics"]["grid2op_end_mean"] = int(np.mean(data["custom_metrics"]["grid2op_end"]))
+            data["custom_metrics"]["grid2op_end_max"] = int(np.max(data["custom_metrics"]["grid2op_end"]))
+            data["custom_metrics"]["grid2op_end_std"] = np.std(data["custom_metrics"]["grid2op_end"])
+            # Extra metrics:
+            data["custom_metrics"]["mean_interact_count"] = np.mean(data["custom_metrics"]["interact_count"])
+            data["custom_metrics"]["total_agent_interact"] = np.sum(data["custom_metrics"]["interact_count"])
+            data["custom_metrics"]["mean_active_dn_count"] = np.mean(data["custom_metrics"]["active_dn_count"])
+            data["custom_metrics"]["mean_reconnect_count"] = np.mean(data["custom_metrics"]["reconnect_count"])
+            data["custom_metrics"]["mean_disconnect_count"] = np.mean(data["custom_metrics"]["disconnect_count"])
+            data["custom_metrics"]["mean_reset_count"] = np.mean(data["custom_metrics"]["reset_count"])
 
-        if self.log_level > 1:
-            print(f" Showing results for evaluated chronics:")
-            overview = {
-                "chronic_id": data["episode_media"]["chronic_id"],
-                "grid2op_end": data["custom_metrics"]["grid2op_end"],
-                "reward": data["hist_stats"]["episode_reward"]}
-            print(tabulate(overview, headers="keys", tablefmt="rounded_grid"))
+            if self.log_level > 1:
+                print(f" Showing results for evaluated chronics:")
+                overview = {
+                    "chronic_id": data["episode_media"]["chronic_id"],
+                    "grid2op_end": data["custom_metrics"]["grid2op_end"],
+                    "reward": data["hist_stats"]["episode_reward"]}
+                print(tabulate(overview, headers="keys", tablefmt="rounded_grid"))
+        except Exception:
+            traceback.print_exc()
 
     def on_train_result(
             self,
@@ -313,75 +329,78 @@ class CustomMetricsCallback(DefaultCallbacks):
             result: dict,
             **kwargs,
     ) -> None:
-        custom = result.get("custom_metrics", {})
-        if "grid2op_end" in custom:
-            result["custom_metrics"]["grid2op_end_mean"] = int(np.mean(custom["grid2op_end"]))
-            result["custom_metrics"]["grid2op_end_std"] = np.var(custom["grid2op_end"])
-            del result["custom_metrics"]["grid2op_end"]
-        if "corrected_ep_len" in custom:
-            result["custom_metrics"]["corrected_ep_len_mean"] = int(np.mean(custom["corrected_ep_len"]))
-            del result["custom_metrics"]["corrected_ep_len"]
-        if "interact_count" in custom:
-            result["custom_metrics"]["mean_interact_count"] = np.mean(custom["interact_count"])
-            result["custom_metrics"]["total_agent_interact"] = np.sum(custom["interact_count"])
-            del result["custom_metrics"]["interact_count"]
-        if "active_dn_count" in custom:
-            result["custom_metrics"]["mean_active_dn_count"] = np.mean(custom["active_dn_count"])
-            del result["custom_metrics"]["active_dn_count"]
-        if "reconnect_count" in custom:
-            result["custom_metrics"]["mean_reconnect_count"] = np.mean(custom["reconnect_count"])
-            del result["custom_metrics"]["reconnect_count"]
-        if "disconnect_count" in custom:
-            result["custom_metrics"]["mean_disconnect_count"] = np.mean(custom["disconnect_count"])
-            del result["custom_metrics"]["disconnect_count"]
-        if "reset_count" in custom:
-            result["custom_metrics"]["mean_reset_count"] = np.mean(custom["reset_count"])
-            del result["custom_metrics"]["reset_count"]
-        if "chronic_id" in custom:
-            del result["custom_metrics"]["chronic_id"]
-        # TBXLoggerCallback can't serialize a list-of-strings; drop it from the
-        # train-result dict. on_evaluate_end reads chronic_id from a separate
-        # evaluation_metrics path, so this only affects the training logger.
-        episode_media = result.get("episode_media", {})
-        if "chronic_id" in episode_media:
-            del result["episode_media"]["chronic_id"]
+        try:
+            custom = result.get("custom_metrics", {})
+            if "grid2op_end" in custom:
+                result["custom_metrics"]["grid2op_end_mean"] = int(np.mean(custom["grid2op_end"]))
+                result["custom_metrics"]["grid2op_end_std"] = np.var(custom["grid2op_end"])
+                del result["custom_metrics"]["grid2op_end"]
+            if "corrected_ep_len" in custom:
+                result["custom_metrics"]["corrected_ep_len_mean"] = int(np.mean(custom["corrected_ep_len"]))
+                del result["custom_metrics"]["corrected_ep_len"]
+            if "interact_count" in custom:
+                result["custom_metrics"]["mean_interact_count"] = np.mean(custom["interact_count"])
+                result["custom_metrics"]["total_agent_interact"] = np.sum(custom["interact_count"])
+                del result["custom_metrics"]["interact_count"]
+            if "active_dn_count" in custom:
+                result["custom_metrics"]["mean_active_dn_count"] = np.mean(custom["active_dn_count"])
+                del result["custom_metrics"]["active_dn_count"]
+            if "reconnect_count" in custom:
+                result["custom_metrics"]["mean_reconnect_count"] = np.mean(custom["reconnect_count"])
+                del result["custom_metrics"]["reconnect_count"]
+            if "disconnect_count" in custom:
+                result["custom_metrics"]["mean_disconnect_count"] = np.mean(custom["disconnect_count"])
+                del result["custom_metrics"]["disconnect_count"]
+            if "reset_count" in custom:
+                result["custom_metrics"]["mean_reset_count"] = np.mean(custom["reset_count"])
+                del result["custom_metrics"]["reset_count"]
+            if "chronic_id" in custom:
+                del result["custom_metrics"]["chronic_id"]
+            # TBXLoggerCallback can't serialize a list-of-strings; drop it from the
+            # train-result dict. on_evaluate_end reads chronic_id from a separate
+            # evaluation_metrics path, so this only affects the training logger.
+            episode_media = result.get("episode_media", {})
+            if "chronic_id" in episode_media:
+                del result["episode_media"]["chronic_id"]
 
-        learner_stats = (result.get("info", {})
-                         .get("learner", {})
-                         .get(RL_POLICY, {})
-                         .get("learner_stats", {}))
-        posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
-        if posterior_mean is not None:
-            result["relation_awareness/latent_graph_mean"] = fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=len(self.node_styles),
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_mean),
-                    powerline_edge_index=self.powerline_edge_index,
-                ))
-            )
-
-        posterior_var = learner_stats.get("relation_awareness/posterior_var")
-        if posterior_var is not None:
-            result["relation_awareness/latent_graph_var"] = fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=len(self.node_styles),
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_var),
-                    powerline_edge_index=self.powerline_edge_index,
-                ))
-            )
-
-        if algorithm.curriculum_training:
-            if self.curr_level < len(algorithm.curriculum_threshold) and \
-                    result['timesteps_total'] > algorithm.curriculum_threshold[self.curr_level]:
-                self.curr_level += 1
-                algorithm.workers.foreach_worker(
-                    lambda ev: ev.foreach_env(
-                        lambda env: env.set_curriculum(self.curr_level)
-                    )
+            learner_stats = (result.get("info", {})
+                             .get("learner", {})
+                             .get(RL_POLICY, {})
+                             .get("learner_stats", {}))
+            posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
+            if posterior_mean is not None:
+                result["relation_awareness/latent_graph_mean"] = fig_to_chw_uint8(
+                    visualize_graph(PlottingArgs(
+                        num_nodes=len(self.node_styles),
+                        node_styles=self.node_styles,
+                        latent_edge_probs=np.array(posterior_mean),
+                        powerline_edge_index=self.powerline_edge_index,
+                    ))
                 )
-                print(f"Curriculum level increased to {self.curr_level}")
+
+            posterior_var = learner_stats.get("relation_awareness/posterior_var")
+            if posterior_var is not None:
+                result["relation_awareness/latent_graph_var"] = fig_to_chw_uint8(
+                    visualize_graph(PlottingArgs(
+                        num_nodes=len(self.node_styles),
+                        node_styles=self.node_styles,
+                        latent_edge_probs=np.array(posterior_var),
+                        powerline_edge_index=self.powerline_edge_index,
+                    ))
+                )
+
+            if algorithm.curriculum_training:
+                if self.curr_level < len(algorithm.curriculum_threshold) and \
+                        result['timesteps_total'] > algorithm.curriculum_threshold[self.curr_level]:
+                    self.curr_level += 1
+                    algorithm.workers.foreach_worker(
+                        lambda ev: ev.foreach_env(
+                            lambda env: env.set_curriculum(self.curr_level)
+                        )
+                    )
+                    print(f"Curriculum level increased to {self.curr_level}")
+        except Exception:
+            traceback.print_exc()
 
 def fig_to_chw_uint8(fig):
     canvas = FigureCanvasAgg(fig)
