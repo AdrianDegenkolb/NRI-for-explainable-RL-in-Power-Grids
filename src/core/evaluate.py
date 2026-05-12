@@ -189,25 +189,49 @@ def _store_summary_metrics(res: List[runner_returned_type], path_results: Path, 
 
 def main():
     """Main evaluation script when running as standalone."""
+    import argparse
+    from core.train import get_num_available_episodes
 
-    # Configuration
-    checkpoint_path = Path(
-        "/home/adrian/Schreibtisch/1301_THIS_rappo_with_anneal_2/CustomPPO_0_107a0_2026-01-14_22-36-19/")
-    policy_name = RL_POLICY
-    checkpoint_name = "checkpoint_000020"
+    parser = argparse.ArgumentParser(description="Evaluate an RLlib checkpoint on a Grid2Op environment.")
+    parser.add_argument("--checkpoint-path", type=Path, required=True,
+                        help="Path to the trial directory containing checkpoint_* subdirectories.")
+    parser.add_argument("--checkpoint-name", type=str, default=None,
+                        help="Checkpoint folder name (e.g. checkpoint_000002). Defaults to the latest found.")
+    parser.add_argument("--env-name", type=str, required=True,
+                        help="Grid2Op environment name for evaluation (e.g. l2rpn_wcci_2020_test).")
+    parser.add_argument("--num-episodes", default="all",
+                        help="Number of evaluation episodes, or 'all' to use every available chronic. Default: all.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed passed to the runner.")
+    parser.add_argument("--save-to", type=Path, default=None,
+                        help="Directory to save evaluation results (default: <checkpoint_path>/evaluations).")
+    args = parser.parse_args()
 
-    # Optional: override env_name for evaluation (otherwise uses the one from params.json)
-    env_name_override = "l2rpn_case14_sandbox_val"  # Set to "l2rpn_case14_sandbox_val" to override
-    num_episodes = 50  # Number of evaluation episodes
+    checkpoint_path = args.checkpoint_path
 
-    # Call the reusable evaluation function
+    checkpoint_name = args.checkpoint_name
+    if checkpoint_name is None:
+        candidates = sorted(checkpoint_path.glob("checkpoint_*"))
+        if not candidates:
+            raise FileNotFoundError(f"No checkpoint_* directories found in {checkpoint_path}")
+        checkpoint_name = candidates[-1].name
+        logger.info(f"Auto-selected latest checkpoint: {checkpoint_name}")
+
+    num_episodes = (
+        get_num_available_episodes(args.env_name)
+        if args.num_episodes == "all"
+        else int(args.num_episodes)
+    )
+
     evaluate_rllib_checkpoint(
         checkpoint_path=checkpoint_path,
-        policy_name=policy_name,
+        policy_name=RL_POLICY,
         checkpoint_name=checkpoint_name,
-        env_name_override=env_name_override,
+        env_name_override=args.env_name,
         num_episodes=num_episodes,
-        visualize=True
+        visualize=False,
+        seed=args.seed,
+        save_to_path=args.save_to,
     )
 
 
