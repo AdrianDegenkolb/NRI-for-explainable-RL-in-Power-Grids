@@ -33,6 +33,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     relation_awareness=disabled \
     rollouts.num_gpus_per_learner_worker=0 \
     experiment.seed=${seed} \
-    experiment.name=${experiment_name}_s${seed}
+    experiment.name=${experiment_name}
 EOF
 done

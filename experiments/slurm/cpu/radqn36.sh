@@ -35,7 +35,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     rollouts.num_rollout_workers=8 \
     experiment=long \
     experiment.seed=${seed} \
-    experiment.name=${experiment_name}_s${seed} \
+    experiment.name=${experiment_name} \
     training.train_batch_size=16 \
     env=case36
 EOF

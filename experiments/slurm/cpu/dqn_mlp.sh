@@ -34,6 +34,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     rollouts.num_gpus_per_learner_worker=0 \
     experiment=long \
     experiment.seed=${seed} \
-    experiment.name=${experiment_name}_s${seed}
+    experiment.name=${experiment_name}
 EOF
 done
