@@ -62,7 +62,7 @@ class CustomPPO(PPO):
             logger_creator: Optional[Callable[[], logging.Logger]] = None,
             **kwargs,
     ):
-        print("my_log_level: ", config["my_log_level"])
+        logger.info(f"my_log_level: {config['my_log_level']}")
         self.my_log_level = config["my_log_level"]
         self.curriculum_training = config.get("env_config", {}).get("curriculum_training", False)
         self.curriculum_threshold = config.get("env_config", {}).get("curriculum_thresholds", [])

@@ -101,13 +101,12 @@ class TimeStopper(Stopper):
         return time() - self._start > self._deadline
 
 
-def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> ResultGrid:
+def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
     """Run RLLib PPO training driven by the Hydra config.
 
     Args:
         rllib_cfg: Flat RLLib algorithm config dict (built by build_rllib_config).
         cfg:       Full assembled Hydra DictConfig (cfg.experiment, cfg.optimization, …).
-        job_id:    Unique identifier for this run (e.g. SLURM job id).
     """
     exp = cfg.experiment
     opt = cfg.optimization
@@ -144,10 +143,10 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
     if time_budget:
         logger.info(f"Optimization time budget: {time_budget}s ({time_budget / 3600:.2f}h, 10% buffer for cleanup)")
 
+    job_id = _get_job_id(cfg)
+
     storage_path = os.path.abspath(os.path.join(os.getcwd(), "results", "experiments"))
     os.makedirs(storage_path, exist_ok=True)
-
-    rllib_cfg["total_timesteps"] = exp.nb_timesteps
 
     algorithm = OmegaConf.select(cfg, "training.algorithm", default="ppo")
     trainable_cls = _TRAINABLE_MAP.get(algorithm)
@@ -212,7 +211,10 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
     for i, result in enumerate(result_grid):
         if not result.error:
             checkpoints_to_json = {
-                os.path.basename(checkpoint.path): metrics.get('evaluation', {}).get('custom_metrics', {})
+                os.path.basename(checkpoint.path): {
+                    k: v for k, v in metrics.get('evaluation', {}).get('custom_metrics', {}).items()
+                    if not isinstance(v, list)
+                }
                 for checkpoint, metrics in result.best_checkpoints
             }
             with open(os.path.join(result.path, "checkpoint_results.json"), "w") as f:
@@ -323,6 +325,13 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig, job_id: str) -> Res
         print(f"{Style.BOLD}{'=' * 80}{Style.END}\n")
 
     return result_grid
+
+
+def _get_job_id(cfg: DictConfig) -> str:
+    slurm_job_id = os.environ.get("SLURM_JOB_ID", "local")
+    model_id = {None: "MLP", "ragnn_model": "RARL", "gnn_model": "GNN"}.get(cfg.model.custom_model, "unknown_model")
+    job_id = f"{model_id}_{slurm_job_id}"
+    return job_id
 
 
 def get_duration(experiment_cfg: DictConfig) -> int | None:

@@ -293,6 +293,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     # --- Misc ---
     rllib_cfg["my_log_level"] = cfg.experiment.my_log_level
     rllib_cfg["trial_info"] = "trial_id"
+    rllib_cfg["total_timesteps"] = cfg.experiment.nb_timesteps
 
     return rllib_cfg
 
@@ -323,8 +324,7 @@ def main(cfg: DictConfig) -> None:
     _setup_grid2op_dir(os.getcwd(), cfg.env.env_name + "_train")
 
     rllib_cfg = build_rllib_config(cfg)
-    job_id = os.environ.get("SLURM_JOB_ID", "local")
-    run_training(rllib_cfg, cfg, job_id)
+    run_training(rllib_cfg, cfg)
 
 
 if __name__ == "__main__":
