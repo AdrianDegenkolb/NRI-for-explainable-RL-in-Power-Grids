@@ -3,7 +3,7 @@ env_name: l2rpn_wcci_2020
 
 action_space: rl2grid_bus36-M_1
 rho_threshold: 0.95
-reset_topo: 0.9
+reset_topo: 0.0
 line_reco: true
 line_disc: false
 penalty_game_over: 0

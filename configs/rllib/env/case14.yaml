@@ -3,7 +3,7 @@ env_name: l2rpn_case14_sandbox
 
 action_space: medha
 rho_threshold: 0.95
-reset_topo: 0.9
+reset_topo: 0.0
 line_reco: true
 line_disc: false
 penalty_game_over: 0
