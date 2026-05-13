@@ -19,9 +19,9 @@ from ray.tune.registry import register_env
 from core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT, DO_NOTHING_POLICY, RL_POLICY, \
     HIGH_LEVEL_POLICY
 from core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
-from grid2op_env.action_converters import CustomDiscreteActions, setup_converter, load_actions
-from grid2op_env.observation_converter import make_observation_converter, ObservationConverter
-from grid2op_env.utils import make_g2op_env
+from .action_converters import CustomDiscreteActions, setup_converter, load_actions
+from .observation_converter import make_observation_converter, ObservationConverter
+from .utils import make_g2op_env
 
 # Environment configuration per curriculum level:
 ENV_CUR_MAP = [
