@@ -1,17 +1,16 @@
-"""
-Converters that transform grid2op observations into gymnasium Dict observations for RL agents.
-Each converter defines its own observation space and handles the g2op → gym conversion.
-"""
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional, TypeVar, Generic
 
+import gymnasium as gym
 import numpy as np
 import numpy.typing as npt
-import gymnasium as gym
-from gymnasium.spaces import Dict, Box
 from grid2op.Observation import BaseObservation, ObservationSpace
 from grid2op.gym_compat import GymEnv
+from gymnasium.spaces import Dict, Box
 from gymnasium.wrappers.normalize import RunningMeanStd
 
 from grid2op_env.utils import get_attr_list
@@ -25,6 +24,41 @@ EDGES = "edge_features"
 EDGE_INDEX = "edge_index"
 EDGE_MASK = "edge_mask"
 GLOBAL = "global_features"
+
+_DEFAULT_NODE_FEATURES = [
+    "active_power_forecast",
+    "reactive_power_forecast",
+    "active_power",
+    "reactive_power",
+    "voltage",
+    "voltage_angle",
+    "rho",
+]
+
+
+@dataclass
+class _GridDimensions:
+    """Static grid dimensions extracted once from the observation space."""
+
+    n_gen: int
+    n_load: int
+    n_line: int
+    n_storage: int
+
+    @classmethod
+    def from_obs_space(cls, obs_space: ObservationSpace) -> "_GridDimensions":
+        """Extract grid dimensions from a grid2op observation space."""
+        return cls(
+            n_gen=obs_space.n_gen,
+            n_load=obs_space.n_load,
+            n_line=obs_space.n_line,
+            n_storage=obs_space.n_storage,
+        )
+
+    @property
+    def num_nodes(self) -> int:
+        """Total number of graph nodes: line endpoints + gen + load + storage."""
+        return 2 * self.n_line + self.n_gen + self.n_load + self.n_storage
 
 
 class ObservationConverter(ABC, Generic[T]):
@@ -55,31 +89,22 @@ class ObservationConverter(ABC, Generic[T]):
         pass
 
 
-# --- Graph observation converter ---
-
-_DEFAULT_NODE_FEATURES = [
-    "active_power_forecast",
-    "reactive_power_forecast",
-    "active_power",
-    "reactive_power",
-    "voltage",
-    "voltage_angle",
-    "current",
-    "rho",
-]
-
-
 class GraphObservationConverter(ObservationConverter[Dict]):
     """
     Converts grid2op observations into a graph-structured Dict observation:
-      - NODES:      node feature matrix [num_nodes, x_dim]
-      - EDGE_INDEX: padded adjacency list [2, max_num_edges]
-      - EDGE_MASK:  boolean mask over EDGE_INDEX [max_num_edges]
-      - GLOBAL:     global scalar features [6]
+      - NODES:      node feature matrix      [num_nodes, x_dim]
+      - EDGE_INDEX: padded adjacency list     [2, max_num_edges]
+      - EDGE_MASK:  boolean mask over edges   [max_num_edges]
+      - GLOBAL:     global scalar features    [6]
 
-    Nodes represent loads, generators, and powerline-bus-connections.
-    Edges encode bus-connectivity within substations and powerline connections.
-    Node features are normalized using a running mean and variance estimate.
+    Node ordering: [line_or | line_ex | gen | load | storage]
+
+    Edges encode:
+      - same-substation + same-bus connectivity (dynamic, topology-dependent)
+      - line endpoint pairs (static)
+
+    Node features are normalized per-feature using a running mean/variance
+    estimate, updated only when update_normalizer=True is passed to to_gym.
     """
 
     def __init__(
@@ -92,27 +117,41 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             attr_to_observe = _DEFAULT_NODE_FEATURES
 
         self.attr_to_observe = attr_to_observe
+        self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
 
-        n_gen = g2op_obs_space.n_gen
-        n_load = g2op_obs_space.n_load
-        n_line = g2op_obs_space.n_line
-        self._num_nodes = n_gen + n_load + 2 * n_line
         num_connections = g2op_obs_space.sub_info
-        self._max_num_edges = int((num_connections * (num_connections - 1)).sum()) + 2 * n_line
+        self._max_num_edges = int((num_connections * (num_connections - 1)).sum()) + 2 * self._dims.n_line
         x_dim = len(attr_to_observe)
 
         self._observation_space = Dict({
-            NODES: Box(low=-np.inf, high=np.inf, shape=(self._num_nodes, x_dim), dtype=np.float32),
-            EDGE_INDEX: Box(low=0, high=self._num_nodes - 1, shape=(2, self._max_num_edges), dtype=np.int64),
-            EDGE_MASK: Box(low=0, high=1, shape=(self._max_num_edges,), dtype=np.bool_),
-            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+            NODES: Box(
+                low=-np.inf, high=np.inf,
+                shape=(self._dims.num_nodes, x_dim),
+                dtype=np.float32,
+            ),
+            EDGE_INDEX: Box(
+                low=0, high=self._dims.num_nodes - 1,
+                shape=(2, self._max_num_edges),
+                dtype=np.int64,
+            ),
+            EDGE_MASK: Box(
+                low=0, high=1,
+                shape=(self._max_num_edges,),
+                dtype=np.bool_,
+            ),
+            GLOBAL: Box(
+                low=-np.inf, high=np.inf,
+                shape=(6,),
+                dtype=np.float32,
+            ),
         })
 
-        self.normalizer = RunningMeanStd(shape=(self._num_nodes, x_dim))
+        # Normalize per feature, pooling across all nodes and timesteps.
+        self._normalizer = RunningMeanStd(shape=(x_dim,))
 
         if verbose:
             logger.info(
-                f"GraphObservationConverter: {self._num_nodes} nodes, "
+                f"GraphObservationConverter: {self._dims.num_nodes} nodes, "
                 f"<= {self._max_num_edges} edges, {x_dim} features per node "
                 f"({', '.join(attr_to_observe)})."
             )
@@ -123,7 +162,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
     @property
     def num_nodes(self) -> int:
-        return self._num_nodes
+        return self._dims.num_nodes
 
     @property
     def max_num_edges(self) -> int:
@@ -134,6 +173,12 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         return self._observation_space[NODES].shape[1]
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a graph-structured gym observation.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        """
         node_features = self._get_node_features(g2op_obs)
         edge_index = self._get_edge_index(g2op_obs)
         global_features = self._get_global_features(g2op_obs)
@@ -151,83 +196,136 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             GLOBAL: global_features,
         })
 
-    def normalize(self, gym_obs: Dict) -> Dict:
-        self.normalizer.update(gym_obs[NODES])
-        mean, var = self.normalizer.mean, self.normalizer.var
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features using per-feature running statistics.
+
+        Args:
+            gym_obs: Graph observation dict with raw node features.
+        """
+        node_features = gym_obs[NODES]  # (num_nodes, x_dim)
+        # Update with each node as an independent sample of shape (x_dim,)
+        self._normalizer.update(node_features)
+
+        normalized = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
         return {
-            NODES: (gym_obs[NODES] - mean) / np.sqrt(var + 1e-8),
+            NODES: normalized.astype(np.float32),
             EDGE_INDEX: gym_obs[EDGE_INDEX],
             EDGE_MASK: gym_obs[EDGE_MASK],
             GLOBAL: gym_obs[GLOBAL],
         }
 
-    @staticmethod
-    def _compute_all_node_features(g2op_obs: BaseObservation) -> dict[str, np.ndarray]:
-        """Compute all available node features keyed by name."""
-        n_line, n_gen, n_load = g2op_obs.n_line, g2op_obs.n_gen, g2op_obs.n_load
+    def _compute_all_node_features(
+        self, g2op_obs: BaseObservation
+    ) -> dict[str, npt.NDArray[np.float32]]:
+        """
+        Compute all supported node features, each as a flat array of length
+        num_nodes in order [line_or | line_ex | gen | load | storage].
+        """
+        dims = self._dims
+        zeros_line = np.zeros(dims.n_line, dtype=np.float32)
+        zeros_gen = np.zeros(dims.n_gen, dtype=np.float32)
+        zeros_load = np.zeros(dims.n_load, dtype=np.float32)
+        zeros_storage = np.zeros(dims.n_storage, dtype=np.float32)
 
         if not g2op_obs._is_done:
-            P_MW = np.concatenate([g2op_obs.gen_p, g2op_obs.load_p])
-            Q_MVar = np.concatenate([g2op_obs.gen_q, g2op_obs.load_q])
-            V_kV = np.concatenate([g2op_obs.gen_v, g2op_obs.load_v])
-            theta_deg = np.concatenate([g2op_obs.gen_theta, g2op_obs.load_theta])
-
-            S = (P_MW + 1j * Q_MVar) * 1e6
-            V_mag = V_kV * 1e3
-            theta_rad = np.deg2rad(theta_deg)
-            V_phasor = V_mag * (np.cos(theta_rad) + 1j * np.sin(theta_rad))
-            I_phasor = np.conj(S) / (np.sqrt(3) * V_phasor)
-            I_mag = np.abs(I_phasor)
-
             load_p, load_q, prod_p, prod_q, _ = g2op_obs.get_forecast_arrays()
-            active_power_forecast = np.concatenate([np.zeros((2 * n_line,)), prod_p[1], -load_p[1]])
-            reactive_power_forecast = np.concatenate([np.zeros((2 * n_line,)), prod_q[1], -load_q[1]])
+            # Index 1 = next timestep forecast; sign convention: gen positive, load negative
+            gen_p_forecast = prod_p[1].astype(np.float32)
+            gen_q_forecast = prod_q[1].astype(np.float32)
+            load_p_forecast = -load_p[1].astype(np.float32)
+            load_q_forecast = -load_q[1].astype(np.float32)
         else:
-            I_mag = np.zeros(n_gen + n_load)
-            active_power_forecast = np.zeros(2 * n_line + n_gen + n_load)
-            reactive_power_forecast = np.zeros(2 * n_line + n_gen + n_load)
+            gen_p_forecast = zeros_gen
+            gen_q_forecast = zeros_gen
+            load_p_forecast = zeros_load
+            load_q_forecast = zeros_load
 
         return {
-            "active_power_forecast": active_power_forecast,
-            "reactive_power_forecast": reactive_power_forecast,
-            "active_power": np.concatenate([g2op_obs.p_or, g2op_obs.p_ex, g2op_obs.gen_p, -g2op_obs.load_p]),
-            "reactive_power": np.concatenate([g2op_obs.q_or, g2op_obs.q_ex, g2op_obs.gen_q, -g2op_obs.load_q]),
-            "voltage": np.concatenate([g2op_obs.v_or, g2op_obs.v_ex, g2op_obs.gen_v, g2op_obs.load_v]),
-            "voltage_angle": np.concatenate([g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta]),
-            "current": np.concatenate([g2op_obs.a_or, g2op_obs.a_ex, I_mag]),
-            "rho": np.concatenate([g2op_obs.rho, g2op_obs.rho, np.zeros(n_gen + n_load)]),
+            "active_power_forecast": np.concatenate([
+                zeros_line, zeros_line, gen_p_forecast, load_p_forecast, zeros_storage,
+            ]),
+            "reactive_power_forecast": np.concatenate([
+                zeros_line, zeros_line, gen_q_forecast, load_q_forecast, zeros_storage,
+            ]),
+            # Generator convention: generation positive, consumption negative
+            "active_power": np.concatenate([
+                g2op_obs.p_or, g2op_obs.p_ex, g2op_obs.gen_p, -g2op_obs.load_p, g2op_obs.storage_power,
+            ]),
+            "reactive_power": np.concatenate([
+                g2op_obs.q_or, g2op_obs.q_ex, g2op_obs.gen_q, -g2op_obs.load_q, zeros_storage,
+            ]),
+            "voltage": np.concatenate([
+                g2op_obs.v_or, g2op_obs.v_ex, g2op_obs.gen_v, g2op_obs.load_v, zeros_storage,
+            ]),
+            "voltage_angle": np.concatenate([
+                g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta, g2op_obs.storage_theta,
+            ]),
+            # rho is a line-level quantity; non-line nodes get 0
+            "rho": np.concatenate([
+                g2op_obs.rho, g2op_obs.rho, zeros_gen, zeros_load, zeros_storage,
+            ]),
         }
 
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """Assemble the node feature matrix for the requested attributes."""
         all_features = self._compute_all_node_features(g2op_obs)
         node_features = np.column_stack([all_features[name] for name in self.attr_to_observe])
         return node_features.astype(np.float32)
 
-    def _get_edge_index(self, g2op_obs: BaseObservation) -> npt.NDArray[np.int32]:
-        connected_to_sub = np.concatenate([
+    def _get_edge_index(self, g2op_obs: BaseObservation) -> npt.NDArray[np.int64]:
+        """
+        Build the edge index for the current topology.
+
+        Two types of edges:
+          1. Same-substation + same-bus pairs (dynamic, changes with topology actions)
+          2. Line origin <-> extremity pairs (static)
+
+        Disconnected elements (bus == -1) are excluded from type-1 edges.
+        """
+        dims = self._dims
+
+        # Node ordering: [line_or | line_ex | gen | load | storage]
+        sub_ids = np.concatenate([
             g2op_obs.line_or_to_subid, g2op_obs.line_ex_to_subid,
             g2op_obs.gen_to_subid, g2op_obs.load_to_subid,
+            g2op_obs.storage_to_subid,
         ])
-        connected_to_bus = np.concatenate([
+        bus_ids = np.concatenate([
             g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
             g2op_obs.gen_bus, g2op_obs.load_bus,
+            g2op_obs.storage_bus,
         ])
 
-        edge_index = []
-        for i in range(self._num_nodes):
-            for j in range(i + 1, self._num_nodes):
-                if connected_to_bus[i] == connected_to_bus[j] and connected_to_sub[i] == connected_to_sub[j]:
-                    edge_index.append([i, j])
-                    edge_index.append([j, i])
+        # Vectorized same-substation + same-bus edges, excluding disconnected nodes
+        connected = bus_ids > 0  # bus == -1 means disconnected
+        same_sub = sub_ids[:, None] == sub_ids[None, :]  # (N, N)
+        same_bus = bus_ids[:, None] == bus_ids[None, :]  # (N, N)
+        valid = connected[:, None] & connected[None, :]  # both endpoints connected
+        upper = np.triu(np.ones((dims.num_nodes, dims.num_nodes), dtype=bool), k=1)
+        topo_mask = same_sub & same_bus & valid & upper
+        topo_src, topo_dst = np.where(topo_mask)
+        # Make bidirectional
+        topo_edges = np.stack([
+            np.concatenate([topo_src, topo_dst]),
+            np.concatenate([topo_dst, topo_src]),
+        ])  # (2, 2*n_topo_edges)
 
-        for i in range(g2op_obs.n_line):
-            edge_index.append([i, i + g2op_obs.n_line])
-            edge_index.append([i + g2op_obs.n_line, i])
+        # Static line endpoint edges: line_or node i <-> line_ex node i+n_line
+        line_or_nodes = np.arange(dims.n_line)
+        line_ex_nodes = np.arange(dims.n_line, 2 * dims.n_line)
+        line_edges = np.stack([
+            np.concatenate([line_or_nodes, line_ex_nodes]),
+            np.concatenate([line_ex_nodes, line_or_nodes]),
+        ])  # (2, 2*n_line)
 
-        return np.array(edge_index).transpose().astype(np.int32)
+        return np.concatenate([topo_edges, line_edges], axis=1).astype(np.int64)
 
     @staticmethod
-    def _get_global_features(g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+    def _get_global_features(
+        g2op_obs: BaseObservation,
+    ) -> npt.NDArray[np.float32]:
+        """Extract time-based global features."""
         return np.array([
             g2op_obs.year,
             g2op_obs.month,
