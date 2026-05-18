@@ -26,7 +26,7 @@ Designed to be composed with other RLlib callbacks::
     from ray.rllib.algorithms.callbacks import make_multi_callbacks
     callbacks = make_multi_callbacks([AnnealingCallback, MyOtherCallback])
 """
-
+import logging
 import time
 from typing import Dict, Optional, List, Any
 
@@ -53,6 +53,7 @@ from rarl.annealing import AnnealingState
 from visualization import PlottingArgs, visualize_graph, get_node_styles
 
 _POLICY_ID = "default_policy"
+logger = logging.getLogger(__name__)
 
 
 def _get_policy(algorithm: Algorithm, policy_id: str = _POLICY_ID):
@@ -77,23 +78,30 @@ class AnnealingCallback(DefaultCallbacks):
     def on_algorithm_init(self, *, algorithm: Algorithm, **kwargs) -> None:
         super().on_algorithm_init(algorithm=algorithm, **kwargs)
         policy = _get_policy(algorithm)
-        if policy is None or not hasattr(policy, "current_beta"):
+        if policy is None or not hasattr(policy, "current_beta_graph"):
+            logger.warning("Algorithm does not support annealing (Policy unknown or no annealable parameters found")
             return
 
         ra_cfg = policy.config.get("relation_awareness", {})
-        samp_cfg = policy.config["model"]["custom_model_config"].get("sampling", ra_cfg)
-        total = algorithm.config.get("total_timesteps", 1_000_000)
+        sampling_cfg = ra_cfg.get("sampling", {})
+        loss_cfg = ra_cfg.get("loss", {})
+
+        if hasattr(algorithm.config, "total_timesteps"):
+            total = algorithm.config["total_timesteps"]
+        else:
+            total = 1_000_000
+            logger.warning(f"Total duration cannot be determined from the config. Using default of {total}.")
 
         self._state = AnnealingState(
-            beta_start=ra_cfg.get("beta_start", 0.0),
-            beta_end=ra_cfg.get("beta_end", ra_cfg.get("beta", 1.0)),
-            beta_non_graph_start=ra_cfg.get("beta_non_graph_edges_start", 0.0),
-            beta_non_graph_end=ra_cfg.get("beta_non_graph_edges_end", ra_cfg.get("beta", 1.0)),
-            tau_start=samp_cfg.get("tau_start", 2.0),
-            tau_end=samp_cfg.get("tau_end", samp_cfg.get("temperature", 1.0)),
+            beta_start=loss_cfg.get("beta_graph_edges_start", 0.0),
+            beta_end=loss_cfg.get("beta_graph_edges_end", loss_cfg.get("beta", 1.0)),
+            beta_non_graph_start=loss_cfg.get("beta_non_graph_edges_start", 0.0),
+            beta_non_graph_end=loss_cfg.get("beta_non_graph_edges_end", loss_cfg.get("beta", 1.0)),
+            tau_start=sampling_cfg.get("tau_start", 2.0),
+            tau_end=sampling_cfg.get("tau_end", sampling_cfg.get("temperature", 1.0)),
             total_steps=total,
-            beta_anneal_steps=ra_cfg.get("beta_anneal_timesteps", total),
-            tau_anneal_steps=ra_cfg.get("tau_anneal_timesteps", total),
+            beta_anneal_steps=loss_cfg.get("beta_anneal_timesteps", total),
+            tau_anneal_steps=sampling_cfg.get("tau_anneal_timesteps", total),
         )
 
         # Set initial values on all workers
@@ -119,13 +127,27 @@ class AnnealingCallback(DefaultCallbacks):
 
         def _update(worker):
             p = worker.policy_map.get(_POLICY_ID) or worker.policy_map.get(RL_POLICY)
-            if p is None or not hasattr(p, "current_beta"):
+            if p is None:
+                logger.warning(f"Cannot anneal parameters. Policy with the name {RL_POLICY} does not exist")
                 return
-            p.current_beta_graph = beta
-            p.current_beta_non_graph = beta_ng
-            p.current_tau = tau
+
+            if hasattr(p, "current_beta_graph"):
+                p.current_beta_graph = beta
+            else:
+                logger.warning(f"current_beta_graph can not be set on policy {p}")
+            if hasattr(p, "current_beta_non_graph"):
+                p.current_beta_non_graph = beta_ng
+            else:
+                logger.warning(f"current_beta_non_graph can not be set on policy {p}")
+            if hasattr(p, "current_tau"):
+                p.current_tau = tau
+            else:
+                logger.warning(f"current_tau can not be set on policy {p}")
+
             if hasattr(p, "model") and hasattr(p.model, "set_tau"):
                 p.model.set_tau(tau)
+            else:
+                logger.warning(f"tau can not be set on model {p.model}")
 
         algorithm.workers.local_worker().call(_update)
         algorithm.workers.foreach_worker(_update)
