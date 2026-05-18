@@ -149,7 +149,6 @@ class AnnealingCallback(DefaultCallbacks):
             else:
                 logger.warning(f"tau can not be set on model {p.model}")
 
-        algorithm.workers.local_worker().call(_update)
         algorithm.workers.foreach_worker(_update)
 
 
