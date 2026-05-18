@@ -2,3 +2,4 @@ defaults:
   - default
 
 nb_timesteps: 120_000_000
+checkpoint_freq: 50000    # ~9 checkpoints over 468k iterations (120M steps / batch 256)
