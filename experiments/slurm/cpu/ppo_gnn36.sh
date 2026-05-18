@@ -35,6 +35,6 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.seed=${seed} \
     experiment.name=${experiment_name} \
     experiment.nb_timesteps=105000 \
-    env=case36 \
+    env=case36
 EOF
 done
