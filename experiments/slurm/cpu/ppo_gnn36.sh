@@ -36,7 +36,5 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.name=${experiment_name} \
     experiment.nb_timesteps=105000 \
     env=case36 \
-    rollouts.num_rollout_workers=8 \
-    training.sgd_minibatch_size=16
 EOF
 done
