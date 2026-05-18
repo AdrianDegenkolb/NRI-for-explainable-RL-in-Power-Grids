@@ -1,6 +1,6 @@
 #!/bin/bash
 # RASAC: Relation-Aware SAC (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_rasac
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rasac
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

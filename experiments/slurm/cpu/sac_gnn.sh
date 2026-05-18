@@ -1,6 +1,6 @@
 #!/bin/bash
 # SAC + GNN baseline (fixed graph edges, no NRI encoder) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_sac_gnn
+experiment_name=$(date +%Y_%m_%d)_IEEE14/sac_gnn
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

@@ -1,6 +1,6 @@
 #!/bin/bash
 # DQN + GNN baseline (fixed graph edges, no NRI encoder) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_dqn_gnn_118
+experiment_name=$(date +%Y_%m_%d)_IEEE118/dqn_gnn
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

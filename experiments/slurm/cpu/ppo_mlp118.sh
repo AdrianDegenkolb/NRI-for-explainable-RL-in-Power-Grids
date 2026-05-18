@@ -1,6 +1,6 @@
 #!/bin/bash
 # PPO + MLP baseline (flat observations, no graph structure) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_ppo_mlp_118
+experiment_name=$(date +%Y_%m_%d)_IEEE118/ppo_mlp
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

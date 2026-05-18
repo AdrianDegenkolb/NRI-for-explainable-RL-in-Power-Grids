@@ -1,6 +1,6 @@
 #!/bin/bash
 # RADQN: Relation-Aware Rainbow DQN (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_radqn_36
+experiment_name=$(date +%Y_%m_%d)_IEEE36/radqn
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
