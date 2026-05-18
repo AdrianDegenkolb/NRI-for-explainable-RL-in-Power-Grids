@@ -72,6 +72,7 @@ def compute_ra_kl_loss(
     total = num_graph + num_latent
     f_graph = num_graph / total if total > 0 else torch.zeros((), device=posteriors.device)
     f_latent = num_latent / total if total > 0 else torch.zeros((), device=posteriors.device)
+    total_interaction_probability_mass = posteriors[:,:,:-1].sum(dim=[1, 2]).mean()
 
     kl_loss = f_graph * beta * kl_graph + f_latent * beta_non_graph * kl_latent
 
@@ -82,6 +83,7 @@ def compute_ra_kl_loss(
         "kl_unweighted": (f_graph * kl_graph + f_latent * kl_latent).detach(),
         "fraction_graph_edges": f_graph.detach(),
         "fraction_latent_edges": f_latent.detach(),
+        "total_interaction_probability_mass": total_interaction_probability_mass.detach()
     }
 
     return kl_loss, stats
