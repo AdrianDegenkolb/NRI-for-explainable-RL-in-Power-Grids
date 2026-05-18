@@ -28,6 +28,7 @@ Designed to be composed with other RLlib callbacks::
 """
 import logging
 import time
+import torch
 from typing import Dict, Optional, List, Any
 
 import grid2op
@@ -253,6 +254,10 @@ class CustomMetricsCallback(DefaultCallbacks):
         self.node_styles = get_node_styles(env, GraphObservationConverter)
         obs_space = GraphObservationConverter(env.observation_space)
         self.powerline_edge_index = obs_space._get_edge_index(env.reset())
+        policy = _get_policy(algorithm)
+        if policy is not None and hasattr(policy, "model"):
+            logger.info(f"Instantiated model class: {type(policy.model).__name__}")
+
         if hasattr(algorithm, "curriculum_training") and algorithm.curriculum_training:
             print(f"Start with curriculum level {self.curr_level}")
 
@@ -335,6 +340,16 @@ class CustomMetricsCallback(DefaultCallbacks):
             "disconnect_count": np.mean(custom.get("disconnect_count", -1)),
             "reset_count": np.mean(custom.get("reset_count", -1))
         }
+
+        policy = _get_policy(algorithm)
+        if policy is not None and hasattr(policy, "model"):
+            model = policy.model
+            if hasattr(model, "ragnn") and hasattr(model.ragnn, "encoder"):
+                grads = [p.grad for p in model.ragnn.encoder.parameters() if p.grad is not None]
+                updated["encoder_grad_norm"] = (
+                    torch.norm(torch.stack([g.norm() for g in grads])).item()
+                    if grads else 0.0
+                )
 
         if len(custom) > 0:
             result["custom_metrics"] = updated
