@@ -235,11 +235,12 @@ class TuneCallback(TuneReporterBase):
 
 
 class CustomMetricsCallback(DefaultCallbacks):
-    def __init__(self, legacy_callbacks_dict: Dict[str, callable] = None):
+    def __init__(self, legacy_callbacks_dict: Dict[str, callable] = None, graph_viz_freq: int = 10):
         super().__init__(legacy_callbacks_dict)
         self.curr_level = 0
         self.node_styles = None
         self.powerline_edge_index = None
+        self._graph_viz_freq = graph_viz_freq
 
     def on_algorithm_init(
             self,
@@ -364,27 +365,29 @@ class CustomMetricsCallback(DefaultCallbacks):
                          .get("learner", {})
                          .get(RL_POLICY, {})
                          .get("learner_stats", {}))
-        posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
-        if posterior_mean is not None:
-            result["relation_awareness/latent_graph_mean"] = _fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=len(self.node_styles),
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_mean),
-                    powerline_edge_index=self.powerline_edge_index,
-                ))
-            )
+        training_iter = result.get("training_iteration", 0)
+        if training_iter % self._graph_viz_freq == 0:
+            posterior_mean = learner_stats.get("relation_awareness/posterior_mean")
+            if posterior_mean is not None:
+                result["relation_awareness/latent_graph_mean"] = _fig_to_chw_uint8(
+                    visualize_graph(PlottingArgs(
+                        num_nodes=len(self.node_styles),
+                        node_styles=self.node_styles,
+                        latent_edge_probs=np.array(posterior_mean),
+                        powerline_edge_index=self.powerline_edge_index,
+                    ))
+                )
 
-        posterior_var = learner_stats.get("relation_awareness/posterior_var")
-        if posterior_var is not None:
-            result["relation_awareness/latent_graph_var"] = _fig_to_chw_uint8(
-                visualize_graph(PlottingArgs(
-                    num_nodes=len(self.node_styles),
-                    node_styles=self.node_styles,
-                    latent_edge_probs=np.array(posterior_var),
-                    powerline_edge_index=self.powerline_edge_index,
-                ))
-            )
+            posterior_var = learner_stats.get("relation_awareness/posterior_var")
+            if posterior_var is not None:
+                result["relation_awareness/latent_graph_var"] = _fig_to_chw_uint8(
+                    visualize_graph(PlottingArgs(
+                        num_nodes=len(self.node_styles),
+                        node_styles=self.node_styles,
+                        latent_edge_probs=np.array(posterior_var),
+                        powerline_edge_index=self.powerline_edge_index,
+                    ))
+                )
 
         if algorithm.curriculum_training:
             if self.curr_level < len(algorithm.curriculum_threshold) and \

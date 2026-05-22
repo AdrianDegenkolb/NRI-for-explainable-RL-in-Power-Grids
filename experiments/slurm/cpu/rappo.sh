@@ -20,6 +20,7 @@ sbatch << EOF
 #SBATCH --mem=200G
 #SBATCH --partition=cpu_il,cpu
 
+export RAY_gcs_rpc_server_reconnect_timeout_s=300
 module load devel/miniforge
 eval "\$(conda shell.bash hook)"
 conda activate L2RPN
