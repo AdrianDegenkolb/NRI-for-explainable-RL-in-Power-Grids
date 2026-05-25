@@ -116,7 +116,7 @@ class RAFeatureExtractor(nn.Module):
         )  # [B*E, K]
 
         posterior: Tensor = F.softmax(logits, dim=-1)          # [B*E, K]
-        sampled: Tensor = self.gumbel_softmax(logits)           # [B*E, K]
+        sampled: Tensor = self.gumbel_softmax(logits, hard=self.training)  # [B*E, K]
 
         # --- RAGNN: conditioned message passing ---
         embeddings: Tensor = self.gnn(
