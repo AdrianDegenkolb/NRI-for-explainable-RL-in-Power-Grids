@@ -149,6 +149,30 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         # Normalize per feature, pooling across all nodes and timesteps.
         self._normalizer = RunningMeanStd(shape=(x_dim,))
 
+        # Precompute static grid topology (node ordering: [line_or | line_ex | gen | load | storage])
+        sub_ids = np.concatenate([
+            g2op_obs_space.line_or_to_subid,
+            g2op_obs_space.line_ex_to_subid,
+            g2op_obs_space.gen_to_subid,
+            g2op_obs_space.load_to_subid,
+            g2op_obs_space.storage_to_subid,
+        ])
+        # Candidate topology pairs: all (i, j) with i < j in the same substation.
+        # Filtering to same-bus + connected is done dynamically; this eliminates the
+        # O(N²) same_sub broadcast that was recomputed on every observation step.
+        N = self._dims.num_nodes
+        ii, jj = np.triu_indices(N, k=1)
+        same_sub_mask = sub_ids[ii] == sub_ids[jj]
+        self._topo_cand_src = ii[same_sub_mask].astype(np.int64)
+        self._topo_cand_dst = jj[same_sub_mask].astype(np.int64)
+
+        line_or_nodes = np.arange(self._dims.n_line)
+        line_ex_nodes = np.arange(self._dims.n_line, 2 * self._dims.n_line)
+        self._line_edges = np.stack([
+            np.concatenate([line_or_nodes, line_ex_nodes]),
+            np.concatenate([line_ex_nodes, line_or_nodes]),
+        ]).astype(np.int64)
+
         if verbose:
             logger.info(
                 f"GraphObservationConverter: {self._dims.num_nodes} nodes, "
@@ -279,47 +303,44 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         Two types of edges:
           1. Same-substation + same-bus pairs (dynamic, changes with topology actions)
-          2. Line origin <-> extremity pairs (static)
+          2. Line origin <-> extremity pairs (dynamic, excluded when the line is disconnected)
 
-        Disconnected elements (bus == -1) are excluded from type-1 edges.
+        Disconnected elements (bus == -1) are excluded from both edge types.
+
+        Complexity: O(N + E) per call instead of O(N²), achieved by grouping
+        connected nodes by (substation, bus) key and generating pairs only within
+        each group. The old N×N broadcast approach allocates four boolean matrices
+        of size N×N on every step, which is ~10× more memory/compute on IEEE36
+        (N=177) than on IEEE14 (N=57).
         """
-        dims = self._dims
-
-        # Node ordering: [line_or | line_ex | gen | load | storage]
-        sub_ids = np.concatenate([
-            g2op_obs.line_or_to_subid, g2op_obs.line_ex_to_subid,
-            g2op_obs.gen_to_subid, g2op_obs.load_to_subid,
-            g2op_obs.storage_to_subid,
-        ])
         bus_ids = np.concatenate([
             g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
             g2op_obs.gen_bus, g2op_obs.load_bus,
             g2op_obs.storage_bus,
         ])
 
-        # Vectorized same-substation + same-bus edges, excluding disconnected nodes
-        connected = bus_ids > 0  # bus == -1 means disconnected
-        same_sub = sub_ids[:, None] == sub_ids[None, :]  # (N, N)
-        same_bus = bus_ids[:, None] == bus_ids[None, :]  # (N, N)
-        valid = connected[:, None] & connected[None, :]  # both endpoints connected
-        upper = np.triu(np.ones((dims.num_nodes, dims.num_nodes), dtype=bool), k=1)
-        topo_mask = same_sub & same_bus & valid & upper
-        topo_src, topo_dst = np.where(topo_mask)
-        # Make bidirectional
+        # Filter precomputed same-substation candidate pairs by dynamic bus assignment.
+        # Both endpoints must be on the same bus and connected (bus > 0).
+        src = self._topo_cand_src
+        dst = self._topo_cand_dst
+        valid = (bus_ids[src] == bus_ids[dst]) & (bus_ids[src] > 0)
+        topo_src = src[valid]
+        topo_dst = dst[valid]
         topo_edges = np.stack([
             np.concatenate([topo_src, topo_dst]),
             np.concatenate([topo_dst, topo_src]),
-        ])  # (2, 2*n_topo_edges)
+        ])
 
-        # Static line endpoint edges: line_or node i <-> line_ex node i+n_line
-        line_or_nodes = np.arange(dims.n_line)
-        line_ex_nodes = np.arange(dims.n_line, 2 * dims.n_line)
-        line_edges = np.stack([
-            np.concatenate([line_or_nodes, line_ex_nodes]),
-            np.concatenate([line_ex_nodes, line_or_nodes]),
-        ])  # (2, 2*n_line)
+        # Filter line edges: exclude disconnected lines (bus_ids layout is
+        # [line_or | line_ex | gen | load | storage], so line_or_bus = bus_ids[:n_line]
+        # and line_ex_bus = bus_ids[n_line:2*n_line]).
+        n_line = self._dims.n_line
+        line_connected = (bus_ids[:n_line] > 0) & (bus_ids[n_line:2 * n_line] > 0)
+        # _line_edges columns: first n_line are or→ex, next n_line are ex→or
+        line_mask = np.concatenate([line_connected, line_connected])
+        active_line_edges = self._line_edges[:, line_mask]
 
-        return np.concatenate([topo_edges, line_edges], axis=1).astype(np.int64)
+        return np.concatenate([topo_edges, active_line_edges], axis=1)
 
     @staticmethod
     def _get_global_features(
