@@ -309,15 +309,21 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
     if args.latent_edge_probs is not None:
         cmap = plt.get_cmap("Pastel1")
         edge_index_full = fully_connected_edge_index(num_nodes=args.num_nodes)
-        max_type = args.latent_edge_probs.shape[1] - 1
-        for e_idx, probs in enumerate(args.latent_edge_probs):
-            src, dst = edge_index_full[:, e_idx]
-            for t, p in enumerate(probs):
-                if args.skip_last_edge_type and t == max_type:
-                    continue
+        probs_array = args.latent_edge_probs  # [E, num_edge_types]
+        max_type = probs_array.shape[1] - 1
+        num_types = max_type if args.skip_last_edge_type else max_type + 1
+
+        # Prefilter with numpy before entering Python loops: for each edge type,
+        # find only the edges whose probability exceeds the threshold.  For large
+        # grids this avoids iterating over O(N²) edges in pure Python.
+        for t in range(num_types):
+            above = np.where(probs_array[:, t] > args.visualize_edge_prob_threshold)[0]
+            for e_idx in above:
+                p = probs_array[e_idx, t]
                 # 1 for p = 0.5, args.latent_edge_weight for p = 1
-                w = (2 * args.latent_edge_weight - 2) * p - (args.latent_edge_weight - 2) if p > args.visualize_edge_prob_threshold else 0
+                w = (2 * args.latent_edge_weight - 2) * p - (args.latent_edge_weight - 2)
                 if w >= 1:
+                    src, dst = edge_index_full[:, e_idx]
                     G.add_edge(int(src), int(dst), color=cmap(1 + t), weight=w, type="Dependency")
 
     # get positions
