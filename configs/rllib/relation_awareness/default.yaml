@@ -8,12 +8,12 @@ prior:
   temperature: 0.5                 # controls how many non-powerline edges the encoder adds
 
 loss:
-  beta_graph_edges_start: 0.0
-  beta_graph_edges_end: 5.0
-  beta_graph_edges: 5.0            # KL weight for graph (powerline) edges
-  beta_non_graph_edges_start: 0.0
-  beta_non_graph_edges_end: 5.0
-  beta_non_graph_edges: 5.0        # KL weight for non-graph edges
+  beta_graph_edges_start: 0.1
+  beta_graph_edges_end: 1.0
+  beta_graph_edges: 1.0            # KL weight for graph (powerline) edges
+  beta_non_graph_edges_start: 0.1
+  beta_non_graph_edges_end: 1.0
+  beta_non_graph_edges: 1.0        # KL weight for non-graph edges
 
 latent_space:
   num_edge_types: 2
