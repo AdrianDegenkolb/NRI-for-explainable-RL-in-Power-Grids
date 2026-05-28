@@ -1,7 +1,7 @@
 import unittest
 import torch
 from torch_geometric.data import Data, Batch
-from src.ra_agents.RAGNN import RAGNN
+from rarl.nn.ragnn import RAGNN
 
 
 class TestRAGNN(unittest.TestCase):

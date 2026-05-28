@@ -1,6 +1,6 @@
 num_rollout_workers: 48
 num_learner_workers: 4
-num_gpus_per_learner_worker: 1
+num_gpus_per_learner_worker: 0
 
 count_steps_by: agent_steps
 keep_per_episode_custom_metrics: true

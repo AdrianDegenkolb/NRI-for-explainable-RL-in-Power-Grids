@@ -104,6 +104,8 @@ ENV/
 
 *.npy
 
-results
+results/**
+!results/README.md
+!results/.gitignore
 src/visualization/output
 src/visualization/results

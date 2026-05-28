@@ -7,11 +7,11 @@ from typing import Any
 
 from grid2op.Action import ActionSpace, BaseAction
 from grid2op.Observation import BaseObservation
-from grid2op.gym_compat import GymEnv
 from ray.rllib import Policy
 
-from .heuristic_agent import HeuristicsAgent
 from core.constants import RL_POLICY
+from grid2op_env import CustomizedGrid2OpEnvironment
+from .heuristic_agent import HeuristicsAgent
 
 
 class RllibAgent(HeuristicsAgent):
@@ -27,7 +27,7 @@ class RllibAgent(HeuristicsAgent):
         file_path: str,
         policy_name: str,
         checkpoint_name: str,
-        gym_wrapper: GymEnv,
+        gym_wrapper: CustomizedGrid2OpEnvironment,
     ):
         rules = {
             "activation_threshold": env_config["rho_threshold"],

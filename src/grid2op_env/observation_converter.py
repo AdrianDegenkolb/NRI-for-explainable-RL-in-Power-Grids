@@ -426,7 +426,7 @@ class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
 def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config."""
     mode = env_config.get("observation_space", "FlatSpace")
-    if mode == "GraphObsSpace":
+    if mode == "GraphObsSpace" or mode == "BusConnectivityGraphObsSpace":
         return GraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),

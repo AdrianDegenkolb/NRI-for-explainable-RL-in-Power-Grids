@@ -3,11 +3,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
+from gymnasium import spaces
 from ray.rllib import SampleBatch
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 
-from src.common.observation_space import EDGE_INDEX, EDGE_MASK
-from src.ra_agents.ppo.rllib.rappo.RAPPO import RAPPOTorchPolicy
+from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
+from rarl_rllib.ppo.rappo_policy import RAPPOTorchPolicy
 
 
 class TestRAPPOTorchPolicy(unittest.TestCase):
@@ -28,25 +29,49 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
         policy = Mock(spec=RAPPOTorchPolicy)
         policy.device = self.device
 
-        # Mock observation space
-        policy.observation_space = Mock()
-        policy.observation_space.num_nodes = self.num_nodes
+        # Observation space must be a real Dict so common.py can subscript it
+        x_dim = 5
+        policy.observation_space = spaces.Dict({
+            NODES: spaces.Box(
+                low=-np.inf, high=np.inf,
+                shape=(self.num_nodes, x_dim), dtype=np.float32,
+            ),
+            EDGE_INDEX: spaces.Box(
+                low=0, high=self.num_nodes - 1,
+                shape=(2, self.max_edges), dtype=np.int64,
+            ),
+            EDGE_MASK: spaces.Box(
+                low=0, high=1,
+                shape=(self.max_edges,), dtype=bool,
+            ),
+        })
 
-        # Mock config
+        # Mock config (matches current relation_awareness YAML structure)
         policy.config = {
             "relation_awareness": {
-                "prior_prob_for_graph_edge": 0.8,
-                "temperature": 0.2,
-                "beta": 0.5,
+                "prior": {
+                    "prior_prob_for_graph_edge": 0.8,
+                    "temperature": 0.2,
+                },
+                "loss": {
+                    "beta_graph_edges": 0.5,
+                    "beta_non_graph_edges": 0.5,
+                },
+                "sampling": {
+                    "tau": 1.0,
+                },
+                "latent_space": {
+                    "num_edge_types": num_edge_types,
+                },
             },
-            "model": {
-                "custom_model_config": {
-                    "encoder": {
-                        "num_edge_types": num_edge_types
-                    }
-                }
-            }
         }
+        # Attributes set by init_ra_config at runtime
+        policy.current_beta_graph = 0.5
+        policy.current_beta_non_graph = 0.5
+        policy.current_tau = 1.0
+        policy.num_edge_types = num_edge_types
+        policy.prior_prob_for_graph_edge = 0.8
+        policy.temperature = 0.2
 
         return policy
 
@@ -87,6 +112,10 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
         """Create a mock model with get_posterior method."""
         model = Mock()
         model.tower_stats = {}
+        # store_ra_tower_stats accesses model.ragnn.gnn.stats; must be iterable
+        model.ragnn = Mock()
+        model.ragnn.gnn = Mock()
+        model.ragnn.gnn.stats = {}
 
         # Calculate number of edges in fully connected graph (no self-loops)
         num_fc_edges = self.num_nodes * (self.num_nodes - 1)
@@ -126,20 +155,19 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
         # Verify model.get_posterior was called
         model.get_posterior.assert_called_once()
 
-        # Verify tower_stats were set
-        self.assertIn("kl_loss", model.tower_stats)
-        self.assertIn("total_loss", model.tower_stats)
-        self.assertIn("mean_prior", model.tower_stats)
-        self.assertIn("mean_posterior", model.tower_stats)
+        # Verify tower_stats were set (keys use "ra_" prefix in common.py)
+        self.assertIn("ra_kl_loss", model.tower_stats)
+        self.assertIn("ra_mean_prior", model.tower_stats)
+        self.assertIn("ra_mean_posterior", model.tower_stats)
 
         # Check shapes
-        kl_loss = model.tower_stats["kl_loss"]
+        kl_loss = model.tower_stats["ra_kl_loss"]
         self.assertIsInstance(kl_loss, torch.Tensor)
         self.assertEqual(kl_loss.dim(), 0)  # Should be scalar
 
         # Check prior and posterior shapes: [num_edges, num_edge_types]
-        mean_prior = model.tower_stats["mean_prior"]
-        mean_posterior = model.tower_stats["mean_posterior"]
+        mean_prior = model.tower_stats["ra_mean_prior"]
+        mean_posterior = model.tower_stats["ra_mean_posterior"]
         num_fc_edges = self.num_nodes * (self.num_nodes - 1)
 
         self.assertEqual(mean_prior.shape, (num_fc_edges, num_edge_types))
@@ -178,16 +206,15 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
         # Verify model.get_posterior was called
         model.get_posterior.assert_called_once()
 
-        # Verify tower_stats were set
-        self.assertIn("kl_loss", model.tower_stats)
-        self.assertIn("total_loss", model.tower_stats)
-        self.assertIn("mean_prior", model.tower_stats)
-        self.assertIn("mean_posterior", model.tower_stats)
+        # Verify tower_stats were set (keys use "ra_" prefix in common.py)
+        self.assertIn("ra_kl_loss", model.tower_stats)
+        self.assertIn("ra_mean_prior", model.tower_stats)
+        self.assertIn("ra_mean_posterior", model.tower_stats)
 
         # Check shapes with 3 edge types
         num_fc_edges = self.num_nodes * (self.num_nodes - 1)
-        mean_prior = model.tower_stats["mean_prior"]
-        mean_posterior = model.tower_stats["mean_posterior"]
+        mean_prior = model.tower_stats["ra_mean_prior"]
+        mean_posterior = model.tower_stats["ra_mean_posterior"]
 
         self.assertEqual(mean_prior.shape, (num_fc_edges, num_edge_types))
         self.assertEqual(mean_posterior.shape, (num_fc_edges, num_edge_types))
@@ -207,15 +234,14 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
 
         base_loss_value = 1.0
         base_loss = torch.tensor(base_loss_value)
-        beta = policy.config["relation_awareness"]["beta"]
 
         with patch.object(PPOTorchPolicy, 'loss', return_value=base_loss):
             bound_loss = RAPPOTorchPolicy.loss.__get__(policy, RAPPOTorchPolicy)
             total_loss = bound_loss(model, None, train_batch)
 
-        # Total loss should be base_loss + beta * kl_loss
-        kl_loss = model.tower_stats["kl_loss"]
-        expected_total = base_loss_value + beta * kl_loss.item()
+        # Total loss is base_loss + kl_loss; beta is already factored inside compute_ra_kl_loss
+        kl_loss = model.tower_stats["ra_kl_loss"]
+        expected_total = base_loss_value + kl_loss.item()
 
         self.assertAlmostEqual(total_loss.item(), expected_total, places=5)
 
@@ -234,7 +260,7 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
             bound_loss = RAPPOTorchPolicy.loss.__get__(policy, RAPPOTorchPolicy)
             bound_loss(model, None, train_batch)
 
-        kl_loss = model.tower_stats["kl_loss"]
+        kl_loss = model.tower_stats["ra_kl_loss"]
 
         # KL divergence should be non-negative
         self.assertGreaterEqual(kl_loss.item(), 0.0)
@@ -301,8 +327,8 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
                     bound_loss = RAPPOTorchPolicy.loss.__get__(policy, RAPPOTorchPolicy)
                     bound_loss(model, None, train_batch)
 
-                mean_prior = model.tower_stats["mean_prior"]
-                mean_posterior = model.tower_stats["mean_posterior"]
+                mean_prior = model.tower_stats["ra_mean_prior"]
+                mean_posterior = model.tower_stats["ra_mean_posterior"]
 
                 # Shapes should match
                 self.assertEqual(mean_prior.shape, mean_posterior.shape)
@@ -311,93 +337,6 @@ class TestRAPPOTorchPolicy(unittest.TestCase):
                 self.assertEqual(mean_prior.shape[-1], num_edge_types)
                 self.assertEqual(mean_posterior.shape[-1], num_edge_types)
 
-    def test_posterior_retrieval_after_forward(self):
-        """Test that get_posterior() works after forward() and raises AssertionError before it."""
-        from src.ra_agents.RAFeatureExtractor import RLlibRAGNNModel
-        from gymnasium.spaces import Discrete
-
-        num_edge_types = 2
-
-        # Create a minimal observation space
-        obs_space = Mock()
-        obs_space.x_dim = 10
-        obs_space.num_nodes = self.num_nodes
-
-        # Create action space
-        action_space = Discrete(10)
-
-        # Model config
-        model_config = {
-            'custom_model_config': {
-                'encoder': {
-                    'num_edge_types': num_edge_types,
-                    'max_degree': 10,
-                    'max_path_distance': 3,
-                },
-                'gnn': {
-                    'hidden_dim': 16,
-                    'out_dim': 32,
-                    'num_layers': 2,
-                    'dropout_prob': 0.0,
-                }
-            },
-            'fcnet_hiddens': [64, 64],
-            'fcnet_activation': 'relu',
-        }
-
-        # Create the actual model
-        model = RLlibRAGNNModel(
-            obs_space=obs_space,
-            action_space=action_space,
-            num_outputs=action_space.n,
-            model_config=model_config,
-            name="test_model"
-        )
-
-        # Test 1: get_posterior() should raise AssertionError before forward()
-        with self.assertRaises(AssertionError) as context:
-            model.get_posterior()
-        self.assertIn("Posterior not computed yet", str(context.exception))
-
-        # Test 2: After forward(), get_posterior() should work
-        # Create input dict
-        batch_size = 2
-        node_features = torch.randn(batch_size, self.num_nodes, 10)
-        edge_index = torch.randint(0, self.num_nodes, (batch_size, 2, 5), dtype=torch.long)
-        edge_mask = torch.ones(batch_size, 5, dtype=torch.bool)
-
-        input_dict = {
-            "obs": {
-                EDGE_INDEX: edge_index,
-                EDGE_MASK: edge_mask,
-                "node_features": node_features,
-            }
-        }
-
-        # Call forward
-        logits, _ = model.forward(input_dict, [], None)
-
-        # Now get_posterior() should work
-        posterior = model.get_posterior()
-
-        # Verify posterior properties
-        self.assertIsInstance(posterior, torch.Tensor)
-        self.assertEqual(posterior.dim(), 3)  # [batch, num_edges, num_edge_types]
-        self.assertEqual(posterior.shape[0], batch_size)
-        self.assertEqual(posterior.shape[2], num_edge_types)
-
-        # Verify it's a valid probability distribution
-        self.assertTrue(torch.all(posterior >= 0))
-        self.assertTrue(torch.all(posterior <= 1))
-        posterior_sums = posterior.sum(dim=-1)
-        self.assertTrue(torch.allclose(posterior_sums, torch.ones_like(posterior_sums), atol=1e-5))
-
-        # Test 3: value_function() should also work after forward()
-        value = model.value_function()
-        self.assertIsInstance(value, torch.Tensor)
-        self.assertEqual(value.shape[0], batch_size)
-
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -38,27 +38,26 @@ from omegaconf import DictConfig, OmegaConf
 from ray.rllib.algorithms import ppo, sac, dqn
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
-from ray.rllib.algorithms.registry import POLICIES
-from ray.rllib.models import ModelCatalog
-
-from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
-from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
-from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
-from rarl_rllib.dqn.mlp_dqn_policy import DictObsDQNTorchPolicy
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
+from ray.rllib.algorithms.registry import POLICIES
 from ray.rllib.algorithms.sac import SACTorchPolicy
+from ray.rllib.models import ModelCatalog
 from ray.rllib.policy.policy import PolicySpec
 
-from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
-from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
-from grid2op_env.env import CustomizedGrid2OpEnvironment
 from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
     DQN_GNN_POLICY, DQN_MLP_POLICY, set_seed
+from core.train import run_training
+from grid2op_env import policy_mapping_fn
+from grid2op_env.env import CustomizedGrid2OpEnvironment
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
-from grid2op_env import policy_mapping_fn
+from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
 from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
-from core.train import run_training
+from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
+from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
+from rarl_rllib.dqn.mlp_dqn_policy import DictObsDQNTorchPolicy
+from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
+from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
 
 logger = logging.getLogger(__name__)
 

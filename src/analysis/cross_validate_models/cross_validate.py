@@ -1,5 +1,4 @@
 import logging
-import os
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -11,9 +10,9 @@ from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 from tqdm import tqdm
 
-from common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
-from experiments import get_reconfigured_nodes
+from analysis.analyze_latent_graphs.hypo3_action_effect_coupling import get_reconfigured_nodes
 from experiments.utils import AgentSpec, load_agent_from_spec
+from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
 from visualization import GridPlottingArgs, visualize_grid
 
 logger = logging.getLogger(__name__)
@@ -343,7 +342,7 @@ def compute_failing_edges_data(results: List[CrossValidateResult], save_dir: Pat
         rho_global_max[name]  = float(rho_flat.max())
 
     env = grid2op.make("l2rpn_case14_sandbox_val")
-    obs_space = BusConnectivityGraphObsSpace(env.observation_space)
+    obs_space = GraphObservationConverter(env.observation_space)
     obs = env.reset()
     gym_obs = obs_space.to_gym(obs)
     pl_edge_index = gym_obs[EDGE_INDEX]

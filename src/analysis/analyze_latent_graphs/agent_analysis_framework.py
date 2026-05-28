@@ -13,7 +13,8 @@ from grid2op.Observation import BaseObservation
 from tqdm import tqdm
 
 from agents import RllibAgent
-from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK
+from core.constants import RL_AGENT
+from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl.graph import fully_connected_edge_index
 from rarl.prior import get_priors, get_prior_tensor
 from grid2op_env.observation_converter import ObservationConverter
@@ -69,12 +70,13 @@ class LatentGraphAnalysisAgent(BaseAgent):
         powergrid_edge_index = self.rllib_agent.gym_wrapper.cur_gym_obs[EDGE_INDEX]
         edge_mask = self.rllib_agent.gym_wrapper.cur_gym_obs[EDGE_MASK]
         powergrid_edge_index = torch.from_numpy(powergrid_edge_index[..., edge_mask])
+        N = self.rllib_agent.gym_wrapper.observation_space[RL_AGENT][NODES].shape[0]
 
         # invoke analyzer
         if use_rl_component:
             pg_edge_index = powergrid_edge_index.detach().cpu().numpy()
             posterior = self._get_posterior()
-            prior = self._get_prior(pg_edge_index)
+            prior = self._get_prior(pg_edge_index, N)
             [analyser.on_rl_step(
                 posterior,
                 prior,
@@ -148,23 +150,22 @@ class LatentGraphAnalysisAgent(BaseAgent):
         except Exception as e:
             logger.debug(f"Environment cleanup error (ignored): {e}")
 
-    def _get_prior(self, powergrid_edge_index: npt.NDArray) -> npt.NDArray:
-        config = self.rllib_agent._rllib_agent.config["relation_awareness"]
-        N = 57 # todo
+    def _get_prior(self, powergrid_edge_index: npt.NDArray, N: int) -> npt.NDArray:
+        ra_config = self.rllib_agent._rllib_agent.config["relation_awareness"]
         E = powergrid_edge_index.shape[1]
         all_edges = fully_connected_edge_index(N)
         prior_for_graph_edges, prior_for_non_graph_edges = get_priors(
-            prob_graph_edges_exist=config["prior_prob_for_graph_edge"],
+            prob_graph_edges_exist=ra_config["prior"]["prior_prob_for_graph_edge"],
             num_graph_edges=E,
             num_non_graph_edges=all_edges.shape[1] - E,
-            temperature=config["temperature"]
+            temperature=ra_config["prior"]["temperature"],
         )
         prior_tensor, graph_edge_mask = get_prior_tensor(
             graph_edges=torch.from_numpy(powergrid_edge_index),
             all_edges=all_edges,
             prior_for_graph_edges=prior_for_graph_edges,
             prior_for_non_graph_edges=prior_for_non_graph_edges,
-            num_edge_types=self.rllib_agent._rllib_agent.config["model"]["custom_model_config"]["encoder"]["num_edge_types"],
+            num_edge_types=ra_config["latent_space"]["num_edge_types"],
             return_mask=True,
         )
         return prior_tensor.cpu().numpy()

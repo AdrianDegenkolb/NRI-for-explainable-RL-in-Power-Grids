@@ -8,11 +8,6 @@ Tests are organised by class:
   - TestGraphObservationConverterEdgeIndex
   - TestGraphObservationConverterNormalize
   - TestGraphObservationConverterIntegration
-  - TestFlatObservationConverter
-
-A lightweight MockObservation replaces grid2op to avoid a heavyweight
-dependency in the test suite. Tests that require real grid2op topology
-(e.g. connectivity_matrix shape) are skipped when grid2op is unavailable.
 """
 from __future__ import annotations
 
@@ -21,23 +16,16 @@ import unittest
 import grid2op
 import numpy as np
 
-from src.grid2op_env.observation_converter import (  # noqa: E402
+from grid2op_env.observation_converter import (
     GraphObservationConverter,
     _GridDimensions,
     NODES, EDGE_INDEX, EDGE_MASK, GLOBAL,
     _DEFAULT_NODE_FEATURES,
 )
 
-# ---------------------------------------------------------------------------
-# Minimal stubs so the module can be imported without a grid2op installation
-# ---------------------------------------------------------------------------
-
 ENV_NAME = "l2rpn_wcci_2020"
 env = grid2op.make(ENV_NAME)
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestGridDimensions(unittest.TestCase):
     """Tests for the _GridDimensions dataclass."""
@@ -94,7 +82,6 @@ class TestGraphObservationConverterSpace(unittest.TestCase):
     def test_custom_attr_to_observe(self):
         """x_dim matches the length of a custom attr_to_observe list."""
         attrs = ["active_power", "rho"]
-
         converter = GraphObservationConverter(env.observation_space, attr_to_observe=attrs)
         self.assertEqual(converter.x_dim, 2)
 
@@ -197,7 +184,6 @@ class TestGraphObservationConverterEdgeIndex(unittest.TestCase):
         """No node is connected to itself."""
         ei = self.converter._get_edge_index(self.obs)
         self.assertTrue((ei[0] != ei[1]).all())
-
 
     def test_num_edges_does_not_exceed_max(self):
         """Number of edges never exceeds max_num_edges."""
@@ -356,7 +342,6 @@ class TestGraphObservationConverterWithGrid2op(unittest.TestCase):
         obs = env.reset()
         result = self.converter.to_gym(obs)
         space = self.converter.observation_space
-        # gymnasium Dict.contains checks dtype and shape
         for key in [EDGE_INDEX, EDGE_MASK, GLOBAL]:
             self.assertEqual(result[key].shape, space[key].shape)
 
