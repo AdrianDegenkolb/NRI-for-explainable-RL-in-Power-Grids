@@ -1,0 +1,30 @@
+defaults:
+  - disabled  # inherits score_metric, mode, load_from, etc.
+
+enable: true
+num_trials: 50
+
+# Search space consumed by MyOptunaSearch in run_training().
+# Keys are dot-paths into the assembled RLLib config dict.
+search_space:
+  relation_awareness/prior/prior_prob_for_graph_edge:
+    type: float
+    low: 0.0
+    high: 1.0
+  relation_awareness/prior/temperature:
+    type: float
+    low: 0.0
+    high: 1.0
+  relation_awareness/sampling/tau_end:
+    type: float
+    low: 0.5
+    high: 1.0
+  model/custom_model_config/encoder/hidden_dim:
+    type: categorical
+    choices: [32, 64, 128, 256]
+  model/custom_model_config/encoder/num_layers:
+    type: categorical
+    choices: [2, 3, 4]
+  relation_awareness/latent_space/num_edge_types:
+    type: categorical
+    choices: [2, 3, 4]

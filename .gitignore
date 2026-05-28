@@ -103,3 +103,9 @@ ENV/
 .mypy_cache/
 
 *.npy
+
+results/**
+!results/README.md
+!results/.gitignore
+src/visualization/output
+src/visualization/results

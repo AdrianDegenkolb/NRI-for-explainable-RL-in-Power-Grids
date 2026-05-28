@@ -1,0 +1,20 @@
+# Use with model: gnn or model: mlp — disables KL regularisation.
+sampling:
+  tau_start: 1.0
+  tau_end: 1.0
+  tau: 1.0
+
+prior:
+  prior_prob_for_graph_edge: 1.0
+  temperature: 0.0
+
+loss:
+  beta_graph_edges_start: 0.0
+  beta_graph_edges_end: 0.0
+  beta_graph_edges: 0.0
+  beta_non_graph_edges_start: 0.0
+  beta_non_graph_edges_end: 0.0
+  beta_non_graph_edges: 0.0
+
+latent_space:
+  num_edge_types: 2

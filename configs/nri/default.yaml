@@ -1,6 +1,0 @@
-defaults:
-    -   dataset_creation: default
-    -   model: default
-    -   train: default
-
-name: NRI_Default

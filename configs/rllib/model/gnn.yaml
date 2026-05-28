@@ -1,0 +1,16 @@
+# Model registered as "gnn_model" in ModelCatalog (GNNBaselineModel).
+# Uses fixed edge probabilities; no encoder is needed.
+custom_model: gnn_model
+fcnet_hiddens: [256, 256, 256]
+fcnet_activation: relu
+post_fcnet_hiddens: [256, 128]
+_enable_learner_api: false
+
+encoder: null
+
+gnn:
+  hidden_dim: 256
+  out_dim: 64
+  num_layers: 3
+  residual: true
+  edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy

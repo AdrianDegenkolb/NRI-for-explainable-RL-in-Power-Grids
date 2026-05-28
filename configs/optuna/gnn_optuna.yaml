@@ -1,4 +1,0 @@
-train_duration_per_trial: 50_000  # timesteps per trial
-n_trials: 30  # Number of optimization trials
-n_jobs: 2  # Number of parallel trials (adjust based on your resources)
-

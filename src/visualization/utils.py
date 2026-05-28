@@ -16,8 +16,10 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from src.common.observation_space import GraphObservationSpace, BusConnectivityGraphObsSpace
-from src.nri.utils import fully_connected_edge_index
+from grid2op_env.observation_converter import GraphObservationConverter
+
+from grid2op_env.observation_converter import ObservationConverter
+from rarl import fully_connected_edge_index
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +82,14 @@ def visualize_agent_survival(datasets: List[AgentMetrics], save_to: Optional[Pat
     df = pd.DataFrame(records)
 
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.2)
-    plt.figure(figsize=(3 * len(datasets), 4))
+    plt.figure(figsize=(2 * len(datasets), 4))
     # --- Boxplot ---
     sns.boxplot(
         data=df,
         x="Agent",
         y="Survival Duration",
         hue="Agent",
-        palette=["#4878D0", "#63BE5D", "#82C6E2", "#956CB4"],
+        palette="muted",#["#4878D0", "#63BE5D", "#82C6E2", "#956CB4"],
         legend=False
     )
 
@@ -307,15 +309,21 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
     if args.latent_edge_probs is not None:
         cmap = plt.get_cmap("Pastel1")
         edge_index_full = fully_connected_edge_index(num_nodes=args.num_nodes)
-        max_type = args.latent_edge_probs.shape[1] - 1
-        for e_idx, probs in enumerate(args.latent_edge_probs):
-            src, dst = edge_index_full[:, e_idx]
-            for t, p in enumerate(probs):
-                if args.skip_last_edge_type and t == max_type:
-                    continue
+        probs_array = args.latent_edge_probs  # [E, num_edge_types]
+        max_type = probs_array.shape[1] - 1
+        num_types = max_type if args.skip_last_edge_type else max_type + 1
+
+        # Prefilter with numpy before entering Python loops: for each edge type,
+        # find only the edges whose probability exceeds the threshold.  For large
+        # grids this avoids iterating over O(N²) edges in pure Python.
+        for t in range(num_types):
+            above = np.where(probs_array[:, t] > args.visualize_edge_prob_threshold)[0]
+            for e_idx in above:
+                p = probs_array[e_idx, t]
                 # 1 for p = 0.5, args.latent_edge_weight for p = 1
-                w = (2 * args.latent_edge_weight - 2) * p - (args.latent_edge_weight - 2) if p > args.visualize_edge_prob_threshold else 0
+                w = (2 * args.latent_edge_weight - 2) * p - (args.latent_edge_weight - 2)
                 if w >= 1:
+                    src, dst = edge_index_full[:, e_idx]
                     G.add_edge(int(src), int(dst), color=cmap(1 + t), weight=w, type="Dependency")
 
     # get positions
@@ -670,7 +678,7 @@ def latent_edge_hist(accumulated_edge_probabilities: npt.NDArray, skip_last_edge
     return fig
 
 
-def get_node_styles(env: Environment, observation_space: type[GraphObservationSpace]) -> List[NodeStyle]:
+def get_node_styles(env: Environment, observation_space: type[ObservationConverter]) -> List[NodeStyle]:
     """
     For a given environment and observation space class, return a list of node style objects. Each node style object
     contains position, color and shape.
@@ -678,7 +686,7 @@ def get_node_styles(env: Environment, observation_space: type[GraphObservationSp
     :param observation_space: the class of the observation space that dictates which entities are nodes
     :return: a list of node positions similar to the ones used by the grid2op plots
     """
-    if observation_space == BusConnectivityGraphObsSpace:
+    if observation_space == GraphObservationConverter:
         plot_helper = PlotMatplot(env.observation_space)
 
         r = 20.0
@@ -706,9 +714,9 @@ def get_node_styles(env: Environment, observation_space: type[GraphObservationSp
         pointing_towards_locs = [
             [layout[f"sub_{sid}"] for sid in env.line_ex_to_subid],
             [layout[f"sub_{sid}"] for sid in env.line_or_to_subid],
-            [layout[f"gen_{sid}_{gid}"] for gid, sid in enumerate(env.gen_to_subid)],
-            [layout[f"load_{sid}_{lid}"] for lid, sid in enumerate(env.load_to_subid)],
-            [layout[f"storage_{sid}_{stor_id}"] for stor_id, sid in enumerate(env.storage_to_subid)],
+            [layout.get(f"gen_{sid}_{gid}", layout[f"sub_{sid}"]) for gid, sid in enumerate(env.gen_to_subid)],
+            [layout.get(f"load_{sid}_{lid}", layout[f"sub_{sid}"]) for lid, sid in enumerate(env.load_to_subid)],
+            [layout.get(f"storage_{sid}_{stor_id}", layout[f"sub_{sid}"]) for stor_id, sid in enumerate(env.storage_to_subid)],
         ]
         # filter out empty lists
         pointing_towards_locs = np.vstack([sub for sub in pointing_towards_locs if len(sub) > 0])

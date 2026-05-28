@@ -1,6 +1,8 @@
 # Intro
-This repository adopts the Idea of [Kipf et al.](https://arxiv.org/abs/1802.04687) for power-systems.
-We try to detect latent edges that are useful for timeseries predictions of a developing powergrid.
+This repository adopts the Idea of [Kipf et al.](https://arxiv.org/abs/1802.04687) for RL agents.
+We train RL agents with encoder that predicts discrete graph structures on a fixed set of nodes. The agents are supposed
+to learn optimal actions _and_ optimal stepwise graph structures.
+![Architecture](.images/architecture.png)
 # Setup
 I used `conda 24.9.1` and `python 3.12.10`
 
@@ -9,31 +11,19 @@ I used `conda 24.9.1` and `python 3.12.10`
 ```commandline
 module load devel/miniforge
 ```
-### Step 1: Install dependencies via pip
+### Step 1: Clone Repo & Install dependencies
+Clone the repository and `cd` into the cloned folder.
+
 **If you use a virtual env**
 ```commandline
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 **If you use conda**
 ```commandline
 conda env create -f environment.yaml
-conda activate RL
-```
-> [!WARNING]  
-> This step might fail because l2rpn-baselines which we will install from source is included in the environment.yml file.
-> If this is problematic just remove the corresponding line and try again.
-### Step 2: Install l2rpn-baselines including submodules from source:
-Uninstall previously installed versions of `l2rpn-baselines`
-```bash
-pip uninstall l2rpn-baselines
-```
-and install it from source including submodules
-```bash
-git clone --recurse-submodules git@github.com:Grid2op/l2rpn-baselines.git # or http: https://github.com/rte-france/l2rpn-baselines.git
-cd l2rpn-baselines
-pip3 install -U .
-cd ..
-rm -rf l2rpn-baselines
+conda activate L2RPN
 ```
 ## Download and split scenarios
 Download the required data. This may take a while.
@@ -46,7 +36,7 @@ Furthermore, it is split into training, testing, and validation episodes.
 ## Train a model
 Training scripts are located under `training_scripts`. To train a relations aware PPO, run:
 ```commandline
-PYTHONPATH=$(pwd) python training_scripts/train_ppo.py -f configs/rappo_anneal.yaml -wd . -s 42 -j 0 --model-type RAGNN --experiment-name experiment1
+PYTHONPATH=$(pwd)/src python experiments/train.py experiment=test_minimal training=ppo_test model=ragnn obs_space=graph relation_awareness=default experiment.seed=0 rollouts=test_minimal training=ppo_test evaluation=test_minimal
 ```
 Similarly, the other scripts can be run.
 To adapt parameters explore the `configs`-folder

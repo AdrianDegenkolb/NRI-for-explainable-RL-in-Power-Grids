@@ -1,7 +1,0 @@
-_target_: src.nri.NRI.NRIModule
-hidden_dim: 64
-num_edge_types: 2
-pred_steps: 5
-dropout_prob: 0.1
-skip_last: True
-trajectory_length: ${nri.dataset_creation.trajectory_length}

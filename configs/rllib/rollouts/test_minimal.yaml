@@ -1,0 +1,6 @@
+defaults:
+  - default
+
+num_rollout_workers: 1
+num_learner_workers: 1
+num_gpus_per_learner_worker: 0

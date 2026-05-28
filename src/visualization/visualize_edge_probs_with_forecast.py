@@ -12,8 +12,8 @@ import grid2op
 import numpy as np
 from matplotlib import pyplot as plt
 
-from src.common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
-from src.visualization.utils import visualize_graph, PlottingArgs, get_node_styles, latent_edge_hist
+from common.observation_space import BusConnectivityGraphObsSpace, EDGE_INDEX
+from visualization.utils import visualize_graph, PlottingArgs, get_node_styles, latent_edge_hist
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

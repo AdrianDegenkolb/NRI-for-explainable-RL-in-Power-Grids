@@ -1,7 +1,4 @@
 if __name__ == "__main__":
-    #import subprocess
-    #result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-    #print(result.stdout)
     import torch
 
     print("Torch version: ", torch.__version__)

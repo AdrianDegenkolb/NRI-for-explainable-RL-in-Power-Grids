@@ -1,0 +1,41 @@
+defaults:
+  - base.yaml
+
+algorithm: dqn
+
+# Rainbow DQN: dueling + double-Q + n-step + noisy nets + distributional (C51)
+gamma: 0.99
+dueling: true
+double_q: true
+hiddens: [256]
+n_step: 3
+target_network_update_freq: 500
+tau: 1.0
+
+train_batch_size: 256
+num_steps_sampled_before_learning_starts: 10000
+
+lr: 5.0e-4
+adam_epsilon: 1.0e-8
+
+# Distributional DQN (C51)
+num_atoms: 51
+v_min: -10.0
+v_max: 10.0
+
+# NoisyNet exploration (replaces epsilon-greedy)
+noisy: true
+sigma0: 0.5
+categorical_distribution_temperature: 1.0
+
+evaluation_interval: 10000  # ~47 eval points over 468k iterations (120M steps / batch 256)
+
+td_error_loss_fn: huber
+
+replay_buffer_config:
+  type: MultiAgentPrioritizedReplayBuffer
+  capacity: 1000000
+  replay_sequence_length: 1
+  prioritized_replay_alpha: 0.6
+  prioritized_replay_beta: 0.4
+  prioritized_replay_eps: 1.0e-6

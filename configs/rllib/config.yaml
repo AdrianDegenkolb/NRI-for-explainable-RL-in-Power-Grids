@@ -1,0 +1,20 @@
+defaults:
+  - experiment: default
+  - training: sac
+  - model: ragnn
+  - obs_space: graph
+  - reward: constant
+  - relation_awareness: default
+  - env: case14
+  - opponent: disabled
+  - evaluation: default
+  - rollouts: default
+  - callbacks: default
+  - optimization: disabled
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${experiment.storage_path}/experiments/${experiment.name}

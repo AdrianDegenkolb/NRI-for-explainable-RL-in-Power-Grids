@@ -1,0 +1,11 @@
+defaults:
+  - default
+
+nb_timesteps: 6000  # enough for evaluation_interval(5) * train_batch_size(1024) = 5120
+checkpoint_freq: 1
+ray_local_mode: false
+folder_name: hpc_test
+name: hpc_test
+
+post_training_evaluation:
+  enabled: false  # skip post-eval; smoke test only checks training + one eval iteration
