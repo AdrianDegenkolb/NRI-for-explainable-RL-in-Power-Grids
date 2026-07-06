@@ -1,0 +1,9 @@
+defaults:
+  - default
+
+nb_timesteps: 3000
+checkpoint_freq: 1
+name: smoke_test
+
+post_training_evaluation:
+  enabled: false
