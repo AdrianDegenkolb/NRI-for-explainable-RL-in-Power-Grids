@@ -422,7 +422,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
     @staticmethod
     def _save_scatter(values: np.ndarray, title: str, xlabel: str, ylabel: str, outpath: Path):
@@ -437,7 +437,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
 
     # ------------------------------------------------------------------
@@ -551,7 +551,14 @@ class Hypothesis3verifier(PosteriorAnalyzer):
                 _fv_plain(agg_removed, name), _fv_plain(agg_added, name),
             ])
 
-        print(f"\n=== Hypothesis 3: Action-Effect Coupling ===\n")
+        print(f"\n=== Hypothesis 3: Action-Effect Coupling ===")
+        print(f"  Correlating C_ij^effect(t) vs edge-existence probability across all E edges.")
+        print(f"  C_ij^effect(t) = delta_r_j(t)  if node i was reconfigured at step t, else 0")
+        print(f"  where delta_r_j(t) = |r_j(t) - r_j(t-1)|  (absolute risk change at destination node)")
+        print(f"  Per-step: Spearman(C_ij^effect(t), P_{{t-1}}(edge_ij))  at each action step, "
+              f"mean +/- std reported over all action steps")
+        print(f"  Global:   Spearman(mean_t C_ij^effect, mean_t P(edge_ij))  once on time-averaged arrays")
+        print(f"  Agg:      Spearman(C_ij^effect_agg, mean_t P(edge_ij))  row-normalised aggregation\n")
         print(tabulate(rows, headers=headers, tablefmt="rounded_outline", floatfmt=".4f"))
 
     def on_evaluation_end(self):
@@ -1008,7 +1015,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             fig.savefig(self.outdir / fname, bbox_inches="tight", pad_inches=0.05, bbox_extra_artists=[st])
             fig.savefig(self.outdir / (Path(fname).stem + ".svg"), bbox_inches="tight", pad_inches=0.05,
                         bbox_extra_artists=[st])
-            plt.show()
+            plt.close()
 
     # ------------------------------------------------------------------
     # Plots
@@ -1103,7 +1110,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             plt.tight_layout(rect=[0, 0, 1, 0.95])
             plt.savefig(outpath.parent / (outpath.stem + ".png"))
             plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-            plt.show()
+            plt.close()
 
         # ---- 4-panel histograms: posterior | prior | removed p(1-q) | added q(1-p) ----
         def _hist4(post_vals, prior_vals, rem_vals, add_vals,
@@ -1133,7 +1140,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             stem = outpath.stem + "_4way"
             plt.savefig(outpath.parent / (stem + ".png"))
             plt.savefig(outpath.parent / (stem + ".svg"))
-            plt.show()
+            plt.close()
 
         # ---- Graph visualisation ----
         # if self._environment is None or self._powerline_edge_index is None:
@@ -1154,7 +1161,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         #     plt.tight_layout()
         #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.png")
         #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.svg")
-        #     plt.show()
+        #     plt.close()
 
         # ---- KDE: mean C conditioned on posterior (left) and prior (right) ----
         fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharex=True, sharey=True)
@@ -1176,7 +1183,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.savefig(self.outdir / "kde_C_effect_conditioned_on_posterior_prior.png")
         plt.savefig(self.outdir / "kde_C_effect_conditioned_on_posterior_prior.svg")
-        plt.show()
+        plt.close()
 
         # # ---- KDE: mean C conditioned on removed p(1-q) and added q(1-p) ----
         # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
@@ -1198,7 +1205,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.png")
         # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.svg")
-        # plt.show()
+        # plt.close()
 
         # # Scatter: posterior / prior / removed / added vs mean C
         # for mean_val, suffix in [
@@ -1236,7 +1243,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.png")
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.svg")
-        # plt.show()
+        # plt.close()
         #
         # # ---- KDE: aggregated C conditioned on removed and added ----
         # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
@@ -1257,7 +1264,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.png")
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.svg")
-        # plt.show()
+        # plt.close()
 
         # Scatter: removed / added vs aggregated C
         # for mean_val, suffix in [

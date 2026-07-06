@@ -483,7 +483,14 @@ class Hypothesis1verifier(PosteriorAnalyzer):
             print(f"{name} over t={num_timesteps}: mean={xf.mean():.4f}, std={xf.std():.4f}, "
                   f"median={np.median(xf):.4f}, n_valid={xf.size}")
 
-        print("\n--- Posterior vs coupling ---")
+        print(f"\n=== Hypothesis 1: Electrical Coupling ===")
+        print(f"  Correlating C_ij^elec(t) vs edge-existence probability across all E edges, "
+              f"computed at each of t={num_timesteps} timesteps (distribution reported).")
+        print(f"  C_ij^elec(t) = PTDF-derived electrical coupling at step t  "
+              f"(how much power injected at node i flows through edge ij)")
+        print(f"  Edge-wise temporal: Spearman_t(P_t(edge_ij), C_ij^elec(t)) per edge "
+              f"(one value per edge, mean over edges reported)")
+        print(f"\n--- Posterior P(edge_ij | obs_t) vs C_ij^elec(t) ---")
         summarize("Spearman rho", spearman_rho)
         summarize("Pearson r", pearson_r)
         summarize("Kendall tau", kendall_tau_arr)
@@ -497,7 +504,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
             if f.size:
                 print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
-        print("\n--- Prior vs coupling (baseline) ---")
+        print("\n--- Prior P(edge_ij) vs C_ij^elec(t)  [baseline] ---")
         summarize("Spearman rho", prior_spearman_rho)
         summarize("Pearson r", prior_pearson_r)
         summarize("Kendall tau", prior_kendall_tau_arr)
@@ -512,7 +519,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
                 print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
         if removed_spearman_rho is not None:
-            print("\n--- Edges removed p(1-q) vs coupling ---")
+            print("\n--- Edges removed p(1-q) = p_prior*(1-p_post) vs C_ij^elec(t) ---")
             summarize("Spearman rho", removed_spearman_rho)
             summarize("Pearson r", removed_pearson_r)
             summarize("Kendall tau", removed_kendall_tau_arr)
@@ -527,7 +534,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
                     print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
         if added_spearman_rho is not None:
-            print("\n--- Edges added q(1-p) vs coupling ---")
+            print("\n--- Edges added q(1-p) = p_post*(1-p_prior) vs C_ij^elec(t) ---")
             summarize("Spearman rho", added_spearman_rho)
             summarize("Pearson r", added_pearson_r)
             summarize("Kendall tau", added_kendall_tau_arr)

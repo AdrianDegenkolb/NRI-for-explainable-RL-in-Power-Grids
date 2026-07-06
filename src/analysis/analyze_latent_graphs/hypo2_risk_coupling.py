@@ -16,6 +16,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 from analysis.analyze_latent_graphs.build_coupling_matrices import get_risk_vector
 from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
 from analysis.analyze_latent_graphs.agent_analysis_framework import PosteriorAnalyzer
+from rarl import fully_connected_edge_index
 from visualization import visualize_graph, PlottingArgs, get_node_styles
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
     @staticmethod
     def _save_scatter(values: np.ndarray, title: str, xlabel: str, ylabel: str, outpath: Path):
@@ -226,7 +227,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
     def on_evaluation_end(self):
         T = self._t_global
@@ -328,6 +329,12 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         metric_names = list(dict.fromkeys(k for d in all_dicts for k in d.keys()))
         col_w = max((len(n) for n in metric_names), default=20) + 2
         print(f"\n=== Hypothesis 2: Risk Coupling ===")
+        print(f"  Spearman/Pearson/tau between C_ij^risk and edge-existence probability, "
+              f"computed ONCE on time-averaged arrays across all E edges.")
+        print(f"  C_ij^risk = Spearman_t(r_i(s_t), r_j(s_t))  [risk vectors correlated over T steps]")
+        print(f"  Columns: 'Posterior' = mean_t P(edge_ij | obs_t) [encoder]  |  "
+              f"'Prior' = P(edge_ij) [prior baseline]  |  "
+              f"'Removed p(1-q)' = p_prior*(1-p_post)  |  'Added q(1-p)' = p_post*(1-p_prior)")
         header = (f"\n  {'Metric':<{col_w}}  {'Posterior':>18}  {'Prior (baseline)':>18}"
                   f"  {'Removed p(1-q)':>18}  {'Added q(1-p)':>18}")
         print(header)
@@ -410,7 +417,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
             #fig.suptitle(title, fontsize=14)
             fig.savefig(self.outdir / fname, bbox_inches="tight")
             fig.savefig(self.outdir / (Path(fname).stem + ".svg"), bbox_inches="tight")
-            plt.show()
+            plt.close()
 
     def generate_plots(
         self,
@@ -459,7 +466,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.savefig(self.outdir / f"kde_{cs}_conditioned_on_posterior_prior.png")
         plt.savefig(self.outdir / f"kde_{cs}_conditioned_on_posterior_prior.svg")
-        plt.show()
+        plt.close()
 
         # --- KDE: coupling conditioned on high/low for removed and added ---
         fig, axes = plt.subplots(1, 2, figsize=(12, 3), sharex=True, sharey=True)
@@ -480,7 +487,7 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.savefig(self.outdir / f"kde_{cs}_conditioned_on_removed_added.png")
         plt.savefig(self.outdir / f"kde_{cs}_conditioned_on_removed_added.svg")
-        plt.show()
+        plt.close()
 
         # --- Scatter: mean edge probability vs coupling (posterior / prior / removed / added) ---
         for mean_val, suffix in [
