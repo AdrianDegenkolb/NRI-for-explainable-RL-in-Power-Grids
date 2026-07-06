@@ -18,6 +18,7 @@ from torch_geometric.utils import to_dense_batch
 from .encoder import GraphormerNRIEncoder
 from .ragnn import RAGNN
 from .sampling import GumbelSoftmax
+from .sparsification import sparse_top_k_posterior
 from ..graph import fully_connected_edge_index_per_batch
 
 
@@ -38,6 +39,7 @@ class RAFeatureExtractor(nn.Module):
     :param dropout_prob: Dropout probability.
     :param tau: Initial Gumbel-Softmax temperature.
     :param residual: Use residual connections in RAGNN.
+    :param top_k_budget: Number of edges per sample passed to RAGNN (0 = disabled, use full FC graph).
     """
 
     def __init__(
@@ -55,6 +57,7 @@ class RAFeatureExtractor(nn.Module):
         dropout_prob: float = 0.0,
         tau: float = 1.0,
         residual: bool = True,
+        top_k_budget: int = 0,
     ):
         super().__init__()
 
@@ -79,6 +82,8 @@ class RAFeatureExtractor(nn.Module):
             skip_last=True,
         )
         self.x_out_dim = x_out_dim
+        self.top_k_budget = top_k_budget
+        self._sparsification_stats: dict = {}
 
     def set_tau(self, tau: float) -> None:
         """Update the Gumbel-Softmax temperature (called by the annealing callback)."""
@@ -118,12 +123,28 @@ class RAFeatureExtractor(nn.Module):
         posterior: Tensor = F.softmax(logits, dim=-1)          # [B*E, K]
         sampled: Tensor = self.gumbel_softmax(logits, hard=self.training)  # [B*E, K]
 
+        # --- Optional top-K sparsification before RAGNN ---
+        if self.top_k_budget > 0:
+            B = int(batch.max()) + 1
+            N = BxN // B
+            gnn_sampled, gnn_edge_set, self._sparsification_stats = sparse_top_k_posterior(
+                posterior_flat=posterior,
+                sampled_flat=sampled,
+                edge_set=edge_set,
+                K_budget=self.top_k_budget,
+                B=B,
+                N=N,
+            )
+        else:
+            gnn_sampled, gnn_edge_set = sampled, edge_set
+            self._sparsification_stats = {}
+
         # --- RAGNN: conditioned message passing ---
         embeddings: Tensor = self.gnn(
-            x=x, edge_index=edge_set, edge_type_posterior=sampled, batch=batch
+            x=x, edge_index=gnn_edge_set, edge_type_posterior=gnn_sampled, batch=batch
         )  # [B, x_out_dim]
 
-        # --- Reshape posterior to [B, E, K] ---
+        # --- Reshape full posterior to [B, E, K] for KL loss (always uses all E edges) ---
         edge_batch = batch[edge_set[0]]
         batched_posterior, mask = to_dense_batch(posterior, edge_batch)
         assert torch.all(mask), (

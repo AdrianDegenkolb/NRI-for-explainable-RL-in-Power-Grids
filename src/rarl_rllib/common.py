@@ -14,6 +14,8 @@ RASACTorchPolicy rely on:
   metrics into the format expected by RLlib's stats pipeline.
 """
 
+import logging
+import time
 from typing import Dict, Tuple, List
 
 import torch
@@ -21,6 +23,17 @@ from gymnasium import spaces
 from ray.rllib import SampleBatch
 from ray.rllib.utils.typing import TensorType
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
+
+# Profiling state — tracks cumulative time across gradient steps.
+_prof_calls: int = 0
+_prof_total_prior: float = 0.0
+_prof_total_kl: float = 0.0
+_PROF_LOG_EVERY: int = 10  # log once every N gradient steps
+
+# Sparsification diagnostic logging counter.
+_sparsif_log_calls: int = 0
 
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl import compute_ra_kl_loss, fully_connected_edge_index, get_prior_tensor
@@ -46,6 +59,9 @@ def init_ra_config(policy, config: dict) -> None:
     policy.prior_prob_for_graph_edge = policy._prior_cfg["prior_prob_for_graph_edge"]
     policy.temperature = policy._prior_cfg["temperature"]
 
+    sparse_cfg = ra_cfg.get("sparsification", {})
+    policy.sparsification_log_every = sparse_cfg.get("log_every_n_steps", 50)
+
 
 def apply_ra_kl_loss(
     policy,
@@ -54,10 +70,16 @@ def apply_ra_kl_loss(
     base_loss: TensorType,
 ) -> TensorType:
     """Add KL regularization term to *base_loss* and store RA tower stats."""
+    global _prof_calls, _prof_total_prior, _prof_total_kl
+
     obs = train_batch["obs"]
+
+    t0 = time.perf_counter()
     prior_tensor, graph_edge_masks = build_prior_and_graph_masks(
         policy, obs[EDGE_INDEX], obs[EDGE_MASK]
     )
+    t1 = time.perf_counter()
+
     posteriors: Tensor = model.get_posterior()
 
     kl_loss, kl_stats = compute_ra_kl_loss(
@@ -67,6 +89,22 @@ def apply_ra_kl_loss(
         beta=policy.current_beta_graph,
         beta_non_graph=policy.current_beta_non_graph,
     )
+    t2 = time.perf_counter()
+
+    _prof_calls += 1
+    _prof_total_prior += t1 - t0
+    _prof_total_kl += t2 - t1
+
+    if _prof_calls % _PROF_LOG_EVERY == 0:
+        batch_size = obs[EDGE_INDEX].shape[0]
+        logger.warning(
+            "[RA profiling] grad-step=%d  batch=%d  "
+            "build_prior=%.3fs (avg %.3fs)  kl_loss=%.3fs (avg %.3fs)",
+            _prof_calls, batch_size,
+            t1 - t0, _prof_total_prior / _prof_calls,
+            t2 - t1, _prof_total_kl / _prof_calls,
+        )
+
     store_ra_tower_stats(model, kl_loss, kl_stats, prior_tensor, posteriors, policy)
 
     if isinstance(base_loss, tuple):
@@ -114,6 +152,19 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
             stats[f"relation_awareness/gnn/{key}"] = torch.mean(
                 torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
             ).item()
+
+    sparsif_stats = towers[0].tower_stats.get("ra_sparsification_stats")
+    if sparsif_stats is not None and all(
+        "ra_sparsification_stats" in t.tower_stats for t in towers
+    ):
+        for key in sparsif_stats:
+            stats[f"relation_awareness/{key}"] = torch.mean(
+                torch.stack([
+                    t.tower_stats["ra_sparsification_stats"][key].detach()
+                    for t in towers
+                ])
+            ).item()
+
     return stats
 
 
@@ -126,6 +177,8 @@ def store_ra_tower_stats(
     policy,
 ) -> None:
     """Write RARL metrics into model.tower_stats for later aggregation."""
+    global _sparsif_log_calls
+
     model.tower_stats.update({
         "ra_kl_loss":                  kl_loss,
         "ra_kl_graph":                 kl_stats["kl_graph_edges"],
@@ -142,6 +195,13 @@ def store_ra_tower_stats(
         "ra_current_tau":              torch.as_tensor(policy.current_tau,            dtype=torch.float32),
         "ra_gnn_stats":                model.ragnn.gnn.stats,
     })
+
+    # Sparsification diagnostics — written every log_every_n_steps gradient steps
+    sparsif_stats = getattr(model.ragnn, "_sparsification_stats", {})
+    if sparsif_stats:
+        _sparsif_log_calls += 1
+        if _sparsif_log_calls % policy.sparsification_log_every == 0:
+            model.tower_stats["ra_sparsification_stats"] = sparsif_stats
 
 
 def _get_from_conf_with_fallback(config: dict, key: str, fallback_key: str) -> float:

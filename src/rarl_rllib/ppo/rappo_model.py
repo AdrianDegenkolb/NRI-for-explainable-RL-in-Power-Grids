@@ -1,3 +1,4 @@
+import logging
 import typing
 from typing import Optional, List, Tuple
 
@@ -9,6 +10,8 @@ from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import nn, Tensor
+
+logger = logging.getLogger(__name__)
 
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
 from rarl import RAFeatureExtractor
@@ -90,6 +93,27 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
 
         x_dim = assert_graph_obs_space_and_get_x_dim(obs_space)
 
+        # Compute top-K budget (0 = disabled)
+        sparse_cfg = cfg.get("sparsification", {})
+        top_k_mult = sparse_cfg.get("top_k_multiplier", 0)
+        top_k_budget = 0
+        if top_k_mult > 0:
+            n_powerlines = sparse_cfg.get("n_powerlines_directed", 0)
+            if n_powerlines > 0:
+                temperature = sparse_cfg.get("temperature", 0.5)
+                top_k_budget = int(top_k_mult * (1 + temperature) * n_powerlines)
+                logger.info(
+                    "Top-K sparsification enabled: multiplier=%s temperature=%s "
+                    "n_powerlines_directed=%s → K_budget=%d",
+                    top_k_mult, temperature, n_powerlines, top_k_budget,
+                )
+            else:
+                logger.warning(
+                    "top_k_multiplier=%s but n_powerlines_directed not set; "
+                    "sparsification disabled. Add n_lines to env config.",
+                    top_k_mult,
+                )
+
         self.ragnn = RAFeatureExtractor(
             x_dim=x_dim,
             graph_max_degree=enc_cfg["max_degree"],
@@ -104,6 +128,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
             residual=gnn_cfg.get("residual", True),
             tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
+            top_k_budget=top_k_budget,
         )
 
         gnn_out_space = Box(-np.inf, np.inf, shape=(gnn_cfg["out_dim"],), dtype=np.float32)

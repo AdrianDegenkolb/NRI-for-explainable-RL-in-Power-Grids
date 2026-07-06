@@ -17,3 +17,7 @@ loss:
 
 latent_space:
   num_edge_types: 2
+
+sparsification:
+  top_k_multiplier: 0    # 0 = disabled (full FC graph). Set to 5-10 to enable top-K filtering.
+  log_every_n_steps: 50  # how often to emit sparsification diagnostics to TensorBoard
