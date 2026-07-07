@@ -244,7 +244,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
                 checkpoint_frequency=exp.checkpoint_freq,
                 checkpoint_at_end=True,
                 checkpoint_score_attribute=opt.score_metric,
-                num_to_keep=5,
+                num_to_keep=3,
             ),
             verbose=exp.verbose,
         ),
