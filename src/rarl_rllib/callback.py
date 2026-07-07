@@ -201,6 +201,7 @@ class TuneCallback(TuneReporterBase):
             result: Dict,
             **info,
     ):
+        self.print_heartbeat(trials)
         if self.log_level:
             # start printing after first evaluation
             if result['training_iteration'] % self._eval_freq == 0:

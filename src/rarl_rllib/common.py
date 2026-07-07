@@ -16,7 +16,7 @@ RASACTorchPolicy rely on:
 
 import logging
 import time
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple
 
 import torch
 from gymnasium import spaces
@@ -221,34 +221,40 @@ def build_prior_and_graph_masks(
     all_graph_edges: Tensor,
     edge_masks_obs: Tensor,
 ) -> Tuple[Tensor, Tensor]:
-    """Compute batched prior tensor and graph-edge affiliation masks."""
-    N, _ = policy.observation_space[NODES].shape
-    all_edges = fully_connected_edge_index(N)
+    """Return batched prior tensor and graph-edge affiliation masks.
 
-    batched_priors: List[Tensor] = []
-    batched_graph_masks: List[Tensor] = []
-
-    for i in range(all_graph_edges.shape[0]):
-        valid_edges = all_graph_edges[i][:, edge_masks_obs[i].bool()]
-
+    The prior is fully determined by fixed config values (``prior_prob_for_graph_edge``,
+    ``temperature``) and the static grid topology, so it is computed once on the first
+    call and cached on the policy.  Line disconnections change which edges are active
+    but their effect on the prior is negligible and intentionally ignored.
+    """
+    if not hasattr(policy, "_cached_prior"):
+        N, _ = policy.observation_space[NODES].shape
+        all_edges = fully_connected_edge_index(N)
+        # Use the full powerline topology from the first batch item (no mask applied).
+        graph_edges = all_graph_edges[0]
         g_prior, ng_prior = get_priors(
             prob_graph_edges_exist=policy.prior_prob_for_graph_edge,
-            num_graph_edges=valid_edges.shape[1],
-            num_non_graph_edges=all_edges.shape[1] - valid_edges.shape[1],
+            num_graph_edges=graph_edges.shape[1],
+            num_non_graph_edges=all_edges.shape[1] - graph_edges.shape[1],
             temperature=policy.temperature,
         )
-        prior, edge_is_powerline_edge_mask = get_prior_tensor(
-            graph_edges=valid_edges,
+        prior, mask = get_prior_tensor(
+            graph_edges=graph_edges,
             all_edges=all_edges,
             prior_for_graph_edges=g_prior,
             prior_for_non_graph_edges=ng_prior,
             num_edge_types=policy.num_edge_types,
             return_mask=True,
         )
-        batched_priors.append(prior.to(device=policy.device, dtype=torch.float32))
-        batched_graph_masks.append(edge_is_powerline_edge_mask.to(device=policy.device))
+        policy._cached_prior = prior.to(device=policy.device, dtype=torch.float32)
+        policy._cached_graph_mask = mask.to(device=policy.device)
 
-    return torch.stack(batched_priors), torch.stack(batched_graph_masks)
+    B = all_graph_edges.shape[0]
+    return (
+        policy._cached_prior.unsqueeze(0).expand(B, -1, -1),
+        policy._cached_graph_mask.unsqueeze(0).expand(B, -1),
+    )
 
 
 def _tower_mean(towers: list, key: str) -> float:
