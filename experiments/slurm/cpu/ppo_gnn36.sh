@@ -1,5 +1,6 @@
 #!/bin/bash
 # PPO + GNN baseline (fixed graph edges, no NRI encoder) — CPU variant
+# Updated 2026-07-09: 200k steps, 24 workers
 experiment_name=$(date +%Y_%m_%d)_IEEE36/ppo_gnn
 export experiment_name
 
@@ -33,9 +34,10 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     obs_space=graph \
     relation_awareness=disabled \
     rollouts.num_gpus_per_learner_worker=0 \
+    rollouts.num_rollout_workers=24 \
     experiment.seed=${seed} \
     experiment.name=${experiment_name} \
-    experiment.nb_timesteps=105000 \
+    experiment.nb_timesteps=200000 \
     env=case36
 EOF
 done

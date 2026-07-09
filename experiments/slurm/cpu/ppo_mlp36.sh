@@ -1,5 +1,6 @@
 #!/bin/bash
 # PPO + MLP baseline (flat observations, no graph structure) — CPU variant
+# Updated 2026-07-09: 200k steps, 24 workers, default sgd_minibatch_size (256)
 experiment_name=$(date +%Y_%m_%d)_IEEE36/ppo_mlp
 export experiment_name
 
@@ -20,6 +21,7 @@ sbatch << EOF
 #SBATCH --mem=249G
 #SBATCH --partition=cpu_il,cpu
 
+export RAY_gcs_rpc_server_reconnect_timeout_s=300
 module load devel/miniforge
 eval "\$(conda shell.bash hook)"
 conda activate L2RPN
@@ -30,13 +32,12 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     training=ppo \
     model=mlp \
     obs_space=flat \
-    experiment.nb_timesteps=105000 \
+    experiment.nb_timesteps=200000 \
     relation_awareness=disabled \
     rollouts.num_gpus_per_learner_worker=0 \
+    rollouts.num_rollout_workers=24 \
     experiment.seed=${seed} \
     experiment.name=${experiment_name} \
-    env=case36 \
-    training.sgd_minibatch_size=16 \
-    rollouts.num_rollout_workers=8
+    env=case36
 EOF
 done
