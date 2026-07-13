@@ -2,9 +2,9 @@
 Relation-Aware GNN (RAGNN) and standard baseline GNN.
 
 RAGNN performs message passing conditioned on predicted edge-type posterior
-probabilities from the NRI encoder. A separate GCNConv layer is maintained
-per edge type (excluding the "no edge" type). The per-type outputs are
-summed, normalized, and passed through a residual block.
+probabilities from the NRI encoder. A separate WeightedGINConv layer is
+maintained per edge type (excluding the "no edge" type). The per-type outputs
+are summed, normalized, and passed through a residual block.
 
 For a plain GNN baseline (no edge-type conditioning) use BaselineGNN.
 """
@@ -12,6 +12,7 @@ For a plain GNN baseline (no edge-type conditioning) use BaselineGNN.
 import torch
 from torch import nn, Tensor
 from torch_geometric.nn import GCNConv, BatchNorm, global_mean_pool
+from torch_geometric.nn import MessagePassing
 
 from .mlp import MLP
 
@@ -21,22 +22,71 @@ def _mean_l2_norm(t: Tensor, eps: float = 1e-12) -> Tensor:
     return torch.linalg.vector_norm(t, dim=-1).mean().clamp_min(eps)
 
 
+class WeightedGINConv(MessagePassing):
+    """
+    GIN-style message passing with scalar edge weights and no self-loops.
+
+    Aggregates neighbour features weighted by a scalar per edge using sum
+    aggregation, then applies a linear transform. Degree normalisation is
+    intentionally omitted so that the gradient flowing back through
+    ``edge_weight`` is not attenuated by the GCN normalisation term::
+
+        m_i = Σ_{j∈N(i)} edge_weight_ji · h_j      (weighted sum)
+        h_i_new = Linear(m_i)
+
+    The self-contribution (identity path) is delegated to the caller via a
+    residual connection rather than a self-loop edge, so the message-passing
+    output reflects discovered neighbour relationships only.
+
+    :param in_dim: Input feature dimension.
+    :param out_dim: Output feature dimension.
+    """
+
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__(aggr="add")
+        self.lin = nn.Linear(in_dim, out_dim)
+
+    def forward(self, x: Tensor, edge_index: Tensor, edge_weight: Tensor) -> Tensor:
+        """
+        :param x: Node features [N, in_dim].
+        :param edge_index: Graph connectivity [2, E].
+        :param edge_weight: Scalar weight per directed edge [E].
+        :return: Updated node features [N, out_dim].
+        """
+        out = self.propagate(edge_index, x=x, edge_weight=edge_weight)
+        return self.lin(out)
+
+    def message(self, x_j: Tensor, edge_weight: Tensor) -> Tensor:
+        """Scale source-node features by the edge weight.
+
+        :param x_j: Source node features for each edge [E, in_dim].
+        :param edge_weight: Scalar weight per edge [E].
+        :return: Weighted messages [E, in_dim].
+        """
+        return edge_weight.unsqueeze(-1) * x_j
+
+
 class RAGNN(nn.Module):
     """
     Relation-Aware Graph Neural Network.
 
     For each message-passing layer and each edge type k < K-1, a distinct
-    GCNConv is applied using ``edge_type_posterior[:, k]`` as edge weights.
-    The K-1 outputs are summed and fed through batch norm + ELU + dropout.
-    The last edge type (index K-1) is interpreted as "no edge" and is
-    skipped (controlled by *skip_last*).
+    WeightedGINConv is applied using ``edge_type_posterior[:, k]`` as edge
+    weights. The K-1 outputs are summed and fed through batch norm + ELU +
+    dropout. The last edge type (index K-1) is interpreted as "no edge" and
+    is skipped (controlled by *skip_last*).
+
+    Self-loops are not used: the residual connection preserves each node's
+    own features across layers, and the message-passing output reflects only
+    discovered neighbour relationships. This ensures that the encoder's edge
+    predictions have unattenuated influence on the GNN output.
 
     Input shapes
     ------------
-    x                : [N, x_dim]
-    edge_index       : [2, E]
+    x                   : [N, x_dim]
+    edge_index          : [2, E]
     edge_type_posterior : [E, K]
-    batch            : [N]
+    batch               : [N]
 
     Output shape
     ------------
@@ -76,7 +126,7 @@ class RAGNN(nn.Module):
 
         self.layers = nn.ModuleList([
             nn.ModuleList([
-                GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+                WeightedGINConv(hidden_dim, hidden_dim)
                 for _ in self.edge_type_range
             ])
             for _ in range(num_layers)
@@ -100,7 +150,7 @@ class RAGNN(nn.Module):
         """
         :param x: Node features [N, x_dim].
         :param edge_index: Graph connectivity [2, E].
-        :param edge_type_posterior: Soft edge-type assignments [E, K].
+        :param edge_type_posterior: Soft or hard edge-type assignments [E, K].
         :param batch: Batch vector [N].
         :return: Graph-level embeddings [B, x_out_dim].
         """
@@ -110,7 +160,7 @@ class RAGNN(nn.Module):
 
         for l, mp_list in enumerate(self.layers):
             outs = [
-                mp_list[k](x=h, edge_index=edge_index, edge_weight=edge_type_posterior[:, k])
+                mp_list[k](h, edge_index, edge_type_posterior[:, k])
                 for k in self.edge_type_range
             ]
             h_new = torch.stack(outs).sum(0)
@@ -130,6 +180,9 @@ class BaselineGNN(nn.Module):
     Standard GNN without edge-type conditioning — baseline for comparison.
 
     Uses a single GCNConv per layer applied to all edges equally.
+    Self-loops are excluded so that the message-passing output reflects
+    only neighbor information; the residual connection handles the
+    identity path.
 
     Input/output shapes are identical to :class:`RAGNN` except
     *edge_type_posterior* is not required.
@@ -153,7 +206,7 @@ class BaselineGNN(nn.Module):
         self.bn_node_proj = BatchNorm(hidden_dim)
 
         self.layers = nn.ModuleList([
-            GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+            GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=False)
             for _ in range(num_layers)
         ])
         self.bn_mp = nn.ModuleList([BatchNorm(hidden_dim) for _ in range(num_layers)])
