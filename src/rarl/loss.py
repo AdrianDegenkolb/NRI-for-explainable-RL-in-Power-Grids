@@ -29,10 +29,12 @@ def compute_ra_kl_loss(
     ::
 
         kl_per_edge = sum_k posterior[k] * log(posterior[k] / prior[k])
-        loss = f_graph * beta * mean(kl_graph) + f_latent * beta_ng * mean(kl_latent)
+        loss = beta * mean(kl_graph) + beta_non_graph * mean(kl_latent)
 
-    where *f_graph* and *f_latent* are the fractions of graph / latent edges
-    in the batch so that neither term dominates solely due to edge count.
+    Each group is weighted equally regardless of edge count. With the original
+    count-weighted formulation ``f_graph * beta * kl_graph + f_latent * beta_ng * kl_latent``
+    (which equals ``beta * mean_KL_all_edges`` when betas are equal), latent edges
+    dominate the gradient by a factor of ~79× for case14 (40 graph vs 3152 latent edges).
 
     :param posteriors: Predicted edge-type distributions [B, E, K].
     :param prior_tensor: Prior distributions for each edge [B, E, K] or [E, K].
@@ -74,7 +76,7 @@ def compute_ra_kl_loss(
     f_latent = num_latent / total if total > 0 else torch.zeros((), device=posteriors.device)
     total_interaction_probability_mass = posteriors[:,:,:-1].sum(dim=[1, 2]).mean()
 
-    kl_loss = f_graph * beta * kl_graph + f_latent * beta_non_graph * kl_latent
+    kl_loss = beta * kl_graph + beta_non_graph * kl_latent
 
     stats: Dict[str, Tensor] = {
         "kl_loss": kl_loss.detach(),
