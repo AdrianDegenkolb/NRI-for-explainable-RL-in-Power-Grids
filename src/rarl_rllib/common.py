@@ -32,8 +32,6 @@ _prof_total_prior: float = 0.0
 _prof_total_kl: float = 0.0
 _PROF_LOG_EVERY: int = 10  # log once every N gradient steps
 
-# Sparsification diagnostic logging counter.
-_sparsif_log_calls: int = 0
 
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl import compute_ra_kl_loss, fully_connected_edge_index, get_prior_tensor
@@ -59,8 +57,6 @@ def init_ra_config(policy, config: dict) -> None:
     policy.prior_prob_for_graph_edge = policy._prior_cfg["prior_prob_for_graph_edge"]
     policy.temperature = policy._prior_cfg["temperature"]
 
-    sparse_cfg = ra_cfg.get("sparsification", {})
-    policy.sparsification_log_every = sparse_cfg.get("log_every_n_steps", 50)
 
 
 def apply_ra_kl_loss(
@@ -196,12 +192,10 @@ def store_ra_tower_stats(
         "ra_gnn_stats":                model.ragnn.gnn.stats,
     })
 
-    # Sparsification diagnostics — written every log_every_n_steps gradient steps
+    # Sparsification diagnostics — written every iteration (stats already computed in forward pass)
     sparsif_stats = getattr(model.ragnn, "_sparsification_stats", {})
     if sparsif_stats:
-        _sparsif_log_calls += 1
-        if _sparsif_log_calls % policy.sparsification_log_every == 0:
-            model.tower_stats["ra_sparsification_stats"] = sparsif_stats
+        model.tower_stats["ra_sparsification_stats"] = sparsif_stats
 
 
 def _get_from_conf_with_fallback(config: dict, key: str, fallback_key: str) -> float:
