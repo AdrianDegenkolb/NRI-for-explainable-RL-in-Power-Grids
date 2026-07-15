@@ -3,7 +3,7 @@ defaults:
   - training: sac
   - model: ragnn
   - obs_space: graph
-  - reward: constant
+  - reward: alpha_zero
   - relation_awareness: default
   - env: case14
   - opponent: disabled
