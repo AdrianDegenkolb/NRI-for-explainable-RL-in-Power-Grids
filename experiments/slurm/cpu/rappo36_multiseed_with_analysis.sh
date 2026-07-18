@@ -8,7 +8,7 @@
 # Optional env override (before running):
 #   export SEEDS="0 1 2 3 4"      # default: 0 1 2 3 4
 
-experiment_name=$(date +%Y_%m_%d)_IEEE36/rappo_multiseed
+experiment_name=$(date +%Y_%m_%d)_IEEE36/rappo_multiseed_gcnconv
 export experiment_name
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}

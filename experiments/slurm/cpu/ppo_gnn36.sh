@@ -1,7 +1,7 @@
 #!/bin/bash
 # PPO + GNN baseline (fixed graph edges, no NRI encoder) — CPU variant
 # Updated 2026-07-09: 200k steps, 24 workers
-experiment_name=$(date +%Y_%m_%d)_IEEE36/ppo_gnn
+experiment_name=$(date +%Y_%m_%d)_IEEE36/ppo_gnn_gcnconv
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

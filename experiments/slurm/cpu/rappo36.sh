@@ -1,7 +1,7 @@
 #!/bin/bash
 # RAPPO case36 — seed 0, 200k timesteps, top-K sparsification (multiplier=7) + static prior
 # K_budget = 7 × (1+0.5) × 118 = 1,239 edges (vs 31,152 FC for N=177)
-experiment_name=$(date +%Y_%m_%d)_IEEE36/rappo_static
+experiment_name=$(date +%Y_%m_%d)_IEEE36/rappo_static_gcnconv
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

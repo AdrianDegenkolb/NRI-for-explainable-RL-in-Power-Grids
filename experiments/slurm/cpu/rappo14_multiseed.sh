@@ -1,6 +1,6 @@
 #!/bin/bash
 # RAPPO case14 — 5 seeds, 200k timesteps, no sparsification
-experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed_gcnconv
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")

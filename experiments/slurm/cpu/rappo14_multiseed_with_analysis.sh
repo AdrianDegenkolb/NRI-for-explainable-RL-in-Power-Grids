@@ -1,5 +1,5 @@
 #!/bin/bash
-# RAPPO case14 — 5 seeds, 200k timesteps, factored KL + WeightedGINConv.
+# RAPPO case14 — 5 seeds, 200k timesteps, factored KL + GCNConv with self-loops.
 # After all seed jobs complete, auto-submits cross_seed_analysis.py.
 #
 # Usage:
@@ -9,7 +9,7 @@
 #   export SEEDS="0 1 2 3 4"      # default: 0 1 2 3 4
 #   export SPARSIFY=1              # set to enable top-K (multiplier=7); default: off
 
-experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed_factored_kl
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed_gcnconv
 export experiment_name
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}

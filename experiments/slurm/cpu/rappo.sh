@@ -1,6 +1,6 @@
 #!/bin/bash
 # RAPPO: Relation-Aware PPO (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_gcnconv
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
