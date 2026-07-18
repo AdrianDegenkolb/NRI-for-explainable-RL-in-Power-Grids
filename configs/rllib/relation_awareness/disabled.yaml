@@ -18,3 +18,5 @@ loss:
 
 latent_space:
   num_edge_types: 2
+
+sparsification: {}
