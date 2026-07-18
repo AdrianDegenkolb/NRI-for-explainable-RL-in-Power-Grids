@@ -11,7 +11,7 @@ For a plain GNN baseline (no edge-type conditioning) use BaselineGNN.
 
 import torch
 from torch import nn, Tensor
-from torch_geometric.nn import GCNConv, BatchNorm, global_mean_pool
+from torch_geometric.nn import GINConv, BatchNorm, global_mean_pool
 from torch_geometric.nn import MessagePassing
 
 from .mlp import MLP
@@ -179,7 +179,7 @@ class BaselineGNN(nn.Module):
     """
     Standard GNN without edge-type conditioning — baseline for comparison.
 
-    Uses a single GCNConv per layer applied to all edges equally.
+    Uses a single GINConv per layer applied to all edges equally.
     Self-loops are excluded so that the message-passing output reflects
     only neighbor information; the residual connection handles the
     identity path.
@@ -206,7 +206,7 @@ class BaselineGNN(nn.Module):
         self.bn_node_proj = BatchNorm(hidden_dim)
 
         self.layers = nn.ModuleList([
-            GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=False)
+            GINConv(nn.Linear(hidden_dim, hidden_dim), train_eps=False)
             for _ in range(num_layers)
         ])
         self.bn_mp = nn.ModuleList([BatchNorm(hidden_dim) for _ in range(num_layers)])
@@ -226,15 +226,13 @@ class BaselineGNN(nn.Module):
         :return: Graph-level embeddings [B, x_out_dim].
         """
         h = self.bn_node_proj(self.node_proj(x))
-        h_res = h
 
         for l, conv in enumerate(self.layers):
-            h = conv(x=h, edge_index=edge_index)
-            h = self.bn_mp[l](h)
-            h = self.act(h)
-            self.stats[f"msg_ratio_layer_{l}"] = _mean_l2_norm(h) / _mean_l2_norm(h_res)
-            h = h + h_res if self.residual else h
-            h_res = h
+            h_new = conv(h, edge_index)
+            h_new = self.bn_mp[l](h_new)
+            h_new = self.act(h_new)
+            self.stats[f"msg_ratio_layer_{l}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
             h = self.dropout(h)
+            h = h + h_new if self.residual else h_new
 
         return global_mean_pool(self.final(h), batch)
