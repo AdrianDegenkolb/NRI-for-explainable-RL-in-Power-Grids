@@ -17,6 +17,7 @@ from ray import air, tune
 from ray.tune.experiment import Trial
 from ray.tune.result_grid import ResultGrid
 from ray.tune.schedulers import ASHAScheduler
+from ray.tune.logger import TBXLoggerCallback
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
@@ -233,6 +234,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
             storage_path=storage_path,
             stop={"timesteps_total": exp.nb_timesteps},
             callbacks=[
+                TBXLoggerCallback(),
                 TuneCallback(
                     exp.my_log_level,
                     opt.score_metric,
@@ -428,6 +430,7 @@ def _setup_ray(exp):
     # --- Init Ray ---
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
+    os.environ["TUNE_DISABLE_AUTO_CALLBACK_LOGGERS"] = "1"  # suppress result.json + progress.csv
     os.environ["WANDB_MODE"] = "offline"
     os.environ["WANDB_SILENT"] = "true"
     ray.init(local_mode=exp.ray_local_mode)
