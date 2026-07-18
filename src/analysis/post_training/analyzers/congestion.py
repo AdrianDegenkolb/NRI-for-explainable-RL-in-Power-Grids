@@ -204,10 +204,8 @@ class CongestionProfileAnalyzer(EpisodeAnalyzer):
         rho_all = np.stack(self._all_rho, axis=0)
         mean_rho = rho_all.mean(axis=0)
         np.save(d / "mean_rho_per_line.npy", mean_rho)
-        np.save(d / "rho_over_time.npy", rho_all)
 
         status_all = np.stack(self._all_status, axis=0)
-        np.save(d / "line_status_over_time.npy", status_all)
         np.save(d / "mean_line_status.npy", status_all.mean(axis=0))
 
         n_lines = mean_rho.shape[0]

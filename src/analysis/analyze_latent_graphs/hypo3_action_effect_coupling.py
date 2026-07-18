@@ -699,9 +699,6 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
         # --- Save ---
         self.outdir.mkdir(parents=True, exist_ok=True)
-        self._save_array(C_T,                self.outdir / "C_effect_over_time.npy")
-        self._save_array(P_T,                self.outdir / "posterior_over_time.npy")
-        self._save_array(PR_T,               self.outdir / "prior_over_time.npy")
         self._save_array(C_mean,             self.outdir / "C_effect_mean_edge.npy")
         self._save_array(C_agg,              self.outdir / "C_effect_agg_edge.npy")
         self._save_array(P_mean,             self.outdir / "posterior_mean_edge.npy")
@@ -825,19 +822,11 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
     def repaint(self):
         """Re-loads all saved arrays and regenerates all plots."""
-        C_T    = np.load(self.outdir / "C_effect_over_time.npy")
-        P_T    = np.load(self.outdir / "posterior_over_time.npy")
-        PR_T   = np.load(self.outdir / "prior_over_time.npy")
-        C_mean = np.load(self.outdir / "C_effect_mean_edge.npy")
-        P_mean = np.load(self.outdir / "posterior_mean_edge.npy")
+        C_mean  = np.load(self.outdir / "C_effect_mean_edge.npy")
+        P_mean  = np.load(self.outdir / "posterior_mean_edge.npy")
         PR_mean = np.load(self.outdir / "prior_mean_edge.npy")
         agg_path = self.outdir / "C_effect_agg_edge.npy"
-        if agg_path.exists():
-            C_agg = np.load(agg_path)
-        else:
-            E = C_T.shape[1]
-            N_infer = int(round((1 + (1 + 4 * E) ** 0.5) / 2))
-            C_agg = self._build_aggregated_coupling(C_T, num_nodes=N_infer)
+        C_agg = np.load(agg_path) if agg_path.exists() else C_mean
 
         spearman_rho     = np.load(self.outdir / "spearman_rho.npy")
         pearson_r        = np.load(self.outdir / "pearson_r.npy")
@@ -879,7 +868,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         node_counts = np.load(counts_path) if counts_path.exists() else None
 
         self.generate_plots(
-            C_T, P_T, PR_T, C_mean, C_agg, P_mean, PR_mean,
+            None, None, None, C_mean, C_agg, P_mean, PR_mean,
             spearman_rho, pearson_r, kendall_tau_arr, topk_arr, roc_auc_arr, ap_arr, mi_arr,
             prior_spearman_rho, prior_pearson_r, prior_kendall_tau_arr, prior_topk_arr,
             prior_roc_auc_arr, prior_ap_arr, prior_mi_arr,
@@ -1023,9 +1012,9 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
     def generate_plots(
         self,
-        C_T: npt.NDArray,               # [T_action, E]
-        P_T: npt.NDArray,               # [T_action, E] – posterior
-        PR_T: npt.NDArray,              # [T_action, E] – prior  (baseline)
+        C_T: npt.NDArray | None,        # [T_action, E] – unused, kept for API compat
+        P_T: npt.NDArray | None,        # [T_action, E] – unused, kept for API compat
+        PR_T: npt.NDArray | None,       # [T_action, E] – unused, kept for API compat
         C_mean: npt.NDArray,            # [E]
         C_agg: npt.NDArray,             # [E] sum-over-time then row-normalised
         P_mean: npt.NDArray,            # [E]

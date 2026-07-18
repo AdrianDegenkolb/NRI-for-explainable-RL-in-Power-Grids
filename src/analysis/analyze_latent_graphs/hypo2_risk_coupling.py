@@ -307,19 +307,16 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         # --- Save ---
         cs = self._coupling_short
         self.outdir.mkdir(parents=True, exist_ok=True)
-        self._save_array(R,        self.outdir / "risk_vectors_over_time.npy")
         self._save_array(C_node,   self.outdir / "C_risk_node_matrix.npy")
         self._save_array(C_edge,   self.outdir / f"{cs}_edge_vector.npy")
         self._save_array(P_mean,   self.outdir / "posterior_mean_edge.npy")
         self._save_array(PR_mean,  self.outdir / "prior_mean_edge.npy")
-        self._save_array(P_T,      self.outdir / "posterior_over_time.npy")
-        self._save_array(PR_T,     self.outdir / "prior_over_time.npy")
         np.save(self.outdir / "scalar_metrics_posterior.npy", metrics_post, allow_pickle=True)
         np.save(self.outdir / "scalar_metrics_prior.npy",     metrics_prior, allow_pickle=True)
         np.save(self.outdir / "scalar_metrics_removed.npy",   metrics_removed, allow_pickle=True)
         np.save(self.outdir / "scalar_metrics_added.npy",     metrics_added, allow_pickle=True)
 
-        self.generate_plots(C_edge, P_mean, PR_mean, P_T, PR_T, metrics_post, metrics_prior,
+        self.generate_plots(C_edge, P_mean, PR_mean, metrics_post, metrics_prior,
                             metrics_removed, metrics_added)
 
     @staticmethod
@@ -363,15 +360,13 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         C_edge  = np.load(self.outdir / f"{cs}_edge_vector.npy")
         P_mean  = np.load(self.outdir / "posterior_mean_edge.npy")
         PR_mean = np.load(self.outdir / "prior_mean_edge.npy")
-        P_T     = np.load(self.outdir / "posterior_over_time.npy")
-        PR_T    = np.load(self.outdir / "prior_over_time.npy")
         m_post  = np.load(self.outdir / "scalar_metrics_posterior.npy", allow_pickle=True).item()
         m_prior = np.load(self.outdir / "scalar_metrics_prior.npy",     allow_pickle=True).item()
         def _try_load_dict(path):
             return np.load(path, allow_pickle=True).item() if path.exists() else None
         m_removed = _try_load_dict(self.outdir / "scalar_metrics_removed.npy")
         m_added   = _try_load_dict(self.outdir / "scalar_metrics_added.npy")
-        self.generate_plots(C_edge, P_mean, PR_mean, P_T, PR_T, m_post, m_prior, m_removed, m_added)
+        self.generate_plots(C_edge, P_mean, PR_mean, m_post, m_prior, m_removed, m_added)
 
     def _visualize_coupling_graph(
         self,
@@ -424,8 +419,6 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         C_edge: npt.NDArray,      # [E]  – C_{ij}^{risk}
         P_mean: npt.NDArray,      # [E]  – mean posterior
         PR_mean: npt.NDArray,     # [E]  – mean prior  (baseline)
-        P_T: npt.NDArray,         # [T, E] – posterior over time
-        PR_T: npt.NDArray,        # [T, E] – prior over time  (baseline)
         metrics_post: dict | None = None,
         metrics_prior: dict | None = None,
         metrics_removed: dict | None = None,

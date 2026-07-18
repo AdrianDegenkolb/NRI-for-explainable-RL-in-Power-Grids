@@ -440,9 +440,17 @@ class Hypothesis1verifier(PosteriorAnalyzer):
         self._save_array(added_mi_arr,                self.outdir / f"mutual_info_{cs}_added.npy")
         self._save_array(added_edge_corr,             self.outdir / f"edgewise_temporal_pearson_{cs}_added.npy")
         self._save_array(added_edge_spearman,         self.outdir / f"edgewise_temporal_spearman_{cs}_added.npy")
-        self._save_array(P_T,    self.outdir / "posterior_over_time.npy")
-        self._save_array(PR_T,   self.outdir / "prior_over_time.npy")
-        self._save_array(C_T,    self.outdir / "coupling_over_time.npy")
+        # Save a random subsample of flattened (C, P, PR) triples for KDE repaint.
+        # The full arrays would be ~2.5 GB each; 50K samples are sufficient for KDE.
+        _rng = np.random.default_rng(0)
+        _n = min(50_000, P_T.size)
+        _idx = _rng.choice(P_T.size, size=_n, replace=False)
+        np.savez_compressed(
+            self.outdir / "kde_sample.npz",
+            P=P_T.ravel()[_idx].astype(np.float32),
+            PR=PR_T.ravel()[_idx].astype(np.float32),
+            C=C_T.ravel()[_idx].astype(np.float32),
+        )
         self._save_array(mean_c, self.outdir / "coupling_mean.npy")
 
         self.generate_plots(
@@ -652,9 +660,10 @@ class Hypothesis1verifier(PosteriorAnalyzer):
         added_edge_corr          = _try_load(self.outdir / f"edgewise_temporal_pearson_{cs}_added.npy")
         added_edge_spearman      = _try_load(self.outdir / f"edgewise_temporal_spearman_{cs}_added.npy")
 
-        P_T  = np.load(self.outdir / "posterior_over_time.npy")
-        PR_T = np.load(self.outdir / "prior_over_time.npy")
-        C_T  = np.load(self.outdir / "coupling_over_time.npy")
+        _kde = np.load(self.outdir / "kde_sample.npz")
+        P_T  = _kde["P"].reshape(1, -1).astype(np.float64)
+        PR_T = _kde["PR"].reshape(1, -1).astype(np.float64)
+        C_T  = _kde["C"].reshape(1, -1).astype(np.float64)
 
         self.generate_plots(
             C_T, P_T, PR_T,
