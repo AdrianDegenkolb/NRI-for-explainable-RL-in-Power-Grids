@@ -9,7 +9,7 @@ cd "$REPO_ROOT"
 
 mkdir -p results/experiments/${experiment_name}/out
 
-for seed in 0; do
+for seed in 0 1 2 3 4; do
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ppo_mlp_s${seed}
