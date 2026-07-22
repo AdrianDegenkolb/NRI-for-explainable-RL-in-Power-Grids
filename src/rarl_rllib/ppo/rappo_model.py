@@ -129,6 +129,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             residual=gnn_cfg.get("residual", True),
             tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
             top_k_budget=top_k_budget,
+            conv_type=gnn_cfg.get("conv_type", "gcn"),
         )
 
         gnn_out_space = Box(-np.inf, np.inf, shape=(gnn_cfg["out_dim"],), dtype=np.float32)

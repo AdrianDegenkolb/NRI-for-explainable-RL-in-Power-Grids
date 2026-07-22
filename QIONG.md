@@ -1,6 +1,6 @@
 # Project Summary for Qiong
 
-**Branch:** `main` | **Last updated:** 2026-05-28
+**Branch:** `main` | **Last updated:** 2026-07-20
 
 ---
 
@@ -48,28 +48,43 @@ Training runs on **bwUniCluster 3.0** (HPC). Each run is a Slurm job.
 
 ---
 
-## Experimental Results (as of 2026-05-22 batch)
+## Experimental Results
 
-| Grid | Run | Status | Episodes survived (test) | Steps survived (test) |
-|------|-----|--------|--------------------------|----------------------|
-| IEEE14 | MLP-PPO | ✅ | 98% | 99.75% |
-| IEEE14 | GNN-PPO | ✅ | 98% | 98.70% |
-| IEEE14 | RAPPO | ✅ | 96% | 97.97% |
-| IEEE14 | MLP-DQN | ✅ | 10% | 30.92% |
-| IEEE14 | GNN-DQN | ✅ | 6% | 27.79% |
-| IEEE14 | RADQN | ✅ | 52% | 70.50% |
-| IEEE36 | MLP-PPO | ✅ | 8.33% | 32.80% |
-| IEEE36 | GNN-PPO | ✅ | 8.33% | 32.89% |
-| IEEE36 | MLP-DQN | ✅ | 8.33% | 32.90% |
-| IEEE36 | RAPPO | ❌ crashed | — | — |
-| IEEE36 | RADQN | ❌ crashed | — | — |
-| IEEE36 | GNN-DQN | ❌ crashed | — | — |
-| IEEE118 | MLP-PPO | ✅ | 3.61% | 22.52% |
-| IEEE118 | GNN-PPO | ✅ | 2.41% | 18.13% |
+### IEEE 14-bus — single seed, 2026-05-22 batch
 
-**Key observation:** On 14-bus, PPO variants all reach ~97–99% step survival regardless of
-architecture (MLP ≈ GNN ≈ RAPPO). On 36-bus, all non-RA baselines converge to virtually
-identical low performance (~33% steps). The RA variants on 36-bus crashed before completing.
+| Run | Status | Episodes survived (test) | Steps survived (test) |
+|-----|--------|--------------------------|----------------------|
+| MLP-PPO | ✅ | 98% | 99.75% |
+| GNN-PPO | ✅ | 98% | 98.70% |
+| RAPPO | ✅ | 96% | 97.97% |
+| MLP-DQN | ✅ | 10% | 30.92% |
+| GNN-DQN | ✅ | 6% | 27.79% |
+| RADQN | ✅ | 52% | 70.50% |
+
+### IEEE 36-bus — 5-seed multi-seed, 2026-07-18/20 batch (all fixes applied)
+
+144 test episodes per seed. Values are mean ± std across 5 seeds.
+
+| Run | Status | Episodes survived (test) | Steps survived (test) |
+|-----|--------|--------------------------|----------------------|
+| RAPPO | ✅ | 26.1 ± 2.7% | 43.2 ± 1.8% |
+| PPO-GNN | ✅ | 26.0 ± 2.8% | 43.1 ± 1.8% |
+| PPO-MLP | ✅ | 26.1 ± 2.7% | 43.1 ± 1.8% |
+| MLP-DQN | ✅ (single seed, old batch) | 8.33% | 32.90% |
+| RADQN | ❌ crashed (old batch) | — | — |
+| GNN-DQN | ❌ crashed (old batch) | — | — |
+
+### IEEE 118-bus — single seed, 2026-05-22 batch
+
+| Run | Status | Episodes survived (test) | Steps survived (test) |
+|-----|--------|--------------------------|----------------------|
+| MLP-PPO | ✅ | 3.61% | 22.52% |
+| GNN-PPO | ✅ | 2.41% | 18.13% |
+
+**Key observations:**
+- On 14-bus, all PPO variants reach ~96–99% step survival regardless of architecture.
+- On 36-bus (new multi-seed results with all fixes), all three PPO variants converge to nearly **identical** performance (~26% completed episodes, ~43% steps survived). The differences between RAPPO, PPO-GNN, and PPO-MLP are within the seed variance (±1.8 pp on steps%). The NRI encoder provides no measurable benefit over a fixed-topology GNN or flat MLP on this grid.
+- The improvement over the old single-seed 36-bus results (32–33% → 43% steps) is attributable to the `grad_clip: 40.0` fix and the corrected KL annealing schedule.
 
 ---
 
@@ -157,15 +172,10 @@ evaluating KL annealing effects.
 
 ---
 
-## Current Status (2026-05-26)
+## Current Status (2026-07-20)
 
-A new batch of jobs was submitted to the cluster with all the above fixes applied:
-- All 6 variants on IEEE14 and IEEE36 (12 jobs)
-- RAPPO on IEEE118 (highmem partition)
-
-Results are pending. If you'd like to test locally, **RAPPO on IEEE36** is the most interesting
-run to try — it crashed in all previous attempts and the performance fixes should now make it
-stable. See the setup instructions below.
+Multi-seed IEEE36 runs (5 seeds each) completed for RAPPO, PPO-GNN, and PPO-MLP with all fixes applied.
+Full per-seed breakdown and training curves are in `experiments/compare_survival.ipynb`.
 
 ---
 
@@ -212,7 +222,7 @@ PYTHONPATH=$(pwd)/src python experiments/train.py \
 
 ## Still Open
 
-- **Multi-seed evaluation:** All results are single-seed (seed=0). Variance across seeds unknown.
+- **DQN variants on 36-bus:** RADQN and GNN-DQN still crashed in the old batch; not yet re-run with fixes.
 - **DQN encoder gradient death:** Straight-through fix applied but not yet verified on new runs.
 - **GNN gradient explosion on 118-bus:** Grad clip applied; whether it restores performance unknown.
-- **Latent graph analysis hypotheses** (H1: electrical coupling, H2: risk coupling, H3: action-effect coupling): framework exists but not yet run.
+- **Latent graph analysis hypotheses** (H1: electrical coupling, H2: risk coupling, H3: action-effect coupling): framework implemented, per-seed analysis runs exist under `analysis/` in each trial directory.

@@ -3,7 +3,7 @@ An agent that runs a RLlib model in the Grid2Op environment on top of a heuristi
 """
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 from grid2op.Action import ActionSpace, BaseAction
 from grid2op.Observation import BaseObservation
@@ -28,6 +28,7 @@ class RllibAgent(HeuristicsAgent):
         policy_name: str,
         checkpoint_name: str,
         gym_wrapper: CustomizedGrid2OpEnvironment,
+        conv_type: Optional[str] = None,
     ):
         rules = {
             "activation_threshold": env_config["rho_threshold"],
@@ -48,7 +49,11 @@ class RllibAgent(HeuristicsAgent):
             # file_path already points to checkpoint directory
             checkpoint_path = os.path.join(file_path, "policies", policy_name)
 
-        self._rllib_agent = Policy.from_checkpoint(checkpoint_path)
+        if conv_type is not None:
+            from core.loading import _policy_from_checkpoint_with_conv_type
+            self._rllib_agent = _policy_from_checkpoint_with_conv_type(checkpoint_path, conv_type)
+        else:
+            self._rllib_agent = Policy.from_checkpoint(checkpoint_path)
         self.obs_keys_order = [key for key in self._rllib_agent.observation_space.spaces.keys()]
         self.gym_wrapper = gym_wrapper
 

@@ -2,18 +2,32 @@
 Relation-Aware GNN (RAGNN) and standard baseline GNN.
 
 RAGNN performs message passing conditioned on predicted edge-type posterior
-probabilities from the NRI encoder. A separate GCNConv layer is maintained
-per edge type (excluding the "no edge" type). The per-type outputs are
-summed, normalized, and passed through a residual block.
+probabilities from the NRI encoder. A separate conv layer is maintained per
+edge type (excluding the "no edge" type). The per-type outputs are summed,
+normalized, and passed through a residual block.
+
+Two message-passing kernels are supported via ``conv_type``:
+
+* ``"gcn"`` (default) — PyG :class:`~torch_geometric.nn.GCNConv` with
+  ``improved=True`` and ``add_self_loops=True``.  Edge weights are passed as
+  the ``edge_weight`` argument.
+* ``"gin"`` — :class:`WeightedGINConv`: GIN-style weighted sum aggregation
+  without self-loops (the residual connection handles the identity path).
 
 For a plain GNN baseline (no edge-type conditioning) use BaselineGNN.
 """
+from __future__ import annotations
+
+from typing import Literal
 
 import torch
 from torch import nn, Tensor
-from torch_geometric.nn import GCNConv, BatchNorm, global_mean_pool
+from torch_geometric.nn import GCNConv, GINConv, BatchNorm, global_mean_pool
+from torch_geometric.nn import MessagePassing
 
 from .mlp import MLP
+
+ConvType = Literal["gcn", "gin"]
 
 
 def _mean_l2_norm(t: Tensor, eps: float = 1e-12) -> Tensor:
@@ -21,12 +35,68 @@ def _mean_l2_norm(t: Tensor, eps: float = 1e-12) -> Tensor:
     return torch.linalg.vector_norm(t, dim=-1).mean().clamp_min(eps)
 
 
+class WeightedGINConv(MessagePassing):
+    """
+    GIN-style message passing with scalar edge weights and no self-loops.
+
+    Aggregates neighbour features weighted by a scalar per edge using sum
+    aggregation, then applies a linear transform. Degree normalisation is
+    intentionally omitted so that the gradient flowing back through
+    ``edge_weight`` is not attenuated by the GCN normalisation term::
+
+        m_i = Σ_{j∈N(i)} edge_weight_ji · h_j      (weighted sum)
+        h_i_new = Linear(m_i)
+
+    The self-contribution (identity path) is delegated to the caller via a
+    residual connection rather than a self-loop edge, so the message-passing
+    output reflects discovered neighbour relationships only.
+
+    :param in_dim: Input feature dimension.
+    :param out_dim: Output feature dimension.
+    """
+
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__(aggr="add")
+        self.lin = nn.Linear(in_dim, out_dim)
+
+    def forward(self, x: Tensor, edge_index: Tensor, edge_weight: Tensor) -> Tensor:
+        """
+        :param x: Node features [N, in_dim].
+        :param edge_index: Graph connectivity [2, E].
+        :param edge_weight: Scalar weight per directed edge [E].
+        :return: Updated node features [N, out_dim].
+        """
+        out = self.propagate(edge_index, x=x, edge_weight=edge_weight)
+        return self.lin(out)
+
+    def message(self, x_j: Tensor, edge_weight: Tensor) -> Tensor:
+        """Scale source-node features by the edge weight.
+
+        :param x_j: Source node features for each edge [E, in_dim].
+        :param edge_weight: Scalar weight per edge [E].
+        :return: Weighted messages [E, in_dim].
+        """
+        return edge_weight.unsqueeze(-1) * x_j
+
+
+def _make_ragnn_conv(conv_type: ConvType, hidden_dim: int) -> nn.Module:
+    if conv_type == "gin":
+        return WeightedGINConv(hidden_dim, hidden_dim)
+    return GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+
+
+def _make_baseline_conv(conv_type: ConvType, hidden_dim: int) -> nn.Module:
+    if conv_type == "gin":
+        return GINConv(nn.Linear(hidden_dim, hidden_dim), train_eps=False)
+    return GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+
+
 class RAGNN(nn.Module):
     """
     Relation-Aware Graph Neural Network.
 
     For each message-passing layer and each edge type k < K-1, a distinct
-    GCNConv is applied using ``edge_type_posterior[:, k]`` as edge weights.
+    conv layer is applied using ``edge_type_posterior[:, k]`` as edge weights.
     The K-1 outputs are summed and fed through batch norm + ELU + dropout.
     The last edge type (index K-1) is interpreted as "no edge" and is
     skipped (controlled by *skip_last*).
@@ -50,6 +120,7 @@ class RAGNN(nn.Module):
     :param skip_last: Skip the last edge-type (the "no edge" type).
     :param dropout_prob: Dropout probability.
     :param residual: Use residual connections between layers.
+    :param conv_type: Message-passing kernel — ``"gcn"`` (default) or ``"gin"``.
     """
 
     def __init__(
@@ -62,6 +133,7 @@ class RAGNN(nn.Module):
         skip_last: bool = True,
         dropout_prob: float = 0.0,
         residual: bool = True,
+        conv_type: ConvType = "gcn",
     ):
         super().__init__()
         self.residual = residual
@@ -76,7 +148,7 @@ class RAGNN(nn.Module):
 
         self.layers = nn.ModuleList([
             nn.ModuleList([
-                GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+                _make_ragnn_conv(conv_type, hidden_dim)
                 for _ in self.edge_type_range
             ])
             for _ in range(num_layers)
@@ -129,10 +201,13 @@ class BaselineGNN(nn.Module):
     """
     Standard GNN without edge-type conditioning — baseline for comparison.
 
-    Uses a single GCNConv per layer applied to all edges equally.
+    Uses a single conv layer per message-passing step applied to all edges
+    equally.
 
     Input/output shapes are identical to :class:`RAGNN` except
     *edge_type_posterior* is not required.
+
+    :param conv_type: Message-passing kernel — ``"gcn"`` (default) or ``"gin"``.
     """
 
     def __init__(
@@ -143,6 +218,7 @@ class BaselineGNN(nn.Module):
         num_layers: int = 3,
         dropout_prob: float = 0.0,
         residual: bool = True,
+        conv_type: ConvType = "gcn",
     ):
         super().__init__()
         self.residual = residual
@@ -153,7 +229,7 @@ class BaselineGNN(nn.Module):
         self.bn_node_proj = BatchNorm(hidden_dim)
 
         self.layers = nn.ModuleList([
-            GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+            _make_baseline_conv(conv_type, hidden_dim)
             for _ in range(num_layers)
         ])
         self.bn_mp = nn.ModuleList([BatchNorm(hidden_dim) for _ in range(num_layers)])

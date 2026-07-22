@@ -59,32 +59,46 @@ def load_model(trial_dir: Path, checkpoint: str, env_name: str):
 
 # ── observation collection ────────────────────────────────────────────────────
 
-def collect_observations(g2op_env, gym_wrapper, n_obs: int, n_chronics: int = 10) -> list[dict]:
-    """Collect diverse observations across chronics with do-nothing actions."""
-    target = max(1, n_obs // n_chronics)
+def collect_observations(
+    agent,
+    g2op_env,
+    gym_wrapper,
+    n_obs: int,
+    rho_thresh: float = 0.5,
+) -> list[dict]:
+    """Collect gym obs dicts from agent policy rollouts, keeping only critical states.
+
+    Runs the agent's own policy across chronics and stores observations where
+    rho_max > rho_thresh. Iterates over all available chronics until n_obs are
+    collected or all chronics are exhausted.
+
+    :param agent: Loaded RllibAgent used to generate actions.
+    :param g2op_env: Grid2Op environment.
+    :param gym_wrapper: Gym wrapper to convert g2op obs to gym dicts.
+    :param n_obs: Target number of observations.
+    :param rho_thresh: Minimum rho_max to store an observation.
+    :return: List of gym observation dicts (at most n_obs).
+    """
     obs_list: list[dict] = []
     n_avail = len(g2op_env.chronics_handler.subpaths)
 
-    for ci in range(n_chronics):
-        g2op_env.set_id(ci % n_avail)
-        g2op_obs = g2op_env.reset()
-        gym_wrapper.update_obs(g2op_obs)
-        obs_list.append({k: v.copy() for k, v in gym_wrapper.cur_gym_obs.items()})
-
-        stride = max(1, g2op_env.chronics_handler.max_timestep() // target)
-        done, step = False, 0
-        while not done:
-            g2op_obs, _, done, _ = g2op_env.step(g2op_env.action_space({}))
-            gym_wrapper.update_obs(g2op_obs)
-            step += 1
-            if step % stride == 0:
-                obs_list.append({k: v.copy() for k, v in gym_wrapper.cur_gym_obs.items()})
-            if len(obs_list) >= (ci + 1) * target:
-                break
+    for ci in range(n_avail):
         if len(obs_list) >= n_obs:
             break
+        g2op_env.set_id(ci)
+        g2op_obs = g2op_env.reset()
+        done, reward = False, 0.0
 
-    return obs_list[:n_obs]
+        while not done:
+            action = agent.act(g2op_obs, reward, done)
+            g2op_obs, reward, done, _ = g2op_env.step(action)
+            if float(g2op_obs.rho.max()) > rho_thresh:
+                gym_wrapper.update_obs(g2op_obs)
+                obs_list.append({k: v.copy() for k, v in gym_wrapper.cur_gym_obs.items()})
+            if len(obs_list) >= n_obs:
+                break
+
+    return obs_list
 
 
 # ── IG wrapper ────────────────────────────────────────────────────────────────
@@ -288,11 +302,9 @@ def plot_results(results: dict, output_prefix: str, trial_name: str) -> None:
     edge_ig_mean = np.abs(per_edge_ig).mean(axis=0)  # [E]
     edge_probs_mean = results["edge_probs_all"].mean(axis=0)  # [E]
 
-    fig = plt.figure(figsize=(14, 10))
-    gs = fig.add_gridspec(2, 2, hspace=0.45, wspace=0.35)
+    fig, (ax_a, ax_d) = plt.subplots(1, 2, figsize=(10, 5))
 
     # ── Panel A: overall importance ratio ────────────────────────────────────
-    ax_a = fig.add_subplot(gs[0, 0])
     bars = ax_a.bar(
         ["Node features", "Edge probabilities"],
         [ratio_nodes, ratio_edges],
@@ -309,43 +321,18 @@ def plot_results(results: dict, output_prefix: str, trial_name: str) -> None:
     ax_a.grid(True, axis="y", alpha=0.4)
     ax_a.spines[["top", "right"]].set_visible(False)
 
-    # ── Panel B: per-observation ratio distribution ───────────────────────────
-    ax_b = fig.add_subplot(gs[0, 1])
-    ax_b.hist(100 * ratio_all, bins=15, color="#1f77b4", alpha=0.75, edgecolor="black")
-    ax_b.axvline(100 * ratio_nodes, color="#d62728", lw=1.5, ls="--",
-                 label=f"mean {100*ratio_nodes:.1f}%")
-    ax_b.set_xlabel("Node features importance (%)", fontsize=9)
-    ax_b.set_ylabel("Count", fontsize=9)
-    ax_b.set_title("B: Per-observation node importance distribution", fontsize=9)
-    ax_b.legend(fontsize=8)
-    ax_b.grid(True, axis="y", alpha=0.4)
-    ax_b.spines[["top", "right"]].set_visible(False)
-
-    # ── Panel C: per-node importance bar chart ────────────────────────────────
-    ax_c = fig.add_subplot(gs[1, 0])
-    n_nodes = len(node_importance)
-    node_importance_norm = node_importance / (node_importance.sum() + 1e-12)
-    ax_c.bar(range(n_nodes), node_importance_norm, color="#1f77b4", alpha=0.8)
-    ax_c.set_xlabel("Node index", fontsize=9)
-    ax_c.set_ylabel("Normalized |IG| (fraction)", fontsize=9)
-    ax_c.set_title("C: Per-node importance (averaged over T, feature dims)", fontsize=9)
-    ax_c.grid(True, axis="y", alpha=0.4)
-    ax_c.spines[["top", "right"]].set_visible(False)
-
     # ── Panel D: edge interaction prob vs. |IG| ───────────────────────────────
-    ax_d = fig.add_subplot(gs[1, 1])
     # Subsample if E is large
     E = len(edge_ig_mean)
     idx = np.arange(E)
     if E > 2000:
         rng = np.random.default_rng(42)
         idx = rng.choice(E, size=2000, replace=False)
-    sc = ax_d.scatter(
+    ax_d.scatter(
         edge_probs_mean[idx],
         edge_ig_mean[idx],
-        s=4, alpha=0.4, c=edge_ig_mean[idx], cmap="viridis",
+        s=4, alpha=0.4, color="#1f77b4",
     )
-    plt.colorbar(sc, ax=ax_d, fraction=0.046, pad=0.04, label="|IG| magnitude")
     ax_d.set_xlabel("Mean interaction probability p(z|x)", fontsize=9)
     ax_d.set_ylabel("Mean |IG| for edge prob", fontsize=9)
     ax_d.set_title("D: Edge importance vs. interaction probability", fontsize=9)
@@ -357,6 +344,7 @@ def plot_results(results: dict, output_prefix: str, trial_name: str) -> None:
         f"{trial_name}",
         fontsize=10,
     )
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
     out = Path(f"{output_prefix}.png")
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"Saved: {out.resolve()}")
@@ -375,6 +363,8 @@ def main() -> None:
                         help="Grid2Op environment name")
     parser.add_argument("--n-obs", type=int, default=30,
                         help="Number of observations to average IG over")
+    parser.add_argument("--rho-thresh", type=float, default=0.5,
+                        help="Minimum rho_max to store an observation (default: 0.5)")
     parser.add_argument("--n-steps", type=int, default=50,
                         help="Number of integration steps for IG")
     parser.add_argument("--output", default="ig_importance",
@@ -385,9 +375,9 @@ def main() -> None:
     print(f"Loading agent: {trial_dir.name} / {args.checkpoint}")
     agent, g2op_env = load_model(trial_dir, args.checkpoint, args.env)
 
-    print(f"Collecting {args.n_obs} observations ...")
+    print(f"Collecting {args.n_obs} observations (rho_thresh={args.rho_thresh}) ...")
     gym_wrapper = agent.gym_wrapper
-    observations = collect_observations(g2op_env, gym_wrapper, args.n_obs)
+    observations = collect_observations(agent, g2op_env, gym_wrapper, args.n_obs, args.rho_thresh)
     print(f"  Collected {len(observations)} observations")
 
     print(f"Running Integrated Gradients (n_steps={args.n_steps}) ...")

@@ -58,6 +58,7 @@ class RAFeatureExtractor(nn.Module):
         tau: float = 1.0,
         residual: bool = True,
         top_k_budget: int = 0,
+        conv_type: str = "gcn",
     ):
         super().__init__()
 
@@ -80,6 +81,7 @@ class RAFeatureExtractor(nn.Module):
             dropout_prob=dropout_prob,
             residual=residual,
             skip_last=True,
+            conv_type=conv_type,
         )
         self.x_out_dim = x_out_dim
         self.top_k_budget = top_k_budget

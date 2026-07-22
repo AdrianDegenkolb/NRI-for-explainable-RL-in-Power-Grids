@@ -4,15 +4,16 @@ Cross-seed posterior consistency analysis for RAPPO.
 Discovers all Ray Tune trial directories in an experiment folder, identifies
 the seed each belongs to (via params.json), selects the best available
 checkpoint from each, runs inference on a shared set of observations, and
-reports pairwise Spearman r of mean posteriors across seeds.
+reports pairwise Pearson r and top-K edge overlap of mean posteriors across seeds.
 
 Designed to run automatically after a multi-seed SLURM array completes (see
 experiments/slurm/cpu/rappo14_multiseed_with_analysis.sh).
 
 Output (saved to --out-dir):
-  spearman_heatmap.png  — S×S pairwise Spearman r matrix
-  seed_posteriors.png   — per-seed N×N mean posterior heatmap
-  posteriors.npz        — raw data for redrawing without re-running
+  pearson_heatmap.png      — S×S pairwise Pearson r matrix
+  topk_overlap_heatmap.png — S×S pairwise top-K edge overlap matrix
+  seed_posteriors.png      — per-seed N×N mean posterior heatmap
+  posteriors.npz           — raw data for redrawing without re-running
 
 Usage (from project root):
     PYTHONPATH=$(pwd)/src python experiments/cross_seed_analysis.py \\
@@ -32,7 +33,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -40,30 +41,102 @@ logging.basicConfig(level=logging.WARNING)
 # ── trial discovery ────────────────────────────────────────────────────────────
 
 def find_trial_dirs(experiment_dir: Path) -> List[Path]:
-    """Return all Ray Tune trial subdirectories (identified by presence of params.json)."""
+    """Return all Ray Tune trial subdirectories.
+
+    Accepts dirs that have either params.json (original runs) or at least one
+    checkpoint_* subdirectory (re-run trials that Ray Tune skipped serialising
+    params.json for).
+    """
     return sorted(
         d for d in experiment_dir.iterdir()
-        if d.is_dir() and (d / "params.json").exists()
+        if d.is_dir() and (
+            (d / "params.json").exists()
+            or any(c.is_dir() and c.name.startswith("checkpoint_")
+                   for c in d.iterdir())
+        )
     )
+
+
+def _seed_from_slurm_log(trial_dir: Path) -> Optional[int]:
+    """Infer seed from SLURM log filenames like 'rappo14fk_s1.5887370.log'.
+
+    The SLURM script names output files with the pattern *_s{seed}.{job_id}.log
+    and the job ID matches the numeric part of the trial folder name.
+    """
+    job_id = trial_dir.name.split("_")[2]  # e.g. "5887370" from CustomPPO_RARL_5887370_...
+    out_dir = trial_dir.parent / "out"
+    if not out_dir.is_dir():
+        return None
+    for log_file in out_dir.glob(f"*_s*.{job_id}.log"):
+        # filename: rappo14fk_s1.5887370.log  →  stem before first dot = "rappo14fk_s1"
+        stem = log_file.name.split(".")[0]   # "rappo14fk_s1"
+        parts = stem.rsplit("_s", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return int(parts[1])
+    return None
+
+
+def _seed_from_experiment_state(trial_dir: Path) -> Optional[int]:
+    """Look up this trial's seed in the parent's experiment_state-*.json."""
+    for state_file in sorted(trial_dir.parent.glob("experiment_state-*.json")):
+        try:
+            content = state_file.read_text().strip()
+            if not content:
+                continue
+            d = json.loads(content)
+        except Exception:
+            continue
+        for td in d.get("trial_data", []):
+            if not isinstance(td, list):
+                continue
+            for item in td:
+                if isinstance(item, str):
+                    try:
+                        item = json.loads(item)
+                    except Exception:
+                        continue
+                if not isinstance(item, dict):
+                    continue
+                logdir = item.get("relative_logdir") or item.get("logdir", "")
+                if Path(logdir).name == trial_dir.name:
+                    return item.get("config", {}).get("seed")
+    return None
 
 
 def get_seed(trial_dir: Path) -> int:
     """
-    Extract the training seed from params.json.
+    Extract the training seed for a trial.
 
-    RLlib serialises AlgorithmConfig to params.json with 'seed' at the top level.
+    Tries in order:
+    1. params.json at the trial level (original runs serialised by Ray Tune).
+    2. experiment_state-*.json in the parent directory (re-run trials where
+       Ray Tune did not write params.json).
+    3. SLURM log filename in out/ (e.g. rappo14fk_s1.5887370.log).
 
-    :raises KeyError: if 'seed' is not present.
+    :raises KeyError: if the seed cannot be found by any method.
     """
-    with open(trial_dir / "params.json") as f:
-        params = json.load(f)
-    seed = params.get("seed")
-    if seed is None:
-        raise KeyError(
-            f"'seed' not found in {trial_dir / 'params.json'}. "
-            "Keys present: " + str(list(params.keys())[:10])
-        )
-    return int(seed)
+    params_file = trial_dir / "params.json"
+    if params_file.exists():
+        try:
+            params = json.loads(params_file.read_text())
+            seed = params.get("seed")
+            if seed is not None:
+                return int(seed)
+        except Exception:
+            pass
+
+    seed = _seed_from_experiment_state(trial_dir)
+    if seed is not None:
+        return int(seed)
+
+    seed = _seed_from_slurm_log(trial_dir)
+    if seed is not None:
+        return int(seed)
+
+    raise KeyError(
+        f"Could not determine seed for {trial_dir.name}. "
+        "Checked params.json, experiment_state-*.json, and SLURM log filenames."
+    )
 
 
 def best_checkpoint(trial_dir: Path) -> str:
@@ -184,10 +257,13 @@ def collect_obs(env_name: str, n_target: int, rho_thresh: float) -> List:
 
 # ── model loading & inference ──────────────────────────────────────────────────
 
-def load_agent(trial_dir: Path, checkpoint_name: str, env_name: str):
+def load_agent(trial_dir: Path, checkpoint_name: str, env_name: str,
+               conv_type: Optional[str] = None):
     """
     Load an RllibAgent from a checkpoint.
 
+    :param conv_type: Override the GNN conv type in the loaded config.
+        Use ``"gin"`` for checkpoints trained before the GCN revert.
     :return: (agent, g2op_env, gym_wrapper) — keep gym_wrapper alive.
     """
     from core.constants import RL_POLICY
@@ -199,6 +275,7 @@ def load_agent(trial_dir: Path, checkpoint_name: str, env_name: str):
         checkpoint_name=checkpoint_name,
         env_name=env_name,
         env_config=params["env_config"],
+        conv_type=conv_type,
     )
     return agent, g2op_env, gym_wrapper
 
@@ -236,11 +313,16 @@ def n_nodes_from_env(g2op_env) -> int:
 
 # ── analysis ───────────────────────────────────────────────────────────────────
 
-def pairwise_spearman(
+def pairwise_pearson(
     seed_posteriors: Dict[int, np.ndarray],
 ) -> Tuple[np.ndarray, List[int]]:
     """
-    Pairwise Spearman r between per-seed mean interaction probability vectors.
+    Pairwise Pearson r between per-seed mean interaction probability vectors.
+
+    Pearson is preferred over Spearman here because a large fraction of edges
+    share near-identical low probabilities, making rank assignments noisy and
+    Spearman r unreliable. Pearson operates on the actual values so the
+    high-probability minority of edges dominates the correlation signal.
 
     :param seed_posteriors: {seed: [N_obs, E] array}.
     :return: (r_matrix [S, S], sorted seeds list).
@@ -251,37 +333,79 @@ def pairwise_spearman(
     r_mat = np.ones((S, S), dtype=np.float32)
     for i in range(S):
         for j in range(i + 1, S):
-            r, _ = spearmanr(means[i], means[j])
+            r, _ = pearsonr(means[i], means[j])
             r_mat[i, j] = r_mat[j, i] = float(r)
     return r_mat, seeds
 
 
+def top_k_overlap(
+    seed_posteriors: Dict[int, np.ndarray],
+    k: int,
+) -> Tuple[float, np.ndarray, List[int]]:
+    """
+    Mean pairwise fraction of top-K edges shared between seeds.
+
+    Top-K overlap directly answers "do seeds discover the same latent
+    relationships?" independently of probability scale or distribution shape.
+
+    :param seed_posteriors: {seed: [N_obs, E] array}.
+    :param k: Number of top edges to compare.
+    :return: (mean_overlap, overlap_matrix [S, S], sorted seeds list).
+    """
+    seeds = sorted(seed_posteriors.keys())
+    means = np.stack([seed_posteriors[s].mean(axis=0) for s in seeds])  # [S, E]
+    top_k_sets = [set(np.argsort(means[i])[-k:]) for i in range(len(seeds))]
+    S = len(seeds)
+    mat = np.ones((S, S), dtype=np.float32)
+    for i in range(S):
+        for j in range(i + 1, S):
+            overlap = len(top_k_sets[i] & top_k_sets[j]) / k
+            mat[i, j] = mat[j, i] = float(overlap)
+    off_diag = mat[np.triu_indices(S, k=1)]
+    return float(off_diag.mean()), mat, seeds
+
+
 # ── plotting ───────────────────────────────────────────────────────────────────
 
-def plot_spearman_heatmap(
-    r_mat: np.ndarray,
+def plot_matrix_heatmap(
+    mat: np.ndarray,
     seeds: List[int],
     out_path: Path,
+    *,
+    title: str,
+    cbar_label: str,
+    vmin: float = 0.0,
+    vmax: float = 1.0,
+    fmt: str = ".2f",
 ) -> None:
-    """S×S annotated heatmap of pairwise Spearman r values."""
+    """Generic S×S annotated heatmap for any pairwise seed metric.
+
+    :param mat: [S, S] symmetric matrix with 1s on the diagonal.
+    :param title: Figure title (off-diagonal stats are appended automatically).
+    :param cbar_label: Colorbar label.
+    :param vmin: Colormap lower bound.
+    :param vmax: Colormap upper bound.
+    :param fmt: Format spec for cell annotations (e.g. ``".2f"`` or ``".0%"``).
+    """
     S = len(seeds)
     fig, ax = plt.subplots(figsize=(max(4, S + 1), max(4, S + 1)))
-    im = ax.imshow(r_mat, vmin=-1.0, vmax=1.0, cmap="RdYlGn")
+    im = ax.imshow(mat, vmin=vmin, vmax=vmax, cmap="RdYlGn")
     ax.set_xticks(range(S))
     ax.set_yticks(range(S))
     labels = [f"seed {s}" for s in seeds]
     ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_yticklabels(labels)
+    threshold = vmin + 0.7 * (vmax - vmin)
     for i in range(S):
         for j in range(S):
-            color = "white" if abs(r_mat[i, j]) > 0.7 else "black"
-            ax.text(j, i, f"{r_mat[i, j]:.2f}", ha="center", va="center",
+            color = "white" if mat[i, j] > threshold else "black"
+            ax.text(j, i, format(mat[i, j], fmt), ha="center", va="center",
                     fontsize=9, color=color)
-    fig.colorbar(im, ax=ax, label="Spearman r", fraction=0.046, pad=0.04)
-    off_diag = r_mat[np.triu_indices(S, k=1)]
+    fig.colorbar(im, ax=ax, label=cbar_label, fraction=0.046, pad=0.04)
+    off_diag = mat[np.triu_indices(S, k=1)]
     ax.set_title(
-        f"Cross-seed posterior consistency (mean posterior per seed)\n"
-        f"mean r={off_diag.mean():.3f}  min={off_diag.min():.3f}  max={off_diag.max():.3f}"
+        f"{title}\n"
+        f"mean={off_diag.mean():.3f}  min={off_diag.min():.3f}  max={off_diag.max():.3f}"
     )
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -349,13 +473,16 @@ def parse_args() -> argparse.Namespace:
                    help="Grid2Op environment for inference (default: case14 test)")
     p.add_argument("--n-obs", type=int, default=100,
                    help="Number of shared observations (default: 100)")
-    p.add_argument("--rho-thresh", type=float, default=0.7,
+    p.add_argument("--rho-thresh", type=float, default=0.95,
                    help="Min rho to target in observation collection (default: 0.7)")
     p.add_argument("--out-dir", default=None,
                    help="Output directory (default: <experiment-dir>/cross_seed)")
     p.add_argument("--checkpoint-name", default=None,
                    help="Override checkpoint name for all trials "
                         "(e.g. checkpoint_000005). Default: best per trial.")
+    p.add_argument("--conv-type", default=None, choices=["gcn", "gin"],
+                   help="Override GNN conv type when loading checkpoint "
+                        "(gin for pre-revert checkpoints). Default: from config or 'gcn'.")
     return p.parse_args()
 
 
@@ -366,12 +493,18 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     import ray
-    ray.init(ignore_reinit_error=True, logging_level=logging.ERROR, log_to_driver=False)
+    ray.init(
+        ignore_reinit_error=True,
+        logging_level=logging.ERROR,
+        log_to_driver=False,
+        num_cpus=1,
+        object_store_memory=512 * 1024 * 1024,  # 512 MB — inference only, no workers needed
+    )
 
     # ── Discover trials and map to seeds ──────────────────────────────────────
     trial_dirs = find_trial_dirs(experiment_dir)
     if not trial_dirs:
-        raise RuntimeError(f"No trial dirs (with params.json) found in {experiment_dir}")
+        raise RuntimeError(f"No trial dirs found in {experiment_dir}")
 
     print(f"Found {len(trial_dirs)} trial dir(s) in {experiment_dir}\n")
     seed_to_info: Dict[int, Tuple[Path, str]] = {}
@@ -406,7 +539,8 @@ def main() -> None:
     for seed in sorted(seed_to_info.keys()):
         trial_dir, ckpt_name = seed_to_info[seed]
         print(f"\nSeed {seed}: loading {ckpt_name} from {trial_dir.name} ...")
-        agent, g2op_env, gym_wrapper = load_agent(trial_dir, ckpt_name, args.env)
+        agent, g2op_env, gym_wrapper = load_agent(trial_dir, ckpt_name, args.env,
+                                                   conv_type=args.conv_type)
         gym_wrappers.append(gym_wrapper)
 
         if n_nodes is None:
@@ -419,11 +553,11 @@ def main() -> None:
         seed_posteriors[seed] = probs
         print(f"  mean={probs.mean():.4f}  std={probs.std():.4f}")
 
-    # ── Cross-seed Spearman r ──────────────────────────────────────────────────
-    r_mat, seeds = pairwise_spearman(seed_posteriors)
+    # ── Cross-seed Pearson r ───────────────────────────────────────────────────
+    r_mat, seeds = pairwise_pearson(seed_posteriors)
     off_diag = r_mat[np.triu_indices(len(seeds), k=1)]
 
-    print("\n=== CROSS-SEED SPEARMAN r (mean posterior per seed) ===")
+    print("\n=== CROSS-SEED PEARSON r (mean posterior per seed) ===")
     header = "         " + "  ".join(f"seed {s}" for s in seeds)
     print(header)
     for i, si in enumerate(seeds):
@@ -431,6 +565,20 @@ def main() -> None:
         print(row)
     print(f"\nOff-diagonal: mean={off_diag.mean():.3f}  "
           f"min={off_diag.min():.3f}  max={off_diag.max():.3f}")
+
+    # ── Top-K edge overlap ─────────────────────────────────────────────────────
+    # Use n_line as K: the number of actual powerline edges in the grid.
+    k = n_line if n_line is not None else 20
+    mean_overlap, overlap_mat, _ = top_k_overlap(seed_posteriors, k=k)
+
+    print(f"\n=== TOP-{k} EDGE OVERLAP (fraction of top-{k} edges shared) ===")
+    print(header)
+    for i, si in enumerate(seeds):
+        row = f"seed {si}:  " + "  ".join(
+            f"{overlap_mat[i, j]:.3f}" for j in range(len(seeds))
+        )
+        print(row)
+    print(f"\nMean pairwise top-{k} overlap: {mean_overlap:.3f}")
 
     # ── Per-seed input-dependence ──────────────────────────────────────────────
     print("\n=== PER-SEED INPUT-DEPENDENCE (std across observations) ===")
@@ -446,12 +594,25 @@ def main() -> None:
         npz_path,
         seeds=np.array(seeds),
         r_matrix=r_mat,
+        overlap_matrix=overlap_mat,
         **{f"posteriors_seed{s}": seed_posteriors[s] for s in seeds},
     )
     print(f"\nSaved: {npz_path}")
 
     # ── Plots ─────────────────────────────────────────────────────────────────
-    plot_spearman_heatmap(r_mat, seeds, out_dir / "spearman_heatmap.png")
+    plot_matrix_heatmap(
+        r_mat, seeds, out_dir / "pearson_heatmap.png",
+        title="Cross-seed posterior consistency — Pearson r (mean posterior per seed)",
+        cbar_label="Pearson r",
+        vmin=-1.0, vmax=1.0,
+    )
+    plot_matrix_heatmap(
+        overlap_mat, seeds, out_dir / "topk_overlap_heatmap.png",
+        title=f"Cross-seed top-{k} edge overlap (fraction of top-{k} edges shared)",
+        cbar_label=f"Top-{k} overlap",
+        vmin=0.0, vmax=1.0,
+        fmt=".2f",
+    )
     plot_seed_posteriors(seed_posteriors, n_nodes, n_line,
                          out_dir / "seed_posteriors.png")
 

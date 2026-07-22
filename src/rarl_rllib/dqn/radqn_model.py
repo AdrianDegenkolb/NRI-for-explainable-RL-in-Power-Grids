@@ -82,6 +82,7 @@ class RADQNTorchModel(DQNTorchModel, RARLModel):
             dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
             residual=gnn_cfg.get("residual", True),
             tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
+            conv_type=gnn_cfg.get("conv_type", "gcn"),
         )
         self.batched_p_z_given_x: Optional[Tensor] = None
 

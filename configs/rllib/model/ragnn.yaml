@@ -18,4 +18,5 @@ gnn:
   out_dim: 64
   num_layers: 3
   residual: true
+  conv_type: gcn
   edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy

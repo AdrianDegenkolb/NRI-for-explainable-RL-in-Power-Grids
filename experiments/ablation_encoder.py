@@ -169,6 +169,8 @@ def main():
     parser.add_argument("--n-chronics", type=int, default=50)
     parser.add_argument("--max-iter", type=int, default=None,
                         help="Max steps per episode (None = full episode)")
+    parser.add_argument("--conv-type", default=None, choices=["gcn", "gin"],
+                        help="Override GNN conv type (gin for pre-revert checkpoints).")
     parser.add_argument("--output", default="ablation_encoder.png")
     args = parser.parse_args()
 
@@ -185,6 +187,7 @@ def main():
         checkpoint_name=args.checkpoint,
         env_name=args.env,
         env_config=params["env_config"],
+        conv_type=args.conv_type,
     )
 
     # The RAFeatureExtractor instance
@@ -220,33 +223,20 @@ def main():
               f"{s['survived_pct']:>10.1f} {s['completed_pct']:>11.1f}{note}")
 
     # ── Plot ───────────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(7, 5))
     colors = {"baseline": "#2ca02c", "full": "#1f77b4", "empty": "#d62728", "random": "#ff7f0e"}
-    labels = {"baseline": "Baseline (encoder)", "full": "Fully connected (all edges)",
-              "empty": "Empty graph (self-loops only)", "random": "Random graph (noise)"}
+    short_labels = {"baseline": "Baseline\n(encoder)", "full": "Full\n(all edges)",
+                    "empty": "Empty\n(self-loops)", "random": "Random\n(noise)"}
 
-    # Left: per-episode survival steps
-    ax = axes[0]
-    for i, cond in enumerate(conditions):
-        steps = [r["steps"] for r in all_results[cond]]
-        ax.plot(sorted(chronic_ids), sorted(steps), color=colors[cond],
-                label=f"{labels[cond]}\n(mean={np.mean(steps):.0f})", linewidth=1.5, alpha=0.8)
-    ax.set_xlabel("Episode rank (sorted by steps)")
-    ax.set_ylabel("Survival steps")
-    ax.set_title("Per-episode survival steps (sorted)")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.3)
-
-    # Right: box plot of survived_pct per condition
-    ax = axes[1]
+    # Box plot of survived_pct per condition
     data = [[r["survived_pct"] for r in all_results[c]] for c in conditions]
-    bp = ax.boxplot(data, labels=[labels[c] for c in conditions], patch_artist=True)
+    bp = ax.boxplot(data, labels=[short_labels[c] for c in conditions], patch_artist=True)
     for patch, cond in zip(bp["boxes"], conditions):
         patch.set_facecolor(colors[cond])
         patch.set_alpha(0.7)
     ax.set_ylabel("Survived % of episode")
     ax.set_title("Survival distribution per condition")
-    ax.tick_params(axis="x", labelsize=8)
+    ax.tick_params(axis="x", labelsize=9)
     ax.grid(True, alpha=0.3, axis="y")
 
     fig.suptitle(
