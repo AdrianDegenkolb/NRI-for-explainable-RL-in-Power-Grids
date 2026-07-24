@@ -402,11 +402,7 @@ def plot_matrix_heatmap(
             ax.text(j, i, format(mat[i, j], fmt), ha="center", va="center",
                     fontsize=9, color=color)
     fig.colorbar(im, ax=ax, label=cbar_label, fraction=0.046, pad=0.04)
-    off_diag = mat[np.triu_indices(S, k=1)]
-    ax.set_title(
-        f"{title}\n"
-        f"mean={off_diag.mean():.3f}  min={off_diag.min():.3f}  max={off_diag.max():.3f}"
-    )
+    ax.set_title(f"{title}")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
