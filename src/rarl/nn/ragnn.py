@@ -188,9 +188,22 @@ class RAGNN(nn.Module):
             h_new = torch.stack(outs).sum(0)
             h_new = self.bn_mp[l](h_new)
             h_new = self.act(h_new)
-            self.stats[f"msg_ratio_layer_{l}"] = (
-                _mean_l2_norm(h_new) / _mean_l2_norm(h)
-            )
+
+            if not self.training:
+                # diagnostics
+                # 1. how much does the signal change in this layer
+                self.stats[f"msg_ratio_layer_{l}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
+                # 2. how much does the information rely on self loops
+                with torch.no_grad():
+                    outs_only_self_loops = [
+                        mp_list[k](x=h, edge_index=edge_index, edge_weight=torch.zeros_like(edge_type_posterior[:, k]))
+                        for k in self.edge_type_range
+                    ]
+                    h_new_self_loops = torch.stack(outs_only_self_loops).sum(0)
+                    h_new_self_loops = self.bn_mp[l](h_new_self_loops)
+                    h_new_self_loops = self.act(h_new_self_loops)
+                    self.stats[f"self_loop_usage_{l}"] = _mean_l2_norm(h_new_self_loops - h) / _mean_l2_norm(h_new - h)
+
             h = self.dropout(h)
             h = h + h_new if self.residual else h_new
 
