@@ -28,8 +28,8 @@ import torch.nn.functional as F
 logging.basicConfig(level=logging.WARNING)
 
 DEFAULT_TRIAL = (
-    "results/experiments/2026_07_07_IEEE14/rappo_mulitseed/"
-    "CustomPPO_RARL_5829988_59bfa_2026-07-07_10-53-40"
+    "/home/adrian/Dev/NRI-for-explainable-RL-in-Power-Grids/results/2026_07_20_IEEE14/rappo_multiseed_gcnconv"
+    "CustomPPO_RARL_5887370_1ae2e_2026-07-18_21-30-16"
 )
 DEFAULT_CHECKPOINT = "checkpoint_000007"
 
