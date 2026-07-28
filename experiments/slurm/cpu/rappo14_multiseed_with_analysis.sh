@@ -9,7 +9,7 @@
 #   export SEEDS="0 1 2 3 4"      # default: 0 1 2 3 4
 #   export SPARSIFY=1              # set to enable top-K (multiplier=7); default: off
 
-experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed_gcnconv
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_multiseed_gcnconv_noskip
 export experiment_name
 
 SEEDS=${SEEDS:-"0 1 2 3 4"}
@@ -55,6 +55,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     experiment.nb_timesteps=200000 \
     rollouts.num_gpus_per_learner_worker=0 \
     experiment.seed=${seed} \
+    model.gnn.residual=False \
     experiment.name=${experiment_name} \
     \${sparsify_args}
 EOF
@@ -89,7 +90,7 @@ PYTHONPATH=\$(pwd)/src python experiments/cross_seed_analysis.py \
     --experiment-dir "results/experiments/${experiment_name}" \
     --env l2rpn_case14_sandbox \
     --n-obs 100 \
-    --rho-thresh 0.7 \
+    --rho-thresh 0.95 \
     --out-dir "results/experiments/${experiment_name}/cross_seed"
 EOF
 )
