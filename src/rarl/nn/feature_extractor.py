@@ -8,6 +8,7 @@ This is the central nn.Module for the RARL pipeline:
   4. RAGNN performs conditioned message passing to produce a graph embedding.
 """
 
+import time
 from typing import Optional, Tuple
 
 import torch
@@ -86,6 +87,7 @@ class RAFeatureExtractor(nn.Module):
         self.x_out_dim = x_out_dim
         self.top_k_budget = top_k_budget
         self._sparsification_stats: dict = {}
+        self._timings: dict[str, float] = {}
 
     def set_tau(self, tau: float) -> None:
         """Update the Gumbel-Softmax temperature (called by the annealing callback)."""
@@ -118,9 +120,11 @@ class RAFeatureExtractor(nn.Module):
             edge_set = fully_connected_edge_index_per_batch(batch, x.device)
 
         # --- Encoder: predict edge-type logits ---
+        t0 = time.perf_counter()
         logits: Tensor = self.encoder(
             x=x, batch=batch, edge_set=edge_set, powerline_edge_index=powerline_edge_index
         )  # [B*E, K]
+        self._timings["encoder_ms"] = (time.perf_counter() - t0) * 1000
 
         posterior: Tensor = F.softmax(logits, dim=-1)          # [B*E, K]
         sampled: Tensor = self.gumbel_softmax(logits, hard=self.training)  # [B*E, K]
@@ -129,6 +133,7 @@ class RAFeatureExtractor(nn.Module):
         if self.top_k_budget > 0:
             B = int(batch.max()) + 1
             N = BxN // B
+            t0 = time.perf_counter()
             gnn_sampled, gnn_edge_set, self._sparsification_stats = sparse_top_k_posterior(
                 posterior_flat=posterior,
                 sampled_flat=sampled,
@@ -137,14 +142,22 @@ class RAFeatureExtractor(nn.Module):
                 B=B,
                 N=N,
             )
+            self._timings["sparsification_ms"] = (time.perf_counter() - t0) * 1000
         else:
             gnn_sampled, gnn_edge_set = sampled, edge_set
             self._sparsification_stats = {}
+            self._timings["sparsification_ms"] = 0.0
 
         # --- RAGNN: conditioned message passing ---
+        t0 = time.perf_counter()
         embeddings: Tensor = self.gnn(
             x=x, edge_index=gnn_edge_set, edge_type_posterior=gnn_sampled, batch=batch
         )  # [B, x_out_dim]
+        self._timings["gnn_ms"] = (time.perf_counter() - t0) * 1000
+
+        # Collect sub-module timings
+        self._timings.update(self.encoder._timings)
+        self._timings.update(self.gumbel_softmax._timings)
 
         # --- Reshape full posterior to [B, E, K] for KL loss (always uses all E edges) ---
         edge_batch = batch[edge_set[0]]

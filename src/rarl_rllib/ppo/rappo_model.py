@@ -1,4 +1,5 @@
 import logging
+import time
 import typing
 from typing import Optional, List, Tuple
 
@@ -141,6 +142,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             name=name + "_fcn",
         )
         self.batched_p_z_given_x: Optional[Tensor] = None
+        self._timings: dict[str, float] = {}
 
     def forward(self, input_dict: typing.Dict[str, TensorType], state: List[TensorType], seq_lens: TensorType) -> Tuple[
         TensorType, List[TensorType]]:
@@ -148,6 +150,8 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         edge_index_batch = input_dict["obs"][EDGE_INDEX]  # [B, 2, E_max]
         edge_mask = input_dict["obs"][EDGE_MASK]  # [B, E_max]
 
+        # --- Edge preprocessing ---
+        t0 = time.perf_counter()
         B, N, _ = node_features_batch.shape
         device = node_features_batch.device
 
@@ -163,6 +167,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         # Add per-graph node offsets
         offsets = (torch.arange(B, device=device) * N).repeat_interleave(valid_edges.sum(1))
         edge_index_batch += offsets.unsqueeze(0)
+        self._timings["edge_prep_ms"] = (time.perf_counter() - t0) * 1000
 
         # RAGNN to produce graph-level representation [B, gnn_out_dim]
         gnn_out, self.batched_p_z_given_x = self.ragnn(
@@ -172,8 +177,13 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         )
 
         # Pass GNN output through FCN (which expects input_dict format)
+        t0 = time.perf_counter()
         mlp_input_dict = {"obs": gnn_out}
         logits, _ = self.mlp(mlp_input_dict, state, seq_lens)
+        self._timings["fcn_ms"] = (time.perf_counter() - t0) * 1000
+
+        # Collect all sub-module timings
+        self._timings.update(self.ragnn._timings)
         return logits, []
 
     def get_posterior(self) -> Tensor:

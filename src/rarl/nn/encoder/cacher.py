@@ -1,5 +1,6 @@
 """Cache per-graph structural properties (degrees, path lengths) by edge_index hash."""
 
+import time
 from typing import Tuple, Dict
 
 import torch
@@ -18,6 +19,7 @@ class GraphDataCache:
 
     def __init__(self):
         self._cache: Dict[tuple, Tuple[Tensor, Tensor, Tensor]] = {}
+        self._timings: dict[str, float] = {"graph_data_compute_ms": 0.0}
 
     def get(self, graph_data: Data) -> Tuple[Tensor, Tensor, Tensor]:
         """
@@ -25,6 +27,7 @@ class GraphDataCache:
 
         Processes each graph in the batch separately and concatenates results.
         """
+        self._timings["graph_data_compute_ms"] = 0.0
         batch = (
             graph_data.batch
             if graph_data.batch is not None
@@ -43,8 +46,10 @@ class GraphDataCache:
             key = self._key(sub)
 
             if key not in self._cache:
+                t0 = time.perf_counter()
                 in_d, out_d = get_in_out_degree(sub)
                 paths = precalculate_paths(sub)
+                self._timings["graph_data_compute_ms"] += (time.perf_counter() - t0) * 1000
                 self._cache[key] = (
                     in_d.to(edge_index.device),
                     out_d.to(edge_index.device),

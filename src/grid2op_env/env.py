@@ -2,6 +2,7 @@
 Class that defines the custom grid2op to gym environment with the set observation and action spaces.
 """
 import os
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import grid2op
@@ -98,6 +99,8 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
         self.reconnect_count  = 0
         self.disconnect_count = 0
         self.reset_count      = 0
+        self._timing_sum: dict[str, float] = {}
+        self._timing_count: int = 0
 
         # initialize curriculum level:
         if env_config.get("curriculum_training", False):
@@ -111,6 +114,8 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
         self.reconnect_count = 0
         self.disconnect_count = 0
         self.reset_count = 0
+        self._timing_sum = {}
+        self._timing_count = 0
         self.observation_converter.reset_obs()
 
     def define_action_space(self) -> gym.Space:
@@ -196,12 +201,25 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
             if np.all(self.env_g2op.current_obs.topo_vect[act_config!=0] == act_config[act_config!=0]):                 # If the rl-agent picks the do nothing action
                 self.active_dn_count += 1                                                                               # we register this in active_dn_count
 
+        t0 = time.perf_counter()
         if self.line_reco: g2op_act = self.reconnect_lines(g2op_act)                                                    # reconnect lines if needed.
         if self.line_disc: g2op_act = self.disconnect_lines(g2op_act)                                                   # disconnect lines if needed.
         if self.reset_topo: g2op_act = self.reset_ref_topo(g2op_act)                                                    # reset topo if needed.
+        heuristic_ms = (time.perf_counter() - t0) * 1000
 
+        t0 = time.perf_counter()
         g2op_obs, reward, terminated, infos, = self.env_g2op.step(g2op_act)                                             # execute action
+        g2op_step_ms = (time.perf_counter() - t0) * 1000
+
         self.update_obs(g2op_obs)                                                                                       # memorize current observation
+
+        # Accumulate timings for this step
+        step_timings = {"g2op_step_ms": g2op_step_ms, "heuristic_ms": heuristic_ms}
+        if hasattr(self.observation_converter, "_timings"):
+            step_timings.update(self.observation_converter._timings)
+        for key, val in step_timings.items():
+            self._timing_sum[key] = self._timing_sum.get(key, 0.0) + val
+        self._timing_count += 1
 
         if self.penalty_game_over and terminated: reward = self.penalty_game_over                                       # Adjust reward when episode terminates early
         if self.reward_finish and g2op_obs.current_step == g2op_obs.max_step: reward = self.reward_finish               # Adjust reward when episode finished

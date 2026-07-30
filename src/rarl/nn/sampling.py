@@ -1,5 +1,7 @@
 """Gumbel-Softmax: differentiable sampling from a categorical distribution."""
 
+import time
+
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
@@ -25,10 +27,14 @@ class GumbelSoftmax(nn.Module):
         super().__init__()
         self.tau = tau
         self.eps = eps
+        self._timings: dict[str, float] = {}
 
     def _sample_gumbel(self, shape: torch.Size) -> Tensor:
+        t0 = time.perf_counter()
         u = torch.rand(shape).float()
-        return -torch.log(-torch.log(u + self.eps) + self.eps)
+        result = -torch.log(-torch.log(u + self.eps) + self.eps)
+        self._timings["gumbel_noise_ms"] = (time.perf_counter() - t0) * 1000
+        return result
 
     def forward(self, logits: Tensor, hard: bool = False) -> Tensor:
         """
@@ -38,6 +44,7 @@ class GumbelSoftmax(nn.Module):
         :param hard: Return one-hot samples with straight-through gradients.
         :return: Soft (or hard) categorical samples [..., K].
         """
+        t0 = time.perf_counter()
         noise = self._sample_gumbel(logits.size()).to(device=logits.device)
         y = F.softmax((logits + noise) / self.tau, dim=-1)
 
@@ -46,4 +53,5 @@ class GumbelSoftmax(nn.Module):
             y_hard.scatter_(-1, y.argmax(dim=-1, keepdim=True), 1.0)
             y = (y_hard - y).detach() + y
 
+        self._timings["gumbel_softmax_ms"] = (time.perf_counter() - t0) * 1000
         return y
