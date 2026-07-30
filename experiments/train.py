@@ -110,6 +110,8 @@ def _build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         "reward_finish": env.reward_finish,
         "curriculum_training": env.curriculum_training,
         "curriculum_thresholds": list(env.curriculum_thresholds),
+        "chronics_dir": env.get("chronics_dir", None),
+        "use_chronics_cache": env.get("use_chronics_cache", False),
     }
 
     if cfg.opponent.enabled:
@@ -283,6 +285,7 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
     rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
+    rllib_cfg["batch_mode"] = rollouts.batch_mode
     # Old RLLib API (_enable_learner_api=False) uses num_gpus on the main process.
     # Set it to the total GPU count so the trainer process can also utilize GPUs.
     rllib_cfg["num_gpus"] = rollouts.num_gpus_per_learner_worker * rollouts.num_learner_workers

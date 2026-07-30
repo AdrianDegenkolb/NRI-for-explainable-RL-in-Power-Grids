@@ -2,6 +2,7 @@ num_rollout_workers: 48
 num_learner_workers: 4
 num_gpus_per_learner_worker: 0
 
+batch_mode: complete_episodes
 count_steps_by: agent_steps
 keep_per_episode_custom_metrics: true
 framework: torch
