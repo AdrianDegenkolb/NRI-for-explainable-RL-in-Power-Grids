@@ -1,6 +1,6 @@
 #!/bin/bash
 # RAPPO: Relation-Aware PPO (NRI encoder + RAGNN) — CPU variant
-experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_gcnconv
+experiment_name=$(date +%Y_%m_%d)_IEEE14/rappo_gcnconv_noskip
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
@@ -34,6 +34,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     relation_awareness=default \
     rollouts.num_gpus_per_learner_worker=0 \
     experiment.seed=${seed} \
+    model.gnn.residual=False \
     experiment.name=${experiment_name}
 EOF
 done
