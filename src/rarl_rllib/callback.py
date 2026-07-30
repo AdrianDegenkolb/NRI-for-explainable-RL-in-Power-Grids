@@ -402,6 +402,71 @@ class CustomMetricsCallback(DefaultCallbacks):
                 print(f"Curriculum level increased to {self.curr_level}")
 
 
+class TimerCallback(DefaultCallbacks):
+    """
+    Collects per-step wall-clock timings from the environment and model and
+    logs them to TensorBoard as custom metrics.
+
+    Environment timings (per-episode means across all sub-environments):
+      g2op_step_ms, heuristic_ms, obs_conversion_ms, forecast_ms, edge_index_ms
+
+    Model timings (last learning forward pass, read from local policy):
+      edge_prep_ms, encoder_ms, graph_data_cache_ms, graph_data_compute_ms,
+      gumbel_noise_ms, gumbel_softmax_ms, sparsification_ms, gnn_ms, fcn_ms
+
+    Note: model timings reflect the *learning* forward pass, not inference.
+    They are only populated for models that expose a ``_timings`` dict
+    (i.e. RAActorCriticModel).
+    """
+
+    _ENV_TIMER_KEYS = [
+        "g2op_step_ms",
+        "heuristic_ms",
+        "obs_conversion_ms",
+        "forecast_ms",
+        "edge_index_ms",
+    ]
+
+    def on_episode_end(
+        self,
+        *,
+        episode: EpisodeV2,
+        worker: Optional[RolloutWorker] = None,
+        base_env: Optional[BaseEnv] = None,
+        policies: Optional[Policy] = None,
+        env_index: Optional[int] = None,
+        **kwargs: Dict[str, Any],
+    ) -> None:
+        if base_env is None:
+            return
+        envs = base_env.get_sub_environments()
+        for key in self._ENV_TIMER_KEYS:
+            values = [
+                env._timing_sum.get(key, 0.0) / max(env._timing_count, 1)
+                for env in envs
+                if hasattr(env, "_timing_sum")
+            ]
+            if values:
+                episode.custom_metrics[key] = np.mean(values)
+
+    def on_train_result(
+        self,
+        *,
+        algorithm: "Algorithm",
+        result: dict,
+        **kwargs,
+    ) -> None:
+        policy = _get_policy(algorithm)
+        if policy is None or not hasattr(policy, "model"):
+            return
+        model = policy.model
+        if not hasattr(model, "_timings") or not model._timings:
+            return
+        custom = result.setdefault("custom_metrics", {})
+        for key, val in model._timings.items():
+            custom[key] = val
+
+
 def _fig_to_chw_uint8(fig):
     canvas = FigureCanvasAgg(fig)
     canvas.draw()
