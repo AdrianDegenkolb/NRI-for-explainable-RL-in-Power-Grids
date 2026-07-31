@@ -8,8 +8,8 @@
 # V4: V3 + truncate_episodes rollout mode (eliminates worker straggler wait)
 # V5: V4 + GPU learner workers
 #
-# Usage: bash experiments/slurm/cpu/cpu_efficiency.sh
-experiment_name=$(date +%Y_%m_%d)_IEEE14/cpu_efficiency
+# Usage: bash experiments/slurm/unicluster/cpu_efficiency.sh
+experiment_name=$(date +%Y_%m_%d)_IEEE14_cpu_efficiency
 export experiment_name
 
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
@@ -22,15 +22,7 @@ G2OP_ENV=l2rpn_case14_sandbox
 # ---------------------------------------------------------------------------
 # Shared PPO args (no GPU, single seed)
 # ---------------------------------------------------------------------------
-BASE_ARGS="
-    training=ppo
-    model=ragnn
-    obs_space=graph
-    relation_awareness=default
-    rollouts.num_gpus_per_learner_worker=0
-    experiment.seed=0
-    experiment.nb_timesteps=200000
-"
+BASE_ARGS="training=ppo model=ragnn obs_space=graph relation_awareness=default rollouts.num_gpus_per_learner_worker=0 experiment.seed=0 experiment.nb_timesteps=50000"
 
 # ---------------------------------------------------------------------------
 # V1 — Baseline
@@ -42,8 +34,8 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/v1.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
-#SBATCH --mem=200G
+#SBATCH --time=3:00:00
+#SBATCH --mem=100G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -68,8 +60,8 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/v2.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
-#SBATCH --mem=200G
+#SBATCH --time=3:00:00
+#SBATCH --mem=100G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -101,8 +93,8 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/v3.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
-#SBATCH --mem=200G
+#SBATCH --time=3:00:00
+#SBATCH --mem=100G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -134,8 +126,8 @@ sbatch << EOF
 #SBATCH --error=results/experiments/${experiment_name}/out/v4.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=20:00:00
-#SBATCH --mem=200G
+#SBATCH --time=3:00:00
+#SBATCH --mem=100G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -169,8 +161,8 @@ sbatch << EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:4
-#SBATCH --time=20:00:00
-#SBATCH --mem=200G
+#SBATCH --time=3:00:00
+#SBATCH --mem=100G
 #SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
