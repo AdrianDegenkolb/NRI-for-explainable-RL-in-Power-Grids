@@ -94,7 +94,7 @@ sbatch << EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
-#SBATCH --mem=100G
+#SBATCH --mem=120G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -127,7 +127,7 @@ sbatch << EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
-#SBATCH --mem=100G
+#SBATCH --mem=120G
 #SBATCH --partition=cpu_il,cpu
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
@@ -162,7 +162,7 @@ sbatch << EOF
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:4
 #SBATCH --time=3:00:00
-#SBATCH --mem=100G
+#SBATCH --mem=120G
 #SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
