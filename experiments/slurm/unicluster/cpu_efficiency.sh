@@ -15,7 +15,7 @@ export experiment_name
 REPO_ROOT=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")
 cd "$REPO_ROOT"
 
-mkdir -p results/experiments/${experiment_name}/out
+mkdir -p results/${experiment_name}/out
 
 G2OP_ENV=l2rpn_case14_sandbox
 
@@ -30,8 +30,8 @@ BASE_ARGS="training=ppo model=ragnn obs_space=graph relation_awareness=default r
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ceff_v1
-#SBATCH --output=results/experiments/${experiment_name}/out/v1.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/v1.%j.err
+#SBATCH --output=results/${experiment_name}/out/v1.%j.log
+#SBATCH --error=results/${experiment_name}/out/v1.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
@@ -56,8 +56,8 @@ EOF
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ceff_v2
-#SBATCH --output=results/experiments/${experiment_name}/out/v2.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/v2.%j.err
+#SBATCH --output=results/${experiment_name}/out/v2.%j.log
+#SBATCH --error=results/${experiment_name}/out/v2.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
@@ -89,8 +89,8 @@ EOF
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ceff_v3
-#SBATCH --output=results/experiments/${experiment_name}/out/v3.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/v3.%j.err
+#SBATCH --output=results/${experiment_name}/out/v3.%j.log
+#SBATCH --error=results/${experiment_name}/out/v3.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
@@ -122,8 +122,8 @@ EOF
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ceff_v4
-#SBATCH --output=results/experiments/${experiment_name}/out/v4.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/v4.%j.err
+#SBATCH --output=results/${experiment_name}/out/v4.%j.log
+#SBATCH --error=results/${experiment_name}/out/v4.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --time=3:00:00
@@ -156,8 +156,8 @@ EOF
 sbatch << EOF
 #!/bin/bash
 #SBATCH --job-name=ceff_v5
-#SBATCH --output=results/experiments/${experiment_name}/out/v5.%j.log
-#SBATCH --error=results/experiments/${experiment_name}/out/v5.%j.err
+#SBATCH --output=results/${experiment_name}/out/v5.%j.log
+#SBATCH --error=results/${experiment_name}/out/v5.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:4
