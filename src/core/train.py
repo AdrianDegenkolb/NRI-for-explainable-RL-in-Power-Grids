@@ -421,9 +421,11 @@ def trial_dir_name(trial: Trial):
     return "{}_{}".format(trial.custom_trial_name, datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
 def print_details(rllib_cfg: Dict[str, Any]) -> None:
-    logger.info(f'Using reward function:   {rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__}')
-    logger.info(f'Using action space:      {rllib_cfg["env_config"]["action_space"]}')
-    logger.info(f'Using observation space: {rllib_cfg["env_config"]["observation_space"]}')
+    logger.info(f'Using reward function:      {rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__}')
+    logger.info(f'Using action space:         {rllib_cfg["env_config"]["action_space"]}')
+    logger.info(f'Using observation space:    {rllib_cfg["env_config"]["observation_space"]}')
+    logger.info(f'Chronics are accessed from: {rllib_cfg["env_config"].get("chronics_dir", grid2op.get_current_local_dir())}')
+    logger.info(f'Chronics are cached:        {rllib_cfg["env_config"].get("use_chronics_cache", False)}')
 
 
 def _setup_ray(exp):

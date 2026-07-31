@@ -58,9 +58,6 @@ def make_g2op_env(env_config: dict[str, Any]) -> BaseEnv:
     # ~/.grid2opconfig.json on shared NFS and causes race conditions between concurrent jobs.
     env_name = os.path.join(chronics_dir, env_config["env_name"]) if chronics_dir else env_config["env_name"]
 
-    print(f"[make_g2op_env] Grid2Op env path: {env_name}", flush=True)
-    print(f"[make_g2op_env] Chronics in-memory cache: {use_chronics_cache}", flush=True)
-
     env = grid2op.make(
         env_name,
         **env_config["grid2op_kwargs"],
