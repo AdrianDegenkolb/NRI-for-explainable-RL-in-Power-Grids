@@ -67,7 +67,10 @@ def make_g2op_env(env_config: dict[str, Any]) -> BaseEnv:
         **extra_kwargs,
         backend=LightSimBackend(),
     )
-    if not use_chronics_cache:
+    if use_chronics_cache:
+        env.chronics_handler.set_filter(lambda x: True)
+        env.chronics_handler.reset()
+    else:
         env.chronics_handler.set_chunk_size(100)
 
     if "seed" in env_config:
