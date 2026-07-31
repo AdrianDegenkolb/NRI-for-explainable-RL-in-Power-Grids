@@ -199,7 +199,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
 
     job_id = _get_job_id(cfg)
 
-    storage_path = os.path.abspath(os.path.join(os.getcwd(), "results", "experiments"))
+    storage_path = os.path.abspath(os.path.join(os.getcwd(), "results"))
     os.makedirs(storage_path, exist_ok=True)
 
     algorithm = OmegaConf.select(cfg, "training.algorithm", default="ppo")
