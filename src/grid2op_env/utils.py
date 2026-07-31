@@ -51,17 +51,18 @@ def make_g2op_env(env_config: dict[str, Any]) -> BaseEnv:
     Function that makes a grid2op environment.
     """
     chronics_dir = env_config.get("chronics_dir", None)
-    if chronics_dir:
-        grid2op.change_local_dir(chronics_dir)
-
     use_chronics_cache = env_config.get("use_chronics_cache", False)
     extra_kwargs = {"chronics_class": MultifolderWithCache} if use_chronics_cache else {}
 
-    print(f"[make_g2op_env] Grid2Op local dir: {grid2op.get_current_local_dir()}", flush=True)
+    # Pass full path directly to avoid grid2op.change_local_dir(), which writes to
+    # ~/.grid2opconfig.json on shared NFS and causes race conditions between concurrent jobs.
+    env_name = os.path.join(chronics_dir, env_config["env_name"]) if chronics_dir else env_config["env_name"]
+
+    print(f"[make_g2op_env] Grid2Op env path: {env_name}", flush=True)
     print(f"[make_g2op_env] Chronics in-memory cache: {use_chronics_cache}", flush=True)
 
     env = grid2op.make(
-        env_config["env_name"],
+        env_name,
         **env_config["grid2op_kwargs"],
         **extra_kwargs,
         backend=LightSimBackend(),

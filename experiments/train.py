@@ -312,19 +312,6 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Grid2Op local dir setup
-# ---------------------------------------------------------------------------
-
-def _setup_grid2op_dir(workdir: str, env_name: str) -> None:
-    local_env_path = os.path.join(workdir, f"data_grid2op/{env_name}")
-    if os.path.exists(local_env_path):
-        grid2op.change_local_dir(os.path.join(workdir, "data_grid2op"))
-    else:
-        grid2op.change_local_dir(os.path.expanduser("~/data_grid2op"))
-    logger.info("Grid2Op data dir: %s", grid2op.get_current_local_dir())
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -333,8 +320,6 @@ def main(cfg: DictConfig) -> None:
     OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)  # fail fast on missing values
 
     set_seed(cfg.experiment.seed)
-
-    _setup_grid2op_dir(os.getcwd(), cfg.env.env_name + "_train")
 
     rllib_cfg = build_rllib_config(cfg)
     run_training(rllib_cfg, cfg)
