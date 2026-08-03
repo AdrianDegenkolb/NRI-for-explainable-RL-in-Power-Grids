@@ -37,6 +37,7 @@ sbatch << EOF
 #SBATCH --time=3:00:00
 #SBATCH --mem=100G
 #SBATCH --partition=cpuonly
+#SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 conda activate L2RPN
@@ -61,6 +62,7 @@ sbatch << EOF
 #SBATCH --time=3:00:00
 #SBATCH --mem=100G
 #SBATCH --partition=cpuonly
+#SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 conda activate L2RPN
@@ -92,6 +94,7 @@ sbatch << EOF
 #SBATCH --time=3:00:00
 #SBATCH --mem=238G
 #SBATCH --partition=cpuonly
+#SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 conda activate L2RPN
@@ -123,6 +126,7 @@ sbatch << EOF
 #SBATCH --time=3:00:00
 #SBATCH --mem=238G
 #SBATCH --partition=cpuonly
+#SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 conda activate L2RPN
@@ -156,6 +160,7 @@ sbatch << EOF
 #SBATCH --time=3:00:00
 #SBATCH --mem=238G
 #SBATCH --partition=accelerated,accelerated-h100
+#SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 conda activate L2RPN
