@@ -29,11 +29,12 @@ Designed to be composed with other RLlib callbacks::
 import logging
 import time
 import torch
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 
 import grid2op
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from numpy._typing import NDArray
 from ray._private.dict import unflattened_lookup
 from ray.rllib import RolloutWorker, BaseEnv, Policy
 from ray.rllib.algorithms.algorithm import Algorithm
@@ -47,9 +48,12 @@ from ray.tune.experimental.output import (
     _current_best_trial,
 )
 from tabulate import tabulate
+from torch.utils.data import Dataset
 
 from core.constants import RL_POLICY, HIGH_LEVEL_AGENT
+from core.pretraining import Pretrainer
 from grid2op_env.observation_converter import GraphObservationConverter
+from rarl import GraphormerNRIEncoder
 from rarl.annealing import AnnealingState
 from visualization import PlottingArgs, visualize_graph, get_node_styles
 
@@ -151,6 +155,76 @@ class AnnealingCallback(DefaultCallbacks):
                 logger.warning(f"tau can not be set on model {p.model}")
 
         algorithm.workers.foreach_worker(_update)
+
+
+class PretrainingCallback(DefaultCallbacks):
+    """
+    Pretrains the GraphormerNRIEncoder to reproduce the prior distribution
+    before RL training begins.
+
+    Parameters are read from ``policy.config["relation_awareness"]["pretraining"]``:
+      - ``num_epochs``:       training epochs (0 = skip pretraining)
+      - ``num_observations``: environment steps to collect for the dataset
+      - ``lr``:               Adam learning rate for the encoder
+
+    Prior and loss parameters are read from ``policy.config["relation_awareness"]``.
+    Silently skips if the model has no encoder or ``num_epochs == 0``.
+    After pretraining, syncs the updated weights to all remote workers.
+    """
+
+    def on_algorithm_init(self, *, algorithm: Algorithm, **kwargs) -> None:
+        super().on_algorithm_init(algorithm=algorithm, **kwargs)
+
+        policy = _get_policy(algorithm)
+        if policy is None or not hasattr(policy, "model"):
+            logger.warning("PretrainingCallback: no policy/model found, skipping.")
+            return
+
+        model = policy.model
+        if not (hasattr(model, "ragnn") and hasattr(model.ragnn, "encoder")):
+            logger.info("PretrainingCallback: model has no encoder, skipping.")
+            return
+
+        ra_cfg = policy.config.get("relation_awareness", {})
+        pretrain_cfg = ra_cfg.get("pretraining", {})
+        num_epochs = pretrain_cfg.get("num_epochs", 0)
+        if num_epochs == 0:
+            logger.info("PretrainingCallback: num_epochs=0, skipping.")
+            return
+
+        num_observations = pretrain_cfg.get("num_observations", 100)
+        lr = pretrain_cfg.get("lr", 1e-3)
+        prior_cfg = ra_cfg.get("prior", {})
+        loss_cfg = ra_cfg.get("loss", {})
+        latent_cfg = ra_cfg.get("latent_space", {})
+        device = str(next(model.parameters()).device)
+
+        pretrainer = Pretrainer(
+            env_config=algorithm.config.env_config,
+            prior_prob_for_graph_edge=prior_cfg.get("prior_prob_for_graph_edge", 0.9),
+            temperature=prior_cfg.get("temperature", 0.5),
+            num_edge_types=latent_cfg.get("num_edge_types", 2),
+            beta=loss_cfg.get("beta_graph_edges_end", loss_cfg.get("beta_graph_edges", 1.0)),
+            beta_non_graph=loss_cfg.get("beta_non_graph_edges_end", loss_cfg.get("beta_non_graph_edges", 1.0)),
+            lr=lr,
+            device=device,
+            verbose=True,
+        )
+
+        logger.info(
+            f"PretrainingCallback: pretraining encoder for {num_epochs} epochs "
+            f"on {num_observations} observations (device={device})."
+        )
+        results = pretrainer.run(model.ragnn.encoder, num_observations=num_observations, num_epochs=num_epochs)
+        logger.info(
+            f"PretrainingCallback: done. "
+            f"Final loss={results.losses_per_epoch[-1]:.4f}, "
+            f"mean time/epoch={sum(results.time_ms_per_epoch) / len(results.time_ms_per_epoch):.1f}ms."
+        )
+
+        if algorithm.workers.num_remote_workers() > 0:
+            algorithm.workers.sync_weights(policies=[RL_POLICY])
+            logger.info("PretrainingCallback: synced pretrained weights to remote workers.")
 
 
 class TuneCallback(TuneReporterBase):

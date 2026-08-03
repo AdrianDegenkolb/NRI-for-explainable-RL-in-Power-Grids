@@ -21,3 +21,8 @@ latent_space:
 sparsification:
   top_k_multiplier: 0    # 0 = disabled (full FC graph). Set to 5-10 to enable top-K filtering.
   log_every_n_steps: 50  # how often to emit sparsification diagnostics to TensorBoard
+
+pretraining:
+  num_epochs: 10         # set to 0 to disable pretraining
+  num_observations: 100  # environment steps sampled to build the pretraining dataset
+  lr: 1.0e-3             # Adam learning rate for the encoder during pretraining

@@ -4,3 +4,6 @@ callbacks:
   - _target_: rarl_rllib.callback.CustomMetricsCallback
   - _target_: rarl_rllib.callback.AnnealingCallback
   - _target_: rarl_rllib.callback.TimerCallback
+  - _target_: rarl_rllib.callback.PretrainingCallback
+
+# annealing and pretraining are configured under relation_awareness

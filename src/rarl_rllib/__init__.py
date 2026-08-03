@@ -14,7 +14,7 @@ from .dqn import *
 from .sac import *
 from .ppo import *
 from rarl_rllib.dqn.radqn_policy import RADQNTorchPolicy
-from .callback import AnnealingCallback, CustomMetricsCallback, TuneCallback
+from .callback import AnnealingCallback, CustomMetricsCallback, TuneCallback, PretrainingCallback
 
 __all__ = [
     "RAActorCriticModel",
@@ -24,4 +24,7 @@ __all__ = [
     "RASACTorchPolicy",
     "RADQNTorchPolicy",
     "AnnealingCallback",
+    "CustomMetricsCallback",
+    "TuneCallback",
+    "PretrainingCallback",
 ]
