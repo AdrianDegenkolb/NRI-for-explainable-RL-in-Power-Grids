@@ -1,14 +1,14 @@
 defaults:
-  - experiment: default
-  - training: ppo
-  - model: ragnn
+  - experiment: minimal
+  - training: ppo_test
+  - model: ragnn_minimal
   - obs_space: graph
   - reward: constant
-  - relation_awareness: default
+  - relation_awareness: minimal
   - env: case14
   - opponent: disabled
-  - evaluation: default
-  - rollouts: default
+  - evaluation: minimal
+  - rollouts: minimal
   - callbacks: default
   - optimization: disabled
   - _self_

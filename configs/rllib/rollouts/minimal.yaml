@@ -1,6 +1,7 @@
 defaults:
   - default
 
-num_rollout_workers: 4
+num_rollout_workers: 2
 num_learner_workers: 1
 num_gpus_per_learner_worker: 0
+batch_mode: truncate_episodes

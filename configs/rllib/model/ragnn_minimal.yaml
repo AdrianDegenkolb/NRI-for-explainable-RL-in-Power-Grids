@@ -1,0 +1,22 @@
+# Model registered as "ragnn_model" in ModelCatalog (RARLModel).
+# encoder + gnn are placed into custom_model_config by the training script.
+custom_model: ragnn_model
+fcnet_hiddens: [64, 64]
+fcnet_activation: relu
+post_fcnet_hiddens: []
+_enable_learner_api: false
+
+encoder:
+  max_degree: 20
+  max_path_distance: 50
+  use_graphormer: true
+  hidden_dim: 32
+  num_layers: 2
+
+gnn:
+  hidden_dim: 64
+  out_dim: 64
+  num_layers: 1
+  residual: true
+  conv_type: gcn
+  edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy # only used for dummy edge dists
