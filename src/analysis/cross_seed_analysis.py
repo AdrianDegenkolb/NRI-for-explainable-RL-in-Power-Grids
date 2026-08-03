@@ -16,7 +16,7 @@ Output (saved to --out-dir):
   posteriors.npz           — raw data for redrawing without re-running
 
 Usage (from project root):
-    PYTHONPATH=$(pwd)/src python experiments/cross_seed_analysis.py \\
+    PYTHONPATH=$(pwd)/src python analysis/cross_seed_analysis.py \\
         --experiment-dir results/experiments/2026_07_13_IEEE14/rappo_multiseed \\
         --out-dir results/experiments/2026_07_13_IEEE14/rappo_multiseed/cross_seed
 """
