@@ -40,6 +40,7 @@ sbatch << EOF
 #SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
+source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda.sh
 conda activate L2RPN
 
 echo "Node: \$(hostname)"
@@ -65,6 +66,7 @@ sbatch << EOF
 #SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
+source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda.sh
 conda activate L2RPN
 
 echo "Node: \$(hostname)"
@@ -97,6 +99,7 @@ sbatch << EOF
 #SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
+source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda.sh
 conda activate L2RPN
 
 echo "Node: \$(hostname)"
@@ -129,6 +132,7 @@ sbatch << EOF
 #SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
+source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda.sh
 conda activate L2RPN
 
 echo "Node: \$(hostname)"
@@ -163,6 +167,7 @@ sbatch << EOF
 #SBATCH --account=hk-project-pai00074
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
+source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda.sh
 conda activate L2RPN
 
 echo "Node: \$(hostname)"
