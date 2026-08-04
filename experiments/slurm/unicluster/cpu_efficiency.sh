@@ -22,7 +22,7 @@ G2OP_ENV=l2rpn_case14_sandbox
 # ---------------------------------------------------------------------------
 # Shared PPO args (no GPU, single seed)
 # ---------------------------------------------------------------------------
-BASE_ARGS="training=ppo model=ragnn obs_space=graph relation_awareness=default rollouts.num_gpus_per_learner_worker=0 experiment.seed=0 experiment.nb_timesteps=50000 rollouts.num_rollout_workers=24"
+BASE_ARGS="training=ppo model=ragnn obs_space=graph relation_awareness=default rollouts.num_gpus_per_learner_worker=0 experiment.seed=0 experiment.nb_timesteps=8000 rollouts.num_rollout_workers=10"
 
 # ---------------------------------------------------------------------------
 # V1 — Baseline
