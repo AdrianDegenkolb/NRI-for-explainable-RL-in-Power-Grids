@@ -148,9 +148,10 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
     gnn_stats = towers[0].tower_stats.get("ra_gnn_stats")
     if gnn_stats is not None and all("ra_gnn_stats" in t.tower_stats for t in towers):
         for key in gnn_stats:
-            stats[f"relation_awareness/gnn/{key}"] = torch.mean(
-                torch.stack([t.tower_stats["ra_gnn_stats"][key].detach().cpu() for t in towers])
-            ).item()
+            if all(key in t.tower_stats["ra_gnn_stats"] for t in towers):
+                stats[f"relation_awareness/gnn/{key}"] = torch.mean(
+                    torch.stack([t.tower_stats["ra_gnn_stats"][key].detach().cpu() for t in towers])
+                ).item()
 
     sparsif_stats = towers[0].tower_stats.get("ra_sparsification_stats")
     if sparsif_stats is not None and all(
