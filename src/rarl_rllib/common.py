@@ -149,7 +149,7 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
     if gnn_stats is not None and all("ra_gnn_stats" in t.tower_stats for t in towers):
         for key in gnn_stats:
             stats[f"relation_awareness/gnn/{key}"] = torch.mean(
-                torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
+                torch.stack([t.tower_stats["ra_gnn_stats"][key].detach().cpu() for t in towers])
             ).item()
 
     sparsif_stats = towers[0].tower_stats.get("ra_sparsification_stats")
@@ -159,7 +159,7 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
         for key in sparsif_stats:
             stats[f"relation_awareness/{key}"] = torch.mean(
                 torch.stack([
-                    t.tower_stats["ra_sparsification_stats"][key].detach()
+                    t.tower_stats["ra_sparsification_stats"][key].detach().cpu()
                     for t in towers
                 ])
             ).item()
@@ -259,7 +259,7 @@ def _tower_mean(towers: list, key: str) -> float:
     if not all(key in t.tower_stats for t in towers):
         return None
     return torch.mean(
-        torch.stack([t.tower_stats[key].detach() for t in towers])
+        torch.stack([t.tower_stats[key].detach().cpu() for t in towers])
     ).item()
 
 
@@ -268,7 +268,7 @@ def _tower_stack_mean(towers: list, key: str, dim: int = 0) -> Tensor:
     if not all(key in t.tower_stats for t in towers):
         return None
     return torch.mean(
-        torch.stack([t.tower_stats[key].detach() for t in towers]),
+        torch.stack([t.tower_stats[key].detach().cpu() for t in towers]),
         dim=dim,
     )
 
@@ -277,7 +277,7 @@ def _tower_cat_stat(towers: list, key: str, dim: int = 0) -> Tensor:
     """Concatenate a tensor tower stat across towers along *dim*, or None if key is missing."""
     if not all(key in t.tower_stats for t in towers):
         return None
-    return torch.cat([t.tower_stats[key].detach() for t in towers], dim=dim)
+    return torch.cat([t.tower_stats[key].detach().cpu() for t in towers], dim=dim)
 
 
 def assert_graph_obs_space_and_get_x_dim(obs_space: spaces.Dict) -> int:
