@@ -24,7 +24,7 @@ bash experiments/slurm/cpu/rappo36.sh      # submit RAPPO on IEEE 36-bus (seed 0
 bash experiments/slurm/highmem/rappo118.sh # submit RAPPO on IEEE 118-bus (seed 0, highmem)
 ```
 
-### `slurm/cpu/` — Standard CPU partition
+### `slurm/unicluster/`
 
 Used for IEEE 14-bus and IEEE 36-bus training. Jobs run on the `cpu_il` / `cpu` partitions
 (64 CPUs, up to 249 GB RAM per job).
@@ -47,24 +47,9 @@ Used for IEEE 14-bus and IEEE 36-bus training. Jobs run on the `cpu_il` / `cpu` 
 | `dqn_mlp36.sh` | Rainbow DQN + MLP baseline | IEEE 36 | 0 | 72 h |
 | `dqn_gnn36.sh` | Rainbow DQN + GNN baseline | IEEE 36 | 0 | 72 h |
 
-### `slurm/highmem/` — High-memory partition
-
-Used for IEEE 118-bus training. The 118-bus observation space requires significantly more
-RAM (up to 750 GB for RAPPO), which exceeds the standard CPU partition limit. Jobs run on
-the `highmem` partition (up to 2.3 TB RAM per node).
-
-| Script | Model | Grid | RAM |
-|---|---|---|---|
-| `rappo118.sh` | RAPPO | IEEE 118 | 750 GB |
-| `radqn118.sh` | RADQN | IEEE 118 | 750 GB |
-| `ppo_mlp118.sh` | PPO + MLP baseline | IEEE 118 | 500 GB |
-| `ppo_gnn118.sh` | PPO + GNN baseline | IEEE 118 | 500 GB |
-| `dqn_mlp118.sh` | Rainbow DQN + MLP baseline | IEEE 118 | 500 GB |
-| `dqn_gnn118.sh` | Rainbow DQN + GNN baseline | IEEE 118 | 500 GB |
-
 ### Logs and outputs
 
-Each script creates `results/experiments/<date>_<grid>/<variant>/out/` before submitting.
+Each script creates `results/<date>_<grid>/<variant>/out/` before submitting.
 SLURM stdout and stderr are written there as `<variant>_s<seed>.<jobid>.log` and
 `error_<variant>_s<seed>.<jobid>.log`. Checkpoints land in
 `results/experiments/<date>_<grid>/<variant>/`.
