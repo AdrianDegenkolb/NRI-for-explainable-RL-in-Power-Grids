@@ -77,6 +77,9 @@ def apply_ra_kl_loss(
     t1 = time.perf_counter()
 
     posteriors: Tensor = model.get_posterior()
+    device = posteriors.device
+    prior_tensor = prior_tensor.to(device)
+    graph_edge_masks = graph_edge_masks.to(device)
 
     kl_loss, kl_stats = compute_ra_kl_loss(
         posteriors=posteriors,
