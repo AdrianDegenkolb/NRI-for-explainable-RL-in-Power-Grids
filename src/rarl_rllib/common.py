@@ -143,7 +143,7 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
     stats = {k: v for k, v in candidates.items() if v is not None}
 
     gnn_stats = towers[0].tower_stats.get("ra_gnn_stats")
-    if gnn_stats is not None:
+    if gnn_stats is not None and all("ra_gnn_stats" in t.tower_stats for t in towers):
         for key in gnn_stats:
             stats[f"relation_awareness/gnn/{key}"] = torch.mean(
                 torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
