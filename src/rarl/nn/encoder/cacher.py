@@ -31,7 +31,7 @@ class GraphDataCache:
         batch = (
             graph_data.batch
             if graph_data.batch is not None
-            else torch.zeros(graph_data.num_nodes, dtype=torch.long)
+            else torch.zeros(graph_data.num_nodes, dtype=torch.long, device=graph_data.edge_index.device)
         )
         edge_index = graph_data.edge_index
         edge_batch = batch[edge_index[0]]
