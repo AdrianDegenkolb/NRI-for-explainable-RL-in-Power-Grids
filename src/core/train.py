@@ -439,7 +439,8 @@ def _setup_ray(exp):
     os.environ["TUNE_DISABLE_AUTO_CALLBACK_LOGGERS"] = "1"  # suppress result.json + progress.csv
     os.environ["WANDB_MODE"] = "offline"
     os.environ["WANDB_SILENT"] = "true"
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # suppress cuBLAS workspace warning on GPU
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    os.environ["PYTHONWARNINGS"] = "ignore:Could not parse CUBLAS_WORKSPACE_CONFIG:UserWarning"
     ray.init(local_mode=exp.ray_local_mode)
     logger.info(f"Ray initialized in {'local' if exp.ray_local_mode else 'cluster'} mode.")
     logger.info(f"Ray sees GPUs: {ray.available_resources().get('GPU', 0)}")
