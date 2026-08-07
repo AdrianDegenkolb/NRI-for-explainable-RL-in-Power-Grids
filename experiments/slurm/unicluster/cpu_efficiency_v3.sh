@@ -101,7 +101,7 @@ sbatch << EOF
 #SBATCH --error=results/${experiment_name}/out/v3.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --time=0:30:00
 #SBATCH --mem=100G
 #SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300,dev_gpu_h100,dev_gpu_a100_il
@@ -135,7 +135,7 @@ sbatch << EOF
 #SBATCH --error=results/${experiment_name}/out/v4.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:1
 #SBATCH --time=0:30:00
 #SBATCH --mem=100G
 #SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300,dev_gpu_h100,dev_gpu_a100_il
