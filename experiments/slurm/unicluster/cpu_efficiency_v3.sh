@@ -104,7 +104,7 @@ sbatch << EOF
 #SBATCH --gres=gpu:1
 #SBATCH --time=0:30:00
 #SBATCH --mem=100G
-#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300,dev_gpu_h100,dev_gpu_a100_il
+#SBATCH --partition=gpu_h100,gpu_a100_il,dev_gpu_h100,dev_gpu_a100_il
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
@@ -138,7 +138,7 @@ sbatch << EOF
 #SBATCH --gres=gpu:1
 #SBATCH --time=0:30:00
 #SBATCH --mem=100G
-#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_mi300,dev_gpu_h100,dev_gpu_a100_il
+#SBATCH --partition=gpu_h100,gpu_a100_il,dev_gpu_h100,dev_gpu_a100_il
 
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
