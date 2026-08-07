@@ -287,8 +287,10 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
     rllib_cfg["batch_mode"] = rollouts.batch_mode
     # Old RLLib API (_enable_learner_api=False) uses num_gpus on the main process.
-    # Set it to the total GPU count so the trainer process can also utilize GPUs.
-    rllib_cfg["num_gpus"] = 0 #rollouts.num_gpus_per_learner_worker * rollouts.num_learner_workers
+    # num_gpus_per_learner_worker is ignored by the old API. Instead, num_gpus controls
+    # whether the trainer process uses a GPU. Must not exceed 1 to avoid allocating GPUs
+    # on the CPU-bound algorithm actor (which caused crashes with num_gpus=4).
+    rllib_cfg["num_gpus"] = rollouts.num_gpus_per_learner_worker
     rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework
