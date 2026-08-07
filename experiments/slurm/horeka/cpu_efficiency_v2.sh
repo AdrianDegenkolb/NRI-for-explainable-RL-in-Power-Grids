@@ -24,7 +24,7 @@ G2OP_ENV=l2rpn_case14_sandbox
 # ---------------------------------------------------------------------------
 BASE_ARGS="training=ppo model=ragnn obs_space=graph relation_awareness=default experiment.seed=0 experiment.nb_timesteps=7000 rollouts.num_rollout_workers=48 experiment.post_training_evaluation.enabled=False"
 BASE_ARGS_CPU="${BASE_ARGS} rollouts.num_gpus_per_learner_worker=0"
-BASE_ARGS_GPU="${BASE_ARGS} rollouts.num_gpus_per_learner_worker=1 rollouts.num_learner_workers=1"
+BASE_ARGS_GPU="${BASE_ARGS} rollouts.num_gpus=1 rollouts.num_gpus_per_learner_worker=1 rollouts.num_learner_workers=1"
 
 # ---------------------------------------------------------------------------
 # V1 — TMPDIR baseline

@@ -286,11 +286,13 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
     rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
     rllib_cfg["batch_mode"] = rollouts.batch_mode
-    # Old RLLib API (_enable_learner_api=False) uses num_gpus on the main process.
-    # num_gpus_per_learner_worker is ignored by the old API. Instead, num_gpus controls
-    # whether the trainer process uses a GPU. Must not exceed 1 to avoid allocating GPUs
-    # on the CPU-bound algorithm actor (which caused crashes with num_gpus=4).
-    rllib_cfg["num_gpus"] = rollouts.num_gpus_per_learner_worker
+    # This project runs the old RLlib API stack (_enable_learner_api=False), which has
+    # no separate learner-worker actors: training happens on the single driver process
+    # via multi_gpu_train_one_step(). `num_learner_workers`/`num_gpus_per_learner_worker`
+    # are new-API-stack fields that RLlib's old-API resource request ignores entirely
+    # (see Algorithm.default_resource_request: driver GPU = config.num_gpus). The only
+    # knob that actually grants the driver a GPU is `rollouts.num_gpus` below.
+    rllib_cfg["num_gpus"] = rollouts.num_gpus
     rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework

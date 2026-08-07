@@ -332,7 +332,11 @@ class CustomMetricsCallback(DefaultCallbacks):
         self.powerline_edge_index = obs_space._get_edge_index(env.reset())
         policy = _get_policy(algorithm)
         if policy is not None and hasattr(policy, "model"):
-            logger.info(f"Instantiated model class: {type(policy.model).__name__}")
+            model_device = next(policy.model.parameters()).device
+            logger.info(
+                f"Instantiated model class: {type(policy.model).__name__} "
+                f"on device={model_device} (config.num_gpus={algorithm.config.num_gpus})"
+            )
 
         if hasattr(algorithm, "curriculum_training") and algorithm.curriculum_training:
             print(f"Start with curriculum level {self.curr_level}")

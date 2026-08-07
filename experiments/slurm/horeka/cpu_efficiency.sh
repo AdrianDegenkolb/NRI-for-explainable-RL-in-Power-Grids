@@ -182,6 +182,7 @@ PYTHONPATH=\$(pwd)/src python experiments/train.py \
     env.chronics_dir=\$TMPDIR/data_grid2op \
     env.use_chronics_cache=true \
     rollouts.batch_mode=truncate_episodes \
+    rollouts.num_gpus=1 \
     rollouts.num_gpus_per_learner_worker=1 \
     experiment.name=${experiment_name}/v5_gpu
 EOF
