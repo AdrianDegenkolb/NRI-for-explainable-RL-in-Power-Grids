@@ -121,6 +121,11 @@ class RAGNN(nn.Module):
     :param dropout_prob: Dropout probability.
     :param residual: Use residual connections between layers.
     :param conv_type: Message-passing kernel — ``"gcn"`` (default) or ``"gin"``.
+    :param sparsify_threshold: Edges whose summed probability across active types
+        is below this value are dropped before message passing. 0.0 disables
+        sparsification (default). Recommended value: 0.03.
+    :param diagnose_every: Run the self-loop diagnostic every N eval calls.
+        0 disables diagnostics entirely (default).
     """
 
     def __init__(
@@ -134,6 +139,8 @@ class RAGNN(nn.Module):
         dropout_prob: float = 0.0,
         residual: bool = True,
         conv_type: ConvType = "gcn",
+        sparsify_threshold: float = 0.0,
+        diagnose_every: int = 0,
     ):
         super().__init__()
         self.residual = residual
@@ -160,6 +167,9 @@ class RAGNN(nn.Module):
         self.final = MLP(
             hidden_dim, hidden_dim, x_out_dim, dropout_prob=dropout_prob, do_batch_norm=False
         )
+        self.sparsify_threshold = sparsify_threshold
+        self.diagnose_every = diagnose_every
+        self._eval_call_count: int = 0
         self.stats: dict = {}
 
     def forward(
@@ -178,31 +188,43 @@ class RAGNN(nn.Module):
         """
         assert edge_type_posterior.size(0) == edge_index.size(1)
 
+        # --- Optional threshold-based edge sparsification ---
+        if self.sparsify_threshold > 0.0:
+            active_cols = list(self.edge_type_range)
+            interaction_prob = edge_type_posterior[:, active_cols].sum(dim=-1)
+            keep = interaction_prob >= self.sparsify_threshold
+            edge_index = edge_index[:, keep]
+            edge_type_posterior = edge_type_posterior[keep]
+
         h = self.bn_node_proj(self.node_proj(x))
 
-        for l, mp_list in enumerate(self.layers):
+        if not self.training:
+            self._eval_call_count += 1
+
+        _run_diag = not self.training and self.diagnose_every > 0 and self._eval_call_count % self.diagnose_every == 0
+
+        for layer_ind, layer in enumerate(self.layers):
             outs = [
-                mp_list[k](x=h, edge_index=edge_index, edge_weight=edge_type_posterior[:, k])
+                layer[k](x=h, edge_index=edge_index, edge_weight=edge_type_posterior[:, k])
                 for k in self.edge_type_range
             ]
             h_new = torch.stack(outs).sum(0)
-            h_new = self.bn_mp[l](h_new)
+            h_new = self.bn_mp[layer_ind](h_new)
             h_new = self.act(h_new)
 
-            if not self.training:
-                # diagnostics
+            if _run_diag:
                 # 1. how much does the signal change in this layer
-                self.stats[f"msg_ratio_layer_{l}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
+                self.stats[f"msg_ratio_layer_{layer_ind}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
                 # 2. how much does the information rely on self loops
                 with torch.no_grad():
                     outs_only_self_loops = [
-                        mp_list[k](x=h, edge_index=edge_index, edge_weight=torch.zeros_like(edge_type_posterior[:, k]))
+                        layer[k](x=h, edge_index=edge_index, edge_weight=torch.zeros_like(edge_type_posterior[:, k]))
                         for k in self.edge_type_range
                     ]
                     h_new_self_loops = torch.stack(outs_only_self_loops).sum(0)
-                    h_new_self_loops = self.bn_mp[l](h_new_self_loops)
+                    h_new_self_loops = self.bn_mp[layer_ind](h_new_self_loops)
                     h_new_self_loops = self.act(h_new_self_loops)
-                    self.stats[f"self_loop_usage_{l}"] = _mean_l2_norm(h_new_self_loops - h) / _mean_l2_norm(h_new - h)
+                    self.stats[f"self_loop_usage_{layer_ind}"] = _mean_l2_norm(h_new_self_loops - h) / _mean_l2_norm(h_new - h)
 
             h = self.dropout(h)
             h = h + h_new if self.residual else h_new

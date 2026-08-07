@@ -131,6 +131,8 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
             top_k_budget=top_k_budget,
             conv_type=gnn_cfg.get("conv_type", "gcn"),
+            sparsify_threshold=gnn_cfg.get("sparsify_threshold", 0.0),
+            diagnose_every=gnn_cfg.get("diagnose_every", 0),
         )
 
         gnn_out_space = Box(-np.inf, np.inf, shape=(gnn_cfg["out_dim"],), dtype=np.float32)

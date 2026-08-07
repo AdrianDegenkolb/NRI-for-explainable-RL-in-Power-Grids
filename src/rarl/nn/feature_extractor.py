@@ -41,6 +41,10 @@ class RAFeatureExtractor(nn.Module):
     :param tau: Initial Gumbel-Softmax temperature.
     :param residual: Use residual connections in RAGNN.
     :param top_k_budget: Number of edges per sample passed to RAGNN (0 = disabled, use full FC graph).
+    :param sparsify_threshold: Passed to RAGNN — edges whose summed interaction probability is below
+        this value are dropped before message passing. 0.0 disables (default).
+    :param diagnose_every: Passed to RAGNN — run self-loop diagnostics every N eval calls.
+        0 disables diagnostics (default).
     """
 
     def __init__(
@@ -60,6 +64,8 @@ class RAFeatureExtractor(nn.Module):
         residual: bool = True,
         top_k_budget: int = 0,
         conv_type: str = "gcn",
+        sparsify_threshold: float = 0.0,
+        diagnose_every: int = 0,
     ):
         super().__init__()
 
@@ -83,6 +89,8 @@ class RAFeatureExtractor(nn.Module):
             residual=residual,
             skip_last=True,
             conv_type=conv_type,
+            sparsify_threshold=sparsify_threshold,
+            diagnose_every=diagnose_every,
         )
         self.x_out_dim = x_out_dim
         self.top_k_budget = top_k_budget
