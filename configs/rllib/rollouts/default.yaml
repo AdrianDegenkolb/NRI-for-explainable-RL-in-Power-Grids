@@ -13,7 +13,7 @@ num_gpus_per_learner_worker: 0
 # actually controls GPU usage. See comment in experiments/train.py::build_rllib_config.
 num_gpus: 0
 
-batch_mode: complete_episodes
+batch_mode: complete_episodes # don't use truncated episodes here as it harms speed and survival rate
 count_steps_by: agent_steps
 keep_per_episode_custom_metrics: true
 framework: torch
