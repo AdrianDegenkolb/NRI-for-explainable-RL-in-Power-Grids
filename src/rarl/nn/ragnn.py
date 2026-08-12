@@ -190,6 +190,7 @@ class BaselineGNN(nn.Module):
     :param num_layers: number of subsequent GCNConv layers
     :param num_edge_types: number of edge types (default 1), if this is used (!= 1) edges must be annotated with edge types in the forward method
     :param dropout_prob: probability of dropout during training
+    :param edge_dim: dimensionality of edge attributes. If set, a projection MLP maps edge_attr [E, edge_dim] to scalar edge weights [E]. Must be set at construction to use edge_attr in forward.
     :param residual: if set to true h = h + h_new else h = h_new
     """
 
@@ -201,10 +202,14 @@ class BaselineGNN(nn.Module):
             num_layers: int = 3,
             num_edge_types: int = 1,
             dropout_prob: float = 0.0,
+            edge_dim: Optional[int] = None,
             residual: bool = True,
     ):
         super().__init__()
         self.residual = residual
+        self.edge_dim = edge_dim
+        if edge_dim is not None:
+            self.edge_proj = MLP(edge_dim, hidden_dim, 1, dropout_prob=dropout_prob, do_batch_norm=False)
 
         self.node_proj = MLP(x_dim, hidden_dim, hidden_dim, dropout_prob=dropout_prob, do_batch_norm=False)
         self.bn_node_proj = BatchNorm(hidden_dim)
@@ -221,17 +226,25 @@ class BaselineGNN(nn.Module):
         self.final = MLP(hidden_dim, hidden_dim, x_out_dim, dropout_prob=dropout_prob, do_batch_norm=False)
         self.stats: dict = {}
 
-    def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, edge_types: Optional[Tensor] = None, edge_weights: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, edge_types: Optional[Tensor] = None, edge_weights: Optional[Tensor] = None, edge_attr: Optional[Tensor] = None) -> Tensor:
         """
         :param x: Node features [N, x_dim].
         :param edge_index: Graph connectivity [2, E].
         :param batch: Batch vector [N].
         :param edge_types: [E] index for each edge
         :param edge_weights: [E] weights for each edge
+        :param edge_attr: [E, e_dim]
         :return: Graph-level embeddings [B, x_out_dim].
         """
+        assert edge_weights is None or edge_attr is None # edge_weight and edge attributes are mutually exclusive
+
         if edge_types is None:
             edge_types = torch.zeros(edge_index.shape[1], device=x.device, dtype=torch.long)
+
+        if edge_attr is not None and edge_weights is None:
+            assert self.edge_dim is not None, "edge_dim must be set at construction to use edge_attr"
+            # derive edge weight from attributes
+            edge_weights = self.edge_proj(edge_attr).squeeze(-1)
 
         h = self.bn_node_proj(self.node_proj(x))
 
