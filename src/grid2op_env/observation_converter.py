@@ -25,6 +25,7 @@ EDGES = "edge_features"
 EDGE_INDEX = "edge_index"
 EDGE_MASK = "edge_mask"
 NODE_MASK = "node_mask"
+EDGE_TYPE = "edge_type"
 GLOBAL = "global_features"
 
 _DEFAULT_NODE_FEATURES = [
@@ -384,6 +385,131 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         ], dtype=np.float32)
 
 
+class HeterogeneousGraphObservationConverter(GraphObservationConverter):
+    """
+    Extends GraphObservationConverter with typed edges (heterogeneous graph).
+
+    Edges are split into three types, each processed by a separate conv layer:
+      0: powerline edges         (line_or <-> line_ex)
+      1: same-substation, same-bus   (active physical connectivity)
+      2: same-substation, diff-bus   (optional / latent connectivity)
+
+    Adds EDGE_TYPE: [max_num_edges] int64 to the observation dict.
+    Node features, normalization, and padding are inherited unchanged.
+    """
+
+    def __init__(
+        self,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        super().__init__(g2op_obs_space, attr_to_observe, verbose)
+        spaces = dict(self._observation_space.spaces)
+        spaces[EDGE_TYPE] = Box(
+            low=0, high=2,
+            shape=(self._max_num_edges,),
+            dtype=np.int64,
+        )
+        self._observation_space = Dict(spaces)
+
+    def _get_edge_index_with_types(
+        self, g2op_obs: BaseObservation
+    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        """
+        Build the edge index and per-edge type array for the current topology.
+
+        Returns:
+            edge_index: [2, E] connectivity matrix (int64)
+            edge_types: [E] type index per edge: 0=powerline, 1=same-bus, 2=optional (int64)
+        """
+        bus_ids = np.concatenate([
+            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
+            g2op_obs.gen_bus, g2op_obs.load_bus,
+            g2op_obs.storage_bus,
+        ])
+
+        src = self._topo_cand_src
+        dst = self._topo_cand_dst
+        both_connected = (bus_ids[src] > 0) & (bus_ids[dst] > 0)
+
+        # Type 1: same substation, same bus (physical connectivity)
+        same_bus = (bus_ids[src] == bus_ids[dst]) & both_connected
+        t1_src, t1_dst = src[same_bus], dst[same_bus]
+
+        # Type 2: same substation, different bus (optional connectivity)
+        diff_bus = ~(bus_ids[src] == bus_ids[dst]) & both_connected
+        t2_src, t2_dst = src[diff_bus], dst[diff_bus]
+
+        # Make bidirectional (candidates are upper-triangle only)
+        def _bidir(s: npt.NDArray, d: npt.NDArray) -> tuple[npt.NDArray, npt.NDArray]:
+            return np.concatenate([s, d]), np.concatenate([d, s])
+
+        t1_s, t1_d = _bidir(t1_src, t1_dst)
+        t2_s, t2_d = _bidir(t2_src, t2_dst)
+
+        # Type 0: line edges (already bidirectional in _line_edges), filter disconnected
+        n_line = self._dims.n_line
+        line_connected = (bus_ids[:n_line] > 0) & (bus_ids[n_line:2 * n_line] > 0)
+        line_mask = np.concatenate([line_connected, line_connected])
+        active_line_edges = self._line_edges[:, line_mask]
+        n_line_edges = active_line_edges.shape[1]
+
+        edge_index = np.stack([
+            np.concatenate([active_line_edges[0], t1_s, t2_s]),
+            np.concatenate([active_line_edges[1], t1_d, t2_d]),
+        ])
+        edge_types = np.concatenate([
+            np.zeros(n_line_edges, dtype=np.int64),
+            np.ones(len(t1_s), dtype=np.int64),
+            np.full(len(t2_s), 2, dtype=np.int64),
+        ])
+        return edge_index, edge_types
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a heterogeneous graph gym observation.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        """
+        t_total = time.perf_counter()
+
+        node_features = self._get_node_features(g2op_obs)
+
+        t0 = time.perf_counter()
+        edge_index, edge_types = self._get_edge_index_with_types(g2op_obs)
+        self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        num_edges = edge_index.shape[1]
+        edge_index_padded = np.zeros((2, self._max_num_edges), dtype=np.int64)
+        edge_index_padded[:, :num_edges] = edge_index
+        edge_mask = np.zeros(self._max_num_edges, dtype=bool)
+        edge_mask[:num_edges] = True
+        edge_type_padded = np.zeros(self._max_num_edges, dtype=np.int64)
+        edge_type_padded[:num_edges] = edge_types
+        node_mask = np.ones(self._dims.num_nodes, dtype=np.bool_)
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: edge_index_padded,
+            EDGE_MASK: edge_mask,
+            NODE_MASK: node_mask,
+            EDGE_TYPE: edge_type_padded,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """Normalize node features and pass edge types through unchanged."""
+        result = super().normalize(gym_obs)
+        result[EDGE_TYPE] = gym_obs[EDGE_TYPE]
+        return result
+
+
 # --- Flat observation converter ---
 
 class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
@@ -455,6 +581,12 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
     mode = env_config.get("observation_space", "FlatSpace")
     if mode == "GraphObsSpace" or mode == "BusConnectivityGraphObsSpace":
         return GraphObservationConverter(
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "HeterogeneousGraphObsSpace":
+        return HeterogeneousGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),
             verbose=env_config.get("verbose", False),
