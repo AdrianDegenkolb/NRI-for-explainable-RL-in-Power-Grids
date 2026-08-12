@@ -18,12 +18,11 @@ For a plain GNN baseline (no edge-type conditioning) use BaselineGNN.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 from torch import nn, Tensor
-from torch_geometric.nn import GCNConv, GINConv, BatchNorm, global_mean_pool
-from torch_geometric.nn import MessagePassing
+from torch_geometric.nn import GCNConv, BatchNorm, global_mean_pool
 
 from .mlp import MLP
 
@@ -33,62 +32,6 @@ ConvType = Literal["gcn", "gin"]
 def _mean_l2_norm(t: Tensor, eps: float = 1e-12) -> Tensor:
     """Mean per-node L2 norm of feature vectors."""
     return torch.linalg.vector_norm(t, dim=-1).mean().clamp_min(eps)
-
-
-class WeightedGINConv(MessagePassing):
-    """
-    GIN-style message passing with scalar edge weights and no self-loops.
-
-    Aggregates neighbour features weighted by a scalar per edge using sum
-    aggregation, then applies a linear transform. Degree normalisation is
-    intentionally omitted so that the gradient flowing back through
-    ``edge_weight`` is not attenuated by the GCN normalisation term::
-
-        m_i = Σ_{j∈N(i)} edge_weight_ji · h_j      (weighted sum)
-        h_i_new = Linear(m_i)
-
-    The self-contribution (identity path) is delegated to the caller via a
-    residual connection rather than a self-loop edge, so the message-passing
-    output reflects discovered neighbour relationships only.
-
-    :param in_dim: Input feature dimension.
-    :param out_dim: Output feature dimension.
-    """
-
-    def __init__(self, in_dim: int, out_dim: int):
-        super().__init__(aggr="add")
-        self.lin = nn.Linear(in_dim, out_dim)
-
-    def forward(self, x: Tensor, edge_index: Tensor, edge_weight: Tensor) -> Tensor:
-        """
-        :param x: Node features [N, in_dim].
-        :param edge_index: Graph connectivity [2, E].
-        :param edge_weight: Scalar weight per directed edge [E].
-        :return: Updated node features [N, out_dim].
-        """
-        out = self.propagate(edge_index, x=x, edge_weight=edge_weight)
-        return self.lin(out)
-
-    def message(self, x_j: Tensor, edge_weight: Tensor) -> Tensor:
-        """Scale source-node features by the edge weight.
-
-        :param x_j: Source node features for each edge [E, in_dim].
-        :param edge_weight: Scalar weight per edge [E].
-        :return: Weighted messages [E, in_dim].
-        """
-        return edge_weight.unsqueeze(-1) * x_j
-
-
-def _make_ragnn_conv(conv_type: ConvType, hidden_dim: int) -> nn.Module:
-    if conv_type == "gin":
-        return WeightedGINConv(hidden_dim, hidden_dim)
-    return GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
-
-
-def _make_baseline_conv(conv_type: ConvType, hidden_dim: int) -> nn.Module:
-    if conv_type == "gin":
-        return GINConv(nn.Linear(hidden_dim, hidden_dim), train_eps=False)
-    return GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
 
 
 class RAGNN(nn.Module):
@@ -120,7 +63,6 @@ class RAGNN(nn.Module):
     :param skip_last: Skip the last edge-type (the "no edge" type).
     :param dropout_prob: Dropout probability.
     :param residual: Use residual connections between layers.
-    :param conv_type: Message-passing kernel — ``"gcn"`` (default) or ``"gin"``.
     :param sparsify_threshold: Edges whose summed probability across active types
         is below this value are dropped before message passing. 0.0 disables
         sparsification (default). Recommended value: 0.03.
@@ -129,18 +71,17 @@ class RAGNN(nn.Module):
     """
 
     def __init__(
-        self,
-        x_dim: int,
-        hidden_dim: int,
-        x_out_dim: int,
-        num_layers: int = 3,
-        num_edge_types: int = 2,
-        skip_last: bool = True,
-        dropout_prob: float = 0.0,
-        residual: bool = True,
-        conv_type: ConvType = "gcn",
-        sparsify_threshold: float = 0.0,
-        diagnose_every: int = 0,
+            self,
+            x_dim: int,
+            hidden_dim: int,
+            x_out_dim: int,
+            num_layers: int = 3,
+            num_edge_types: int = 2,
+            skip_last: bool = True,
+            dropout_prob: float = 0.0,
+            residual: bool = True,
+            sparsify_threshold: float = 0.0,
+            diagnose_every: int = 0,
     ):
         super().__init__()
         self.residual = residual
@@ -155,7 +96,7 @@ class RAGNN(nn.Module):
 
         self.layers = nn.ModuleList([
             nn.ModuleList([
-                _make_ragnn_conv(conv_type, hidden_dim)
+                GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
                 for _ in self.edge_type_range
             ])
             for _ in range(num_layers)
@@ -173,11 +114,11 @@ class RAGNN(nn.Module):
         self.stats: dict = {}
 
     def forward(
-        self,
-        x: Tensor,
-        edge_index: Tensor,
-        edge_type_posterior: Tensor,
-        batch: Tensor,
+            self,
+            x: Tensor,
+            edge_index: Tensor,
+            edge_type_posterior: Tensor,
+            batch: Tensor,
     ) -> Tensor:
         """
         :param x: Node features [N, x_dim].
@@ -224,7 +165,8 @@ class RAGNN(nn.Module):
                     h_new_self_loops = torch.stack(outs_only_self_loops).sum(0)
                     h_new_self_loops = self.bn_mp[layer_ind](h_new_self_loops)
                     h_new_self_loops = self.act(h_new_self_loops)
-                    self.stats[f"self_loop_usage_{layer_ind}"] = _mean_l2_norm(h_new_self_loops - h) / _mean_l2_norm(h_new - h)
+                    self.stats[f"self_loop_usage_{layer_ind}"] = _mean_l2_norm(h_new_self_loops - h) / _mean_l2_norm(
+                        h_new - h)
 
             h = self.dropout(h)
             h = h + h_new if self.residual else h_new
@@ -242,54 +184,70 @@ class BaselineGNN(nn.Module):
     Input/output shapes are identical to :class:`RAGNN` except
     *edge_type_posterior* is not required.
 
-    :param conv_type: Message-passing kernel — ``"gcn"`` (default) or ``"gin"``.
+    :param x_dim: node feature dimensionality
+    :param hidden_dim: hidden node dimensionality
+    :param x_out_dim: output node dimensionality
+    :param num_layers: number of subsequent GCNConv layers
+    :param num_edge_types: number of edge types (default 1), if this is used (!= 1) edges must be annotated with edge types in the forward method
+    :param dropout_prob: probability of dropout during training
+    :param residual: if set to true h = h + h_new else h = h_new
     """
 
     def __init__(
-        self,
-        x_dim: int,
-        hidden_dim: int,
-        x_out_dim: int,
-        num_layers: int = 3,
-        dropout_prob: float = 0.0,
-        residual: bool = True,
-        conv_type: ConvType = "gcn",
+            self,
+            x_dim: int,
+            hidden_dim: int,
+            x_out_dim: int,
+            num_layers: int = 3,
+            num_edge_types: int = 1,
+            dropout_prob: float = 0.0,
+            residual: bool = True,
     ):
         super().__init__()
         self.residual = residual
 
-        self.node_proj = MLP(
-            x_dim, hidden_dim, hidden_dim, dropout_prob=dropout_prob, do_batch_norm=False
-        )
+        self.node_proj = MLP(x_dim, hidden_dim, hidden_dim, dropout_prob=dropout_prob, do_batch_norm=False)
         self.bn_node_proj = BatchNorm(hidden_dim)
 
-        self.layers = nn.ModuleList([
-            _make_baseline_conv(conv_type, hidden_dim)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList([nn.ModuleList([
+            GCNConv(hidden_dim, hidden_dim, improved=True, add_self_loops=True)
+            for _ in range(num_edge_types)])
+            for _ in range(num_layers)])
+
         self.bn_mp = nn.ModuleList([BatchNorm(hidden_dim) for _ in range(num_layers)])
-        self.act = nn.ELU()
+        self.activation_function = nn.ELU()
         self.dropout = nn.Dropout(dropout_prob)
 
-        self.final = MLP(
-            hidden_dim, hidden_dim, x_out_dim, dropout_prob=dropout_prob, do_batch_norm=False
-        )
+        self.final = MLP(hidden_dim, hidden_dim, x_out_dim, dropout_prob=dropout_prob, do_batch_norm=False)
         self.stats: dict = {}
 
-    def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor) -> Tensor:
+    def forward(self, x: Tensor, edge_index: Tensor, batch: Tensor, edge_types: Optional[Tensor] = None, edge_weights: Optional[Tensor] = None) -> Tensor:
         """
         :param x: Node features [N, x_dim].
         :param edge_index: Graph connectivity [2, E].
         :param batch: Batch vector [N].
+        :param edge_types: [E] index for each edge
+        :param edge_weights: [E] weights for each edge
         :return: Graph-level embeddings [B, x_out_dim].
         """
+        if edge_types is None:
+            edge_types = torch.zeros(edge_index.shape[1], device=x.device, dtype=torch.long)
+
         h = self.bn_node_proj(self.node_proj(x))
 
-        for l, conv in enumerate(self.layers):
-            h_new = conv(h, edge_index)
-            h_new = self.bn_mp[l](h_new)
-            h_new = self.act(h_new)
-            self.stats[f"msg_ratio_layer_{l}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
+        for i, layer in enumerate(self.layers):
+            h_new = torch.zeros_like(h)
+            for j, edge_type_conv in enumerate(layer):
+                mask = edge_types == j
+                h_new += edge_type_conv(
+                    x=h,
+                    edge_index=edge_index[:, mask],
+                    edge_weight=edge_weights[mask] if edge_weights is not None else None
+                )
+
+            h_new = self.bn_mp[i](h_new)
+            h_new = self.activation_function(h_new)
+            self.stats[f"msg_ratio_layer_{i}"] = _mean_l2_norm(h_new) / _mean_l2_norm(h)
             h = self.dropout(h)
             h = h + h_new if self.residual else h_new
 
