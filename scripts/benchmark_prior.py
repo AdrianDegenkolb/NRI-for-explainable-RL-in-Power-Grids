@@ -5,7 +5,7 @@ Measures how long the function takes for realistic IEEE-14 and IEEE-36 inputs
 without needing a full training run.
 
 Usage (from project root):
-    conda run -n L2RPN PYTHONPATH=$(pwd)/src python experiments/benchmark_prior.py
+    conda run -n L2RPN PYTHONPATH=$(pwd)/src python scripts/benchmark_prior.py
 """
 
 import time

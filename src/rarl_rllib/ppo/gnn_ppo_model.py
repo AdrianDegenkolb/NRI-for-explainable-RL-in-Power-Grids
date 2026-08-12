@@ -9,7 +9,7 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import nn, Tensor
 
-from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
+from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK
 from rarl import BaselineGNN
 from rarl_rllib.common import assert_graph_obs_space_and_get_x_dim
 
@@ -32,8 +32,6 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
             dropout_prob=kwargs['gnn'].get('dropout_prob', 0.0),
             residual=kwargs['gnn'].get('residual', True),
         )
-        # Build downstream MLP head(s)
-        # Create a Box space for the GNN output to pass to FCN
         gnn_output_space = Box(
             low=-float('inf'),
             high=float('inf'),
@@ -49,34 +47,49 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
         )
 
     def forward(self, input_dict: typing.Dict[str, TensorType], state: List[TensorType], seq_lens: TensorType) -> Tuple[TensorType, List[TensorType]]:
-        node_features_batch = input_dict["obs"][NODES]  # [B, N, node_in_dim]
+        node_features_batch = input_dict["obs"][NODES]   # [B, max_N, node_dim]
         edge_index_batch = input_dict["obs"][EDGE_INDEX]  # [B, 2, E_max]
-        edge_mask = input_dict["obs"][EDGE_MASK]  # [B, E_max]
+        edge_mask = input_dict["obs"][EDGE_MASK]          # [B, E_max]
 
-        B, N, _ = node_features_batch.shape
+        B, max_N, _ = node_features_batch.shape
         device = node_features_batch.device
 
-        # Flatten nodes
-        x = node_features_batch.reshape(B * N, -1)
-        batch = torch.arange(B, device=device).repeat_interleave(N)
+        # Node mask: [B, max_N] — falls back to all-True when not provided or when
+        # all entries are False (RLlib dummy init batch uses zero-filled obs tensors).
+        node_mask = input_dict["obs"].get(NODE_MASK, None)
+        if node_mask is None or not node_mask.bool().any():
+            node_mask = torch.ones(B, max_N, dtype=torch.bool, device=device)
+        else:
+            node_mask = node_mask.bool()
 
-        # Mask edges
+        # Per-graph real node counts and cumulative global offsets
+        n_real = node_mask.sum(dim=1)                               # [B]
+        global_offsets = torch.zeros(B, dtype=torch.long, device=device)
+        global_offsets[1:] = n_real[:-1].cumsum(0)
+
+        # Flatten only real nodes; build matching batch vector
+        x = node_features_batch[node_mask]                          # [sum(n_real), node_dim]
+        batch = torch.arange(B, device=device).repeat_interleave(n_real)
+
+        # Remap table: padded node index -> global dense index
+        # dense_local[b, p] = 0-based dense index of node p within graph b
+        dense_local = node_mask.long().cumsum(dim=1) - 1           # [B, max_N]
+        remap = dense_local + global_offsets.unsqueeze(1)           # [B, max_N]
+
+        # Remap edge_index from padded to dense global indices
+        ei = edge_index_batch                                        # [B, 2, E_max]
+        src_remapped = remap.gather(1, ei[:, 0, :].clamp(0, max_N - 1))  # [B, E_max]
+        dst_remapped = remap.gather(1, ei[:, 1, :].clamp(0, max_N - 1))  # [B, E_max]
+        ei_remapped = torch.stack([src_remapped, dst_remapped], dim=1)    # [B, 2, E_max]
+
+        # Select valid edges: [2, total_E]
         valid_edges = edge_mask.bool()
-        edge_index_batch = edge_index_batch.permute(1, 0, 2)  # [2, B, E_max]
-        edge_index_batch = edge_index_batch[:, valid_edges]  # [2, total_E]
+        ei_flat = ei_remapped.permute(1, 0, 2)[:, valid_edges]
 
-        # Add per-graph node offsets
-        offsets = (torch.arange(B, device=device) * N).repeat_interleave(valid_edges.sum(1))
-        edge_index_batch += offsets.unsqueeze(0)
+        gnn_out: Tensor = self.gnn(x=x, batch=batch, edge_index=ei_flat.to(dtype=torch.long))
 
-        # GNN to produce graph-level representation [B, gnn_out_dim]
-        gnn_out: Tensor = self.gnn(x=x, batch=batch, edge_index=edge_index_batch.to(dtype=torch.long))
-
-        # Pass GNN output through FCN (which expects input_dict format)
-        mlp_input_dict = {"obs": gnn_out}
-        logits, _ = self.mlp(mlp_input_dict, state, seq_lens)
+        logits, _ = self.mlp({"obs": gnn_out}, state, seq_lens)
         return logits, []
 
     def value_function(self) -> Tensor:
-        # RLlib expects shape [B]
         return self.mlp.value_function()

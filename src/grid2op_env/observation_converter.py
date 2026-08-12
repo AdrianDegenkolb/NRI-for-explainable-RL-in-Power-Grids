@@ -24,6 +24,7 @@ NODES = "node_features"
 EDGES = "edge_features"
 EDGE_INDEX = "edge_index"
 EDGE_MASK = "edge_mask"
+NODE_MASK = "node_mask"
 GLOBAL = "global_features"
 
 _DEFAULT_NODE_FEATURES = [
@@ -140,6 +141,11 @@ class GraphObservationConverter(ObservationConverter[Dict]):
                 shape=(self._max_num_edges,),
                 dtype=np.bool_,
             ),
+            NODE_MASK: Box(
+                low=0, high=1,
+                shape=(self._dims.num_nodes,),
+                dtype=np.bool_,
+            ),
             GLOBAL: Box(
                 low=-np.inf, high=np.inf,
                 shape=(6,),
@@ -191,6 +197,11 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         return self._dims.num_nodes
 
     @property
+    def max_nodes(self) -> int:
+        """Maximum number of nodes across all observations (= num_nodes for this converter)."""
+        return self._dims.num_nodes
+
+    @property
     def max_num_edges(self) -> int:
         return self._max_num_edges
 
@@ -220,11 +231,13 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         edge_index_padded[:, :num_edges] = edge_index
         edge_mask = np.zeros(self._max_num_edges, dtype=bool)
         edge_mask[:num_edges] = True
+        node_mask = np.ones(self._dims.num_nodes, dtype=np.bool_)
 
         result = self.normalize({
             NODES: node_features,
             EDGE_INDEX: edge_index_padded,
             EDGE_MASK: edge_mask,
+            NODE_MASK: node_mask,
             GLOBAL: global_features,
         })
         self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
@@ -246,6 +259,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             NODES: normalized.astype(np.float32),
             EDGE_INDEX: gym_obs[EDGE_INDEX],
             EDGE_MASK: gym_obs[EDGE_MASK],
+            NODE_MASK: gym_obs[NODE_MASK],
             GLOBAL: gym_obs[GLOBAL],
         }
 

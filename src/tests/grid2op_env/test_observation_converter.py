@@ -19,7 +19,7 @@ import numpy as np
 from grid2op_env.observation_converter import (
     GraphObservationConverter,
     _GridDimensions,
-    NODES, EDGE_INDEX, EDGE_MASK, GLOBAL,
+    NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL,
     _DEFAULT_NODE_FEATURES,
 )
 
@@ -74,6 +74,22 @@ class TestGraphObservationConverterSpace(unittest.TestCase):
         ei_shape = self.converter.observation_space[EDGE_INDEX].shape
         mask_shape = self.converter.observation_space[EDGE_MASK].shape
         self.assertEqual(mask_shape[0], ei_shape[1])
+
+    def test_node_mask_shape(self):
+        """NODE_MASK box has shape (num_nodes,)."""
+        num_nodes = self.dims.num_nodes
+        shape = self.converter.observation_space[NODE_MASK].shape
+        self.assertEqual(shape, (num_nodes,))
+
+    def test_node_mask_matches_nodes_first_dim(self):
+        """NODE_MASK length equals the first dim of NODES."""
+        nodes_shape = self.converter.observation_space[NODES].shape
+        mask_shape = self.converter.observation_space[NODE_MASK].shape
+        self.assertEqual(mask_shape[0], nodes_shape[0])
+
+    def test_max_nodes_equals_num_nodes(self):
+        """max_nodes property matches num_nodes for the default converter."""
+        self.assertEqual(self.converter.max_nodes, self.converter.num_nodes)
 
     def test_global_features_shape(self):
         """GLOBAL box has shape (6,)."""
@@ -207,20 +223,29 @@ class TestGraphObservationConverterNormalize(unittest.TestCase):
         ei_padded[:, :num_edges] = ei
         mask = np.zeros(self.converter.max_num_edges, dtype=bool)
         mask[:num_edges] = True
+        node_mask = np.ones(self.converter.num_nodes, dtype=np.bool_)
         return {
             NODES: node_features,
             EDGE_INDEX: ei_padded,
             EDGE_MASK: mask,
+            NODE_MASK: node_mask,
             GLOBAL: self.converter._get_global_features(self.obs),
         }
 
     def test_normalize_returns_all_keys(self):
-        """normalize returns a dict with NODES, EDGE_INDEX, EDGE_MASK, GLOBAL."""
+        """normalize returns a dict with NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL."""
         result = self.converter.normalize(self._raw_obs())
         self.assertIn(NODES, result)
         self.assertIn(EDGE_INDEX, result)
         self.assertIn(EDGE_MASK, result)
+        self.assertIn(NODE_MASK, result)
         self.assertIn(GLOBAL, result)
+
+    def test_normalize_does_not_alter_node_mask(self):
+        """normalize passes NODE_MASK through unchanged."""
+        raw = self._raw_obs()
+        result = self.converter.normalize(raw)
+        np.testing.assert_array_equal(result[NODE_MASK], raw[NODE_MASK])
 
     def test_normalized_node_features_dtype(self):
         """Normalized node features are float32."""
@@ -262,8 +287,14 @@ class TestGraphObservationConverterIntegration(unittest.TestCase):
     def test_to_gym_returns_all_keys(self):
         """to_gym returns a dict with all expected keys."""
         result = self.converter.to_gym(self.obs)
-        for key in [NODES, EDGE_INDEX, EDGE_MASK, GLOBAL]:
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
             self.assertIn(key, result)
+
+    def test_to_gym_node_mask_all_true(self):
+        """NODE_MASK is all-True for the default converter (all nodes are real)."""
+        result = self.converter.to_gym(self.obs)
+        self.assertTrue(result[NODE_MASK].all())
+        self.assertEqual(result[NODE_MASK].shape, (self.converter.num_nodes,))
 
     def test_to_gym_node_shape(self):
         """to_gym NODES has shape (num_nodes, x_dim)."""
@@ -342,7 +373,7 @@ class TestGraphObservationConverterWithGrid2op(unittest.TestCase):
         obs = env.reset()
         result = self.converter.to_gym(obs)
         space = self.converter.observation_space
-        for key in [EDGE_INDEX, EDGE_MASK, GLOBAL]:
+        for key in [EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
             self.assertEqual(result[key].shape, space[key].shape)
 
 
