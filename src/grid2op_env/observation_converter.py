@@ -38,6 +38,14 @@ _DEFAULT_NODE_FEATURES = [
     "rho",
 ]
 
+# Aggregation strategy when collapsing per-element features to per-bus nodes.
+# Features not listed here default to "sum".
+_BUS_AGGREGATION: dict[str, str] = {
+    "voltage": "mean",
+    "voltage_angle": "mean",
+    "rho": "max",
+}
+
 
 @dataclass
 class _GridDimensions:
@@ -510,6 +518,218 @@ class HeterogeneousGraphObservationConverter(GraphObservationConverter):
         return result
 
 
+# --- Substation graph observation converter ---
+
+class SubstationGraphObservationConverter(GraphObservationConverter):
+    """
+    Substation-level graph: one node per active busbar, powerlines as edges.
+
+    Each substation contributes 1–2 nodes depending on whether its elements are
+    split across bus 1 and bus 2. Padded to max_nodes = 2 * n_sub with NODE_MASK.
+
+    Node features use the same attr_to_observe as GraphObservationConverter,
+    aggregated across all elements assigned to each bus:
+      - power features (active/reactive): sum
+      - voltage, voltage_angle: mean
+      - rho: max
+
+    Edges are one bidirectional pair per connected powerline, linking the bus
+    nodes at each line's origin and extremity.
+    """
+
+    def __init__(
+        self,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        super().__init__(g2op_obs_space, attr_to_observe, verbose)
+        # super().__init__ sets: _dims, _timings, _normalizer, attr_to_observe,
+        # _observation_space, _topo_cand_src/dst, _line_edges (all for element graph).
+        # We override the structure-specific parts below.
+
+        n_sub = g2op_obs_space.n_sub
+        self._n_sub = n_sub
+        self._max_nodes = 2 * n_sub
+        self._max_num_edges = 2 * self._dims.n_line  # bidirectional line edges
+
+        # Substation id for each element in flat ordering [line_or|line_ex|gen|load|storage]
+        self._sub_ids_flat = np.concatenate([
+            g2op_obs_space.line_or_to_subid,
+            g2op_obs_space.line_ex_to_subid,
+            g2op_obs_space.gen_to_subid,
+            g2op_obs_space.load_to_subid,
+            g2op_obs_space.storage_to_subid,
+        ]).astype(np.int64)
+
+        # Line endpoint substation ids for edge building
+        self._line_or_subid = g2op_obs_space.line_or_to_subid.astype(np.int64)
+        self._line_ex_subid = g2op_obs_space.line_ex_to_subid.astype(np.int64)
+
+        # Precompute which feature indices use mean/max aggregation (rest default to sum)
+        self._mean_feat_indices: list[int] = [
+            i for i, name in enumerate(self.attr_to_observe)
+            if _BUS_AGGREGATION.get(name) == "mean"
+        ]
+        self._max_feat_indices: list[int] = [
+            i for i, name in enumerate(self.attr_to_observe)
+            if _BUS_AGGREGATION.get(name) == "max"
+        ]
+
+        x_dim = len(self.attr_to_observe)
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf, shape=(self._max_nodes, x_dim), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._max_nodes - 1, shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1, shape=(self._max_num_edges,), dtype=np.bool_),
+            NODE_MASK: Box(low=0, high=1, shape=(self._max_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+        self._normalizer = RunningMeanStd(shape=(x_dim,))
+
+        if verbose:
+            logger.info(
+                f"SubstationGraphObservationConverter: {self._max_nodes} max nodes "
+                f"({n_sub} subs × 2 buses), {self._max_num_edges} max edges, "
+                f"{x_dim} features per node ({', '.join(self.attr_to_observe)})."
+            )
+
+    @property
+    def num_nodes(self) -> int:
+        """Maximum number of nodes (active count varies per observation)."""
+        return self._max_nodes
+
+    @property
+    def max_nodes(self) -> int:
+        return self._max_nodes
+
+    @property
+    def max_num_edges(self) -> int:
+        return self._max_num_edges
+
+    def _get_nodes_and_mask(
+        self, g2op_obs: BaseObservation
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
+        """
+        Aggregate per-element features into per-bus node features.
+
+        Node slot formula: 2 * sub_id + (bus - 1) for bus ∈ {1, 2}.
+        Disconnected elements (bus == -1) are excluded.
+
+        Returns:
+            node_features: [max_nodes, x_dim] float32
+            node_mask:     [max_nodes] bool — True for slots with ≥1 element
+        """
+        all_features = self._compute_all_node_features(g2op_obs)
+
+        bus_ids_flat = np.concatenate([
+            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
+            g2op_obs.gen_bus, g2op_obs.load_bus,
+            g2op_obs.storage_bus,
+        ])
+        connected = bus_ids_flat > 0
+        active_slots = (2 * self._sub_ids_flat + (bus_ids_flat - 1))[connected].astype(np.int64)
+
+        x_dim = len(self.attr_to_observe)
+        node_features = np.zeros((self._max_nodes, x_dim), dtype=np.float64)
+        node_count = np.zeros(self._max_nodes, dtype=np.int64)
+        node_max = np.full((self._max_nodes, x_dim), -np.inf, dtype=np.float64)
+
+        np.add.at(node_count, active_slots, 1)
+
+        for f_idx, feat_name in enumerate(self.attr_to_observe):
+            values = all_features[feat_name][connected]
+            if _BUS_AGGREGATION.get(feat_name) == "max":
+                np.maximum.at(node_max[:, f_idx], active_slots, values)
+            else:  # sum (also used as first step for mean)
+                np.add.at(node_features[:, f_idx], active_slots, values)
+
+        node_mask = node_count > 0
+        for f_idx in self._mean_feat_indices:
+            node_features[node_mask, f_idx] /= node_count[node_mask]
+        for f_idx in self._max_feat_indices:
+            node_features[node_mask, f_idx] = node_max[node_mask, f_idx]
+
+        return node_features.astype(np.float32), node_mask
+
+    def _get_edge_index(self, g2op_obs: BaseObservation) -> npt.NDArray[np.int64]:
+        """
+        Build edge index: one bidirectional edge per connected powerline.
+
+        Endpoints map to bus node slots: slot = 2 * sub_id + (bus - 1).
+        """
+        line_or_bus = g2op_obs.line_or_bus
+        line_ex_bus = g2op_obs.line_ex_bus
+        connected = (line_or_bus > 0) & (line_ex_bus > 0)
+
+        or_slots = (2 * self._line_or_subid + (line_or_bus - 1))[connected]
+        ex_slots = (2 * self._line_ex_subid + (line_ex_bus - 1))[connected]
+
+        return np.stack([
+            np.concatenate([or_slots, ex_slots]),
+            np.concatenate([ex_slots, or_slots]),
+        ]).astype(np.int64)
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a substation-level graph gym observation.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features, node_mask = self._get_nodes_and_mask(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        edge_index = self._get_edge_index(g2op_obs)
+        self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        num_edges = edge_index.shape[1]
+        edge_index_padded = np.zeros((2, self._max_num_edges), dtype=np.int64)
+        edge_index_padded[:, :num_edges] = edge_index
+        edge_mask = np.zeros(self._max_num_edges, dtype=bool)
+        edge_mask[:num_edges] = True
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: edge_index_padded,
+            EDGE_MASK: edge_mask,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features using per-feature running statistics.
+
+        Only active nodes (NODE_MASK=True) update the normalizer. Inactive
+        node features are zeroed out after normalization.
+        """
+        node_features = gym_obs[NODES]   # (max_nodes, x_dim)
+        node_mask = gym_obs[NODE_MASK]   # (max_nodes,)
+
+        active_features = node_features[node_mask]
+        if active_features.shape[0] > 0:
+            self._normalizer.update(active_features)
+
+        normalized = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
+        normalized[~node_mask] = 0.0
+
+        return {
+            NODES: normalized.astype(np.float32),
+            EDGE_INDEX: gym_obs[EDGE_INDEX],
+            EDGE_MASK: gym_obs[EDGE_MASK],
+            NODE_MASK: gym_obs[NODE_MASK],
+            GLOBAL: gym_obs[GLOBAL],
+        }
+
+
 # --- Flat observation converter ---
 
 class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
@@ -587,6 +807,12 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         )
     elif mode == "HeterogeneousGraphObsSpace":
         return HeterogeneousGraphObservationConverter(
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "SubstationGraphObsSpace":
+        return SubstationGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),
             verbose=env_config.get("verbose", False),

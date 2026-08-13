@@ -18,8 +18,10 @@ import numpy as np
 
 from grid2op_env.observation_converter import (
     GraphObservationConverter,
+    HeterogeneousGraphObservationConverter,
+    SubstationGraphObservationConverter,
     _GridDimensions,
-    NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL,
+    NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, GLOBAL,
     _DEFAULT_NODE_FEATURES,
 )
 
@@ -372,6 +374,340 @@ class TestGraphObservationConverterWithGrid2op(unittest.TestCase):
         """to_gym output lies within the declared observation space."""
         obs = env.reset()
         result = self.converter.to_gym(obs)
+        space = self.converter.observation_space
+        for key in [EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
+            self.assertEqual(result[key].shape, space[key].shape)
+
+
+# ---------------------------------------------------------------------------
+# HeterogeneousGraphObservationConverter
+# ---------------------------------------------------------------------------
+
+class TestHeterogeneousGraphObservationConverterSpace(unittest.TestCase):
+    """Observation space definition for HeterogeneousGraphObservationConverter."""
+
+    def setUp(self):
+        self.converter = HeterogeneousGraphObservationConverter(env.observation_space)
+
+    def test_edge_type_key_present(self):
+        """Observation space must include EDGE_TYPE."""
+        self.assertIn(EDGE_TYPE, self.converter.observation_space.spaces)
+
+    def test_edge_type_shape_matches_max_num_edges(self):
+        """EDGE_TYPE length equals max_num_edges."""
+        et_shape = self.converter.observation_space[EDGE_TYPE].shape
+        self.assertEqual(et_shape, (self.converter.max_num_edges,))
+
+    def test_inherits_graph_obs_keys(self):
+        """All keys from GraphObservationConverter are still present."""
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
+            self.assertIn(key, self.converter.observation_space.spaces)
+
+    def test_node_shape_unchanged(self):
+        """NODES shape is identical to the parent converter."""
+        parent = GraphObservationConverter(env.observation_space)
+        self.assertEqual(
+            self.converter.observation_space[NODES].shape,
+            parent.observation_space[NODES].shape,
+        )
+
+
+class TestHeterogeneousGraphObservationConverterEdgeTypes(unittest.TestCase):
+    """Tests for _get_edge_index_with_types."""
+
+    def setUp(self):
+        self.converter = HeterogeneousGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_returns_two_arrays(self):
+        """_get_edge_index_with_types returns (edge_index, edge_types)."""
+        result = self.converter._get_edge_index_with_types(self.obs)
+        self.assertEqual(len(result), 2)
+
+    def test_edge_index_and_types_same_length(self):
+        """edge_index columns equals edge_types length."""
+        ei, et = self.converter._get_edge_index_with_types(self.obs)
+        self.assertEqual(ei.shape[1], et.shape[0])
+
+    def test_edge_types_valid_values(self):
+        """All edge types are 0, 1, or 2."""
+        _, et = self.converter._get_edge_index_with_types(self.obs)
+        self.assertTrue(np.all((et >= 0) & (et <= 2)))
+
+    def test_powerline_edges_are_type_0(self):
+        """Type-0 edges connect line_or and line_ex node slots."""
+        ei, et = self.converter._get_edge_index_with_types(self.obs)
+        n_line = env.n_line
+        line_or_nodes = set(range(n_line))
+        line_ex_nodes = set(range(n_line, 2 * n_line))
+        type0_src = ei[0, et == 0].tolist()
+        type0_dst = ei[1, et == 0].tolist()
+        for s, d in zip(type0_src, type0_dst):
+            self.assertTrue(
+                (s in line_or_nodes and d in line_ex_nodes) or
+                (s in line_ex_nodes and d in line_or_nodes),
+                f"Type-0 edge ({s}, {d}) is not a line endpoint pair",
+            )
+
+    def test_types_0_and_1_present_in_default_obs(self):
+        """Types 0 (powerlines) and 1 (same-bus) appear in the default observation."""
+        _, et = self.converter._get_edge_index_with_types(self.obs)
+        for t in [0, 1]:
+            self.assertIn(t, et.tolist(), f"Edge type {t} not present")
+
+    def test_type_2_present_after_split_substation(self):
+        """Type-2 edges (diff-bus) appear after a topology action splits a substation."""
+        # Move the first generator to bus 2 at its substation to create a split
+        action = env.action_space({"set_bus": {"generators_id": [(0, 2)]}})
+        obs, _, done, _ = env.step(action)
+        if not done:
+            _, et = self.converter._get_edge_index_with_types(obs)
+            self.assertIn(2, et.tolist(), "Edge type 2 not present after topology split")
+
+    def test_edges_bidirectional(self):
+        """For every (i, j) edge there is a matching (j, i) edge of the same type."""
+        ei, et = self.converter._get_edge_index_with_types(self.obs)
+        forward = set(zip(ei[0].tolist(), ei[1].tolist(), et.tolist()))
+        for s, d, t in list(forward):
+            self.assertIn((d, s, t), forward, f"Missing reverse edge ({d}, {s}, type={t})")
+
+    def test_no_self_loops(self):
+        """No edge connects a node to itself."""
+        ei, _ = self.converter._get_edge_index_with_types(self.obs)
+        self.assertTrue((ei[0] != ei[1]).all())
+
+    def test_does_not_exceed_max_num_edges(self):
+        """Total edges do not exceed max_num_edges."""
+        ei, _ = self.converter._get_edge_index_with_types(self.obs)
+        self.assertLessEqual(ei.shape[1], self.converter.max_num_edges)
+
+
+class TestHeterogeneousGraphObservationConverterIntegration(unittest.TestCase):
+    """End-to-end tests for HeterogeneousGraphObservationConverter.to_gym."""
+
+    def setUp(self):
+        self.converter = HeterogeneousGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_to_gym_returns_all_keys(self):
+        """to_gym returns all expected keys including EDGE_TYPE."""
+        result = self.converter.to_gym(self.obs)
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, GLOBAL]:
+            self.assertIn(key, result)
+
+    def test_edge_type_padded_length(self):
+        """EDGE_TYPE is padded to max_num_edges."""
+        result = self.converter.to_gym(self.obs)
+        self.assertEqual(result[EDGE_TYPE].shape[0], self.converter.max_num_edges)
+
+    def test_edge_type_only_valid_in_masked_region(self):
+        """Edge types beyond the mask are 0 (padding default)."""
+        result = self.converter.to_gym(self.obs)
+        mask = result[EDGE_MASK]
+        padding_types = result[EDGE_TYPE][~mask]
+        self.assertTrue((padding_types == 0).all())
+
+    def test_edge_type_consistent_with_edge_mask(self):
+        """The count of non-zero mask entries matches _get_edge_index_with_types output."""
+        ei, _ = self.converter._get_edge_index_with_types(self.obs)
+        result = self.converter.to_gym(self.obs)
+        self.assertEqual(result[EDGE_MASK].sum(), ei.shape[1])
+
+    def test_normalize_passes_edge_type_through(self):
+        """normalize does not alter EDGE_TYPE."""
+        result = self.converter.to_gym(self.obs)
+        # Call normalize again with the already-normalized obs to check passthrough
+        et_before = result[EDGE_TYPE].copy()
+        renormalized = self.converter.normalize(result)
+        np.testing.assert_array_equal(renormalized[EDGE_TYPE], et_before)
+
+    def test_node_mask_all_true(self):
+        """NODE_MASK is all-True (all element-level nodes exist)."""
+        result = self.converter.to_gym(self.obs)
+        self.assertTrue(result[NODE_MASK].all())
+
+
+# ---------------------------------------------------------------------------
+# SubstationGraphObservationConverter
+# ---------------------------------------------------------------------------
+
+class TestSubstationGraphObservationConverterSpace(unittest.TestCase):
+    """Observation space definition for SubstationGraphObservationConverter."""
+
+    def setUp(self):
+        self.converter = SubstationGraphObservationConverter(env.observation_space)
+
+    def test_max_nodes_is_twice_n_sub(self):
+        """max_nodes equals 2 * n_sub."""
+        self.assertEqual(self.converter.max_nodes, 2 * env.n_sub)
+
+    def test_node_shape(self):
+        """NODES box has shape (2*n_sub, x_dim)."""
+        shape = self.converter.observation_space[NODES].shape
+        self.assertEqual(shape, (2 * env.n_sub, len(_DEFAULT_NODE_FEATURES)))
+
+    def test_node_mask_shape(self):
+        """NODE_MASK has shape (2*n_sub,)."""
+        shape = self.converter.observation_space[NODE_MASK].shape
+        self.assertEqual(shape, (2 * env.n_sub,))
+
+    def test_max_num_edges_is_twice_n_line(self):
+        """max_num_edges equals 2 * n_line (bidirectional line edges)."""
+        self.assertEqual(self.converter.max_num_edges, 2 * env.n_line)
+
+    def test_edge_index_shape(self):
+        """EDGE_INDEX box has shape (2, 2*n_line)."""
+        shape = self.converter.observation_space[EDGE_INDEX].shape
+        self.assertEqual(shape, (2, 2 * env.n_line))
+
+    def test_global_features_shape(self):
+        """GLOBAL box has shape (6,)."""
+        self.assertEqual(self.converter.observation_space[GLOBAL].shape, (6,))
+
+    def test_smaller_than_element_graph(self):
+        """Substation graph has fewer max nodes than the element-level graph."""
+        element_converter = GraphObservationConverter(env.observation_space)
+        self.assertLess(self.converter.max_nodes, element_converter.num_nodes)
+
+
+class TestSubstationGraphObservationConverterNodesAndMask(unittest.TestCase):
+    """Tests for _get_nodes_and_mask."""
+
+    def setUp(self):
+        self.converter = SubstationGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_node_features_shape(self):
+        """node_features has shape (max_nodes, x_dim)."""
+        feats, _ = self.converter._get_nodes_and_mask(self.obs)
+        self.assertEqual(feats.shape, (self.converter.max_nodes, self.converter.x_dim))
+
+    def test_node_features_dtype(self):
+        """node_features is float32."""
+        feats, _ = self.converter._get_nodes_and_mask(self.obs)
+        self.assertEqual(feats.dtype, np.float32)
+
+    def test_node_mask_shape(self):
+        """node_mask has shape (max_nodes,)."""
+        _, mask = self.converter._get_nodes_and_mask(self.obs)
+        self.assertEqual(mask.shape, (self.converter.max_nodes,))
+
+    def test_node_mask_dtype(self):
+        """node_mask is boolean."""
+        _, mask = self.converter._get_nodes_and_mask(self.obs)
+        self.assertEqual(mask.dtype, np.bool_)
+
+    def test_at_least_n_sub_active_nodes(self):
+        """In a connected grid there is at least one active node per substation."""
+        _, mask = self.converter._get_nodes_and_mask(self.obs)
+        self.assertGreaterEqual(mask.sum(), env.n_sub)
+
+    def test_active_nodes_at_most_twice_n_sub(self):
+        """Active nodes never exceed 2 * n_sub."""
+        _, mask = self.converter._get_nodes_and_mask(self.obs)
+        self.assertLessEqual(mask.sum(), 2 * env.n_sub)
+
+    def test_inactive_node_features_are_zero(self):
+        """Inactive bus slots have zero node features (no spurious aggregation)."""
+        feats, mask = self.converter._get_nodes_and_mask(self.obs)
+        inactive_feats = feats[~mask]
+        np.testing.assert_array_equal(inactive_feats, 0.0)
+
+
+class TestSubstationGraphObservationConverterEdgeIndex(unittest.TestCase):
+    """Tests for SubstationGraphObservationConverter._get_edge_index."""
+
+    def setUp(self):
+        self.converter = SubstationGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_edge_index_shape(self):
+        """Edge index has exactly 2 rows."""
+        ei = self.converter._get_edge_index(self.obs)
+        self.assertEqual(ei.shape[0], 2)
+
+    def test_edge_index_dtype(self):
+        """Edge index is int64."""
+        ei = self.converter._get_edge_index(self.obs)
+        self.assertEqual(ei.dtype, np.int64)
+
+    def test_edge_index_within_node_range(self):
+        """All edge indices are valid node slots."""
+        ei = self.converter._get_edge_index(self.obs)
+        self.assertTrue((ei >= 0).all())
+        self.assertTrue((ei < self.converter.max_nodes).all())
+
+    def test_edges_bidirectional(self):
+        """For every (i, j) edge there is a corresponding (j, i) edge."""
+        ei = self.converter._get_edge_index(self.obs)
+        edge_set = set(zip(ei[0].tolist(), ei[1].tolist()))
+        for s, d in list(edge_set):
+            self.assertIn((d, s), edge_set, f"Missing reverse edge ({d}, {s})")
+
+    def test_num_edges_at_most_twice_n_line(self):
+        """At most 2 * n_line edges (one bidirectional pair per connected line)."""
+        ei = self.converter._get_edge_index(self.obs)
+        self.assertLessEqual(ei.shape[1], 2 * env.n_line)
+
+    def test_edge_endpoints_are_active_nodes(self):
+        """Every edge endpoint has an active node (node_mask=True)."""
+        ei = self.converter._get_edge_index(self.obs)
+        _, mask = self.converter._get_nodes_and_mask(self.obs)
+        for node in ei.flatten().tolist():
+            self.assertTrue(mask[node], f"Edge endpoint {node} is not an active node")
+
+
+class TestSubstationGraphObservationConverterIntegration(unittest.TestCase):
+    """End-to-end tests for SubstationGraphObservationConverter.to_gym."""
+
+    def setUp(self):
+        self.converter = SubstationGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_to_gym_returns_all_keys(self):
+        """to_gym returns all expected keys."""
+        result = self.converter.to_gym(self.obs)
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
+            self.assertIn(key, result)
+
+    def test_to_gym_node_shape(self):
+        """to_gym NODES has shape (max_nodes, x_dim)."""
+        result = self.converter.to_gym(self.obs)
+        self.assertEqual(result[NODES].shape, (self.converter.max_nodes, self.converter.x_dim))
+
+    def test_to_gym_node_mask_partial(self):
+        """NODE_MASK is not necessarily all-True (variable active nodes)."""
+        result = self.converter.to_gym(self.obs)
+        # At least one node is active, but possibly not all slots
+        self.assertTrue(result[NODE_MASK].any())
+        self.assertEqual(result[NODE_MASK].shape, (self.converter.max_nodes,))
+
+    def test_to_gym_edge_index_padded(self):
+        """EDGE_INDEX is padded to max_num_edges."""
+        result = self.converter.to_gym(self.obs)
+        self.assertEqual(result[EDGE_INDEX].shape, (2, self.converter.max_num_edges))
+
+    def test_to_gym_edge_mask_count_matches_real_edges(self):
+        """True count in EDGE_MASK matches the real edge count."""
+        raw_ei = self.converter._get_edge_index(self.obs)
+        result = self.converter.to_gym(self.obs)
+        self.assertEqual(result[EDGE_MASK].sum(), raw_ei.shape[1])
+
+    def test_to_gym_inactive_nodes_zeroed(self):
+        """Inactive node slots have zero features after normalization."""
+        result = self.converter.to_gym(self.obs)
+        mask = result[NODE_MASK]
+        np.testing.assert_array_equal(result[NODES][~mask], 0.0)
+
+    def test_to_gym_deterministic(self):
+        """Two calls with the same observation produce the same EDGE_INDEX."""
+        r1 = self.converter.to_gym(self.obs)
+        r2 = self.converter.to_gym(self.obs)
+        np.testing.assert_array_equal(r1[EDGE_INDEX], r2[EDGE_INDEX])
+
+    def test_to_gym_observation_space_compliant(self):
+        """to_gym output shapes match the declared observation space."""
+        result = self.converter.to_gym(self.obs)
         space = self.converter.observation_space
         for key in [EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
             self.assertEqual(result[key].shape, space[key].shape)
