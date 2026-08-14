@@ -20,9 +20,11 @@ from grid2op_env.observation_converter import (
     GraphObservationConverter,
     HeterogeneousGraphObservationConverter,
     SubstationGraphObservationConverter,
+    ElementGraphObservationConverter,
     _GridDimensions,
-    NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, GLOBAL,
+    NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, EDGES, GLOBAL,
     _DEFAULT_NODE_FEATURES,
+    _ELEM_X_DIM, _ELEM_BASE_SLICE, _ELEM_GEN_SLICE, _ELEM_BUS_SLICE, _ELEM_LINE_SLICE,
 )
 
 ENV_NAME = "l2rpn_wcci_2020"
@@ -711,6 +713,285 @@ class TestSubstationGraphObservationConverterIntegration(unittest.TestCase):
         space = self.converter.observation_space
         for key in [EDGE_INDEX, EDGE_MASK, NODE_MASK, GLOBAL]:
             self.assertEqual(result[key].shape, space[key].shape)
+
+
+# ---------------------------------------------------------------------------
+# ElementGraphObservationConverter
+# ---------------------------------------------------------------------------
+
+class TestElementGraphObservationConverterSpace(unittest.TestCase):
+    """Observation space definition for ElementGraphObservationConverter."""
+
+    def setUp(self):
+        self.converter = ElementGraphObservationConverter(env.observation_space)
+
+    def test_num_nodes(self):
+        """num_nodes = n_gen + n_load + n_line + n_storage + 3*n_sub."""
+        expected = env.n_gen + env.n_load + env.n_line + env.n_storage + 3 * env.n_sub
+        self.assertEqual(self.converter.num_nodes, expected)
+
+    def test_x_dim(self):
+        """x_dim equals _ELEM_X_DIM (26)."""
+        self.assertEqual(self.converter.x_dim, _ELEM_X_DIM)
+
+    def test_node_shape(self):
+        """NODES box has shape (num_nodes, 26)."""
+        self.assertEqual(
+            self.converter.observation_space[NODES].shape,
+            (self.converter.num_nodes, _ELEM_X_DIM),
+        )
+
+    def test_edge_index_shape(self):
+        """EDGE_INDEX box has shape (2, num_edges)."""
+        shape = self.converter.observation_space[EDGE_INDEX].shape
+        self.assertEqual(shape[0], 2)
+        self.assertEqual(shape[1], self.converter.num_edges)
+
+    def test_edge_mask_shape(self):
+        """EDGE_MASK has length num_edges."""
+        self.assertEqual(
+            self.converter.observation_space[EDGE_MASK].shape,
+            (self.converter.num_edges,),
+        )
+
+    def test_edge_attr_shape(self):
+        """EDGE_ATTR box has shape (num_edges, 1)."""
+        self.assertEqual(
+            self.converter.observation_space[EDGES].shape,
+            (self.converter.num_edges, 1),
+        )
+
+    def test_node_mask_shape(self):
+        """NODE_MASK has length num_nodes."""
+        self.assertEqual(
+            self.converter.observation_space[NODE_MASK].shape,
+            (self.converter.num_nodes,),
+        )
+
+    def test_global_shape(self):
+        """GLOBAL box has shape (6,)."""
+        self.assertEqual(self.converter.observation_space[GLOBAL].shape, (6,))
+
+    def test_all_keys_present(self):
+        """All expected keys are present in the observation space."""
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, EDGES, NODE_MASK, GLOBAL]:
+            self.assertIn(key, self.converter.observation_space.spaces)
+
+
+class TestElementGraphObservationConverterNodeFeatures(unittest.TestCase):
+    """Tests for _get_node_features."""
+
+    def setUp(self):
+        self.converter = ElementGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+        self.X = self.converter._get_node_features(self.obs)
+
+    def test_shape(self):
+        """Node feature matrix has shape (num_nodes, 26)."""
+        self.assertEqual(self.X.shape, (self.converter.num_nodes, _ELEM_X_DIM))
+
+    def test_dtype(self):
+        """Node features are float32."""
+        self.assertEqual(self.X.dtype, np.float32)
+
+    def test_gen_specific_slots_zero_for_non_gen(self):
+        """Generator-specific slots are zero for non-generator nodes."""
+        non_gen = np.ones(self.converter.num_nodes, dtype=bool)
+        non_gen[self.converter._gen_offset:self.converter._gen_offset + env.n_gen] = False
+        np.testing.assert_array_equal(self.X[non_gen, _ELEM_GEN_SLICE], 0.0)
+
+    def test_line_specific_slots_zero_for_non_line(self):
+        """Powerline-specific slots are zero for non-powerline nodes."""
+        non_line = np.ones(self.converter.num_nodes, dtype=bool)
+        non_line[self.converter._line_offset:self.converter._line_offset + env.n_line] = False
+        np.testing.assert_array_equal(self.X[non_line, _ELEM_LINE_SLICE], 0.0)
+
+    def test_bus_specific_slots_zero_for_non_bus(self):
+        """Bus-specific slots are zero for non-bus nodes."""
+        non_bus = np.ones(self.converter.num_nodes, dtype=bool)
+        non_bus[self.converter._bus_offset:] = False
+        np.testing.assert_array_equal(self.X[non_bus, _ELEM_BUS_SLICE], 0.0)
+
+    def test_gen_rho_slot_is_zero(self):
+        """Generators don't carry rho (line-specific slot 22)."""
+        gen_slice = slice(self.converter._gen_offset, self.converter._gen_offset + env.n_gen)
+        np.testing.assert_array_equal(self.X[gen_slice, 22], 0.0)
+
+    def test_line_rho_values(self):
+        """Line node slot 22 matches obs.rho."""
+        line_slice = slice(self.converter._line_offset, self.converter._line_offset + env.n_line)
+        np.testing.assert_array_almost_equal(self.X[line_slice, 22], self.obs.rho, decimal=5)
+
+    def test_bus_one_hot_valid(self):
+        """Each bus node has exactly one active b_type bit."""
+        bus_nodes = self.X[self.converter._bus_offset:]
+        one_hot = bus_nodes[:, 18:21]  # b_ground, b_bus1, b_bus2
+        np.testing.assert_array_equal(one_hot.sum(axis=1), 1.0)
+
+    def test_gen_type_one_hot_valid(self):
+        """Each generator has at most one active g_type bit."""
+        gen_slice = slice(self.converter._gen_offset, self.converter._gen_offset + env.n_gen)
+        g_type = self.X[gen_slice, 13:18]  # g_type × 5
+        self.assertTrue((g_type.sum(axis=1) <= 1).all())
+
+    def test_base_features_nonzero_for_gen_and_load(self):
+        """Base features (slots 0-4) are non-zero for generators and loads."""
+        gen_slice = slice(self.converter._gen_offset, self.converter._gen_offset + env.n_gen)
+        load_slice = slice(self.converter._load_offset, self.converter._load_offset + env.n_load)
+        # |p| (slot 0) should be non-zero for active generators
+        self.assertTrue((self.X[gen_slice, 0] >= 0).all())
+        self.assertTrue((self.X[load_slice, 0] >= 0).all())
+
+
+class TestElementGraphObservationConverterEdges(unittest.TestCase):
+    """Tests for static edge structure and dynamic edge attributes."""
+
+    def setUp(self):
+        self.converter = ElementGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_edge_index_shape(self):
+        """Static edge_index has 2 rows."""
+        self.assertEqual(self.converter._edge_index.shape[0], 2)
+
+    def test_edge_index_dtype(self):
+        """Edge index is int64."""
+        self.assertEqual(self.converter._edge_index.dtype, np.int64)
+
+    def test_edge_index_within_range(self):
+        """All edge indices are valid node indices."""
+        ei = self.converter._edge_index
+        self.assertTrue((ei >= 0).all())
+        self.assertTrue((ei < self.converter.num_nodes).all())
+
+    def test_edges_bidirectional(self):
+        """For every (i, j) edge there is a corresponding (j, i) edge."""
+        ei = self.converter._edge_index
+        edge_set = set(zip(ei[0].tolist(), ei[1].tolist()))
+        for s, d in list(edge_set):
+            self.assertIn((d, s), edge_set, f"Missing reverse edge ({d}, {s})")
+
+    def test_no_self_loops(self):
+        """No edge connects a node to itself."""
+        ei = self.converter._edge_index
+        self.assertTrue((ei[0] != ei[1]).all())
+
+    def test_gen_connected_to_three_bus_slots(self):
+        """Each generator connects to exactly 3 bus nodes (ground, bus1, bus2)."""
+        ei = self.converter._edge_index
+        for i in range(env.n_gen):
+            gen_node = self.converter._gen_offset + i
+            neighbours = set(ei[1, ei[0] == gen_node].tolist())
+            bus_neighbours = {n for n in neighbours if n >= self.converter._bus_offset}
+            self.assertEqual(len(bus_neighbours), 3, f"Gen {i} has {len(bus_neighbours)} bus neighbours")
+
+    def test_load_connected_to_two_bus_slots(self):
+        """Each load connects to exactly 2 bus nodes (bus1, bus2 — no ground)."""
+        ei = self.converter._edge_index
+        for i in range(env.n_load):
+            load_node = self.converter._load_offset + i
+            neighbours = set(ei[1, ei[0] == load_node].tolist())
+            bus_neighbours = {n for n in neighbours if n >= self.converter._bus_offset}
+            self.assertEqual(len(bus_neighbours), 2, f"Load {i} has {len(bus_neighbours)} bus neighbours")
+
+    def test_line_connected_to_six_bus_slots(self):
+        """Each line connects to 6 bus nodes (3 at origin sub + 3 at extremity sub)."""
+        ei = self.converter._edge_index
+        for i in range(env.n_line):
+            line_node = self.converter._line_offset + i
+            neighbours = set(ei[1, ei[0] == line_node].tolist())
+            bus_neighbours = {n for n in neighbours if n >= self.converter._bus_offset}
+            self.assertEqual(len(bus_neighbours), 6, f"Line {i} has {len(bus_neighbours)} bus neighbours")
+
+    def test_edge_attr_binary(self):
+        """EDGE_ATTR values are 0 or 1."""
+        ea = self.converter._get_edge_attr(self.obs)
+        self.assertTrue(np.all((ea == 0.0) | (ea == 1.0)))
+
+    def test_edge_attr_shape(self):
+        """EDGE_ATTR has shape (num_edges, 1)."""
+        ea = self.converter._get_edge_attr(self.obs)
+        self.assertEqual(ea.shape, (self.converter.num_edges, 1))
+
+    def test_edge_attr_symmetric(self):
+        """Forward and reverse edge attributes are equal."""
+        ea = self.converter._get_edge_attr(self.obs).flatten()
+        # Edges are interleaved: (fwd, bwd, fwd, bwd, ...)
+        np.testing.assert_array_equal(ea[0::2], ea[1::2])
+
+    def test_each_element_active_on_correct_number_of_buses(self):
+        """
+        In the default connected state each element is active on the expected
+        number of bus slots:
+          - gens, loads, storage: 1 (single substation)
+          - lines: 2 (one bus slot at each endpoint substation)
+        """
+        ea = self.converter._get_edge_attr(self.obs).flatten()
+        ei = self.converter._edge_index
+        conv = self.converter
+
+        for i in range(conv._bus_offset):
+            out_mask = ei[0] == i
+            bus_out_mask = out_mask & (ei[1] >= conv._bus_offset)
+            active_count = int(ea[bus_out_mask].sum())
+
+            is_line = conv._line_offset <= i < conv._storage_offset
+            expected = 2 if is_line else 1
+            self.assertEqual(
+                active_count, expected,
+                f"Node {i} ({'line' if is_line else 'element'}) "
+                f"active on {active_count} buses, expected {expected}",
+            )
+
+
+class TestElementGraphObservationConverterIntegration(unittest.TestCase):
+    """End-to-end tests for ElementGraphObservationConverter.to_gym."""
+
+    def setUp(self):
+        self.converter = ElementGraphObservationConverter(env.observation_space)
+        self.obs = env.reset()
+
+    def test_to_gym_returns_all_keys(self):
+        """to_gym returns all expected keys."""
+        result = self.converter.to_gym(self.obs)
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, EDGES, NODE_MASK, GLOBAL]:
+            self.assertIn(key, result)
+
+    def test_to_gym_node_mask_all_true(self):
+        """NODE_MASK is all-True (static graph — every node always exists)."""
+        result = self.converter.to_gym(self.obs)
+        self.assertTrue(result[NODE_MASK].all())
+
+    def test_to_gym_edge_mask_all_true(self):
+        """EDGE_MASK is all-True (static edges — no padding needed)."""
+        result = self.converter.to_gym(self.obs)
+        self.assertTrue(result[EDGE_MASK].all())
+
+    def test_to_gym_edge_index_static(self):
+        """EDGE_INDEX is identical across two calls (static graph)."""
+        r1 = self.converter.to_gym(self.obs)
+        r2 = self.converter.to_gym(self.obs)
+        np.testing.assert_array_equal(r1[EDGE_INDEX], r2[EDGE_INDEX])
+
+    def test_to_gym_observation_space_compliant(self):
+        """to_gym output shapes match the declared observation space."""
+        result = self.converter.to_gym(self.obs)
+        space = self.converter.observation_space
+        for key in [NODES, EDGE_INDEX, EDGE_MASK, EDGES, NODE_MASK, GLOBAL]:
+            self.assertEqual(result[key].shape, space[key].shape, f"Shape mismatch for {key}")
+
+    def test_normalize_passes_edge_attr_through(self):
+        """normalize does not alter EDGE_ATTR."""
+        result = self.converter.to_gym(self.obs)
+        ea_before = result[EDGES].copy()
+        renormalized = self.converter.normalize(result)
+        np.testing.assert_array_equal(renormalized[EDGES], ea_before)
+
+    def test_normalizer_updated_after_to_gym(self):
+        """Running normalizer count increases after to_gym."""
+        count_before = self.converter._normalizer.count
+        self.converter.to_gym(self.obs)
+        self.assertGreater(self.converter._normalizer.count, count_before)
 
 
 if __name__ == "__main__":

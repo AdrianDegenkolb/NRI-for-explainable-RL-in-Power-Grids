@@ -20,13 +20,14 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-NODES = "node_features"
-EDGES = "edge_features"
-EDGE_INDEX = "edge_index"
-EDGE_MASK = "edge_mask"
-NODE_MASK = "node_mask"
-EDGE_TYPE = "edge_type"
-GLOBAL = "global_features"
+NODES = "node_features"         # keys node features in the observation [N, x_dim]
+NODE_MASK = "node_mask"         # keys boolean mask that masks which rows in the returned node-feature-tensor actually encode node features [N]
+EDGES = "edge_features"         # keys edge features in the observation [E, e_dim]
+EDGE_MASK = "edge_mask"         # keys boolean mask that masks which rows in the returned edge-feature-tensor actually encode edge features [E]
+EDGE_INDEX = "edge_index"       # keys the edge index which notes node pairs that are connected by notes [2, E]
+EDGE_TYPE = "edge_type"         # keys edge types per edge [E]
+GLOBAL = "global_features"      # keys global features in the observation
+
 
 _DEFAULT_NODE_FEATURES = [
     "active_power_forecast",
@@ -37,14 +38,6 @@ _DEFAULT_NODE_FEATURES = [
     "voltage_angle",
     "rho",
 ]
-
-# Aggregation strategy when collapsing per-element features to per-bus nodes.
-# Features not listed here default to "sum".
-_BUS_AGGREGATION: dict[str, str] = {
-    "voltage": "mean",
-    "voltage_angle": "mean",
-    "rho": "max",
-}
 
 
 @dataclass
@@ -103,7 +96,7 @@ class ObservationConverter(ABC, Generic[T]):
 class GraphObservationConverter(ObservationConverter[Dict]):
     """
     Converts grid2op observations into a graph-structured Dict observation:
-      - NODES:      node feature matrix      [num_nodes, x_dim]
+      - NODES:      node feature matrix       [num_nodes, x_dim]
       - EDGE_INDEX: padded adjacency list     [2, max_num_edges]
       - EDGE_MASK:  boolean mask over edges   [max_num_edges]
       - GLOBAL:     global scalar features    [6]
@@ -226,9 +219,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs: The grid2op observation to convert.
         """
         t_total = time.perf_counter()
-
         node_features = self._get_node_features(g2op_obs)
-
         t0 = time.perf_counter()
         edge_index = self._get_edge_index(g2op_obs)
         self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
@@ -272,9 +263,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             GLOBAL: gym_obs[GLOBAL],
         }
 
-    def _compute_all_node_features(
-        self, g2op_obs: BaseObservation
-    ) -> dict[str, npt.NDArray[np.float32]]:
+    def _compute_all_node_features(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
         """
         Compute all supported node features, each as a flat array of length
         num_nodes in order [line_or | line_ex | gen | load | storage].
@@ -318,9 +307,9 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             "voltage": np.concatenate([
                 g2op_obs.v_or, g2op_obs.v_ex, g2op_obs.gen_v, g2op_obs.load_v, zeros_storage,
             ]),
-            "voltage_angle": np.concatenate([
+            "voltage_angle": np.cos(np.concatenate([
                 g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta, g2op_obs.storage_theta,
-            ]),
+            ])),
             # rho is a line-level quantity; non-line nodes get 0
             "rho": np.concatenate([
                 g2op_obs.rho, g2op_obs.rho, zeros_gen, zeros_load, zeros_storage,
@@ -379,9 +368,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         return np.concatenate([topo_edges, active_line_edges], axis=1)
 
     @staticmethod
-    def _get_global_features(
-        g2op_obs: BaseObservation,
-    ) -> npt.NDArray[np.float32]:
+    def _get_global_features(g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
         """Extract time-based global features."""
         return np.array([
             g2op_obs.year,
@@ -421,9 +408,7 @@ class HeterogeneousGraphObservationConverter(GraphObservationConverter):
         )
         self._observation_space = Dict(spaces)
 
-    def _get_edge_index_with_types(
-        self, g2op_obs: BaseObservation
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    def _get_edge_index_with_types(self, g2op_obs: BaseObservation) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
         """
         Build the edge index and per-edge type array for the current topology.
 
@@ -537,6 +522,14 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
     nodes at each line's origin and extremity.
     """
 
+    # Aggregation strategy when collapsing per-element features to per-bus nodes.
+    # Features not listed here default to "sum".
+    _BUS_AGGREGATION: dict[str, str] = {
+        "voltage": "mean",
+        "voltage_angle": "mean",
+        "rho": "max",
+    }
+
     def __init__(
         self,
         g2op_obs_space: ObservationSpace,
@@ -569,11 +562,11 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
         # Precompute which feature indices use mean/max aggregation (rest default to sum)
         self._mean_feat_indices: list[int] = [
             i for i, name in enumerate(self.attr_to_observe)
-            if _BUS_AGGREGATION.get(name) == "mean"
+            if self._BUS_AGGREGATION.get(name) == "mean"
         ]
         self._max_feat_indices: list[int] = [
             i for i, name in enumerate(self.attr_to_observe)
-            if _BUS_AGGREGATION.get(name) == "max"
+            if self._BUS_AGGREGATION.get(name) == "max"
         ]
 
         x_dim = len(self.attr_to_observe)
@@ -606,9 +599,7 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
     def max_num_edges(self) -> int:
         return self._max_num_edges
 
-    def _get_nodes_and_mask(
-        self, g2op_obs: BaseObservation
-    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
+    def _get_nodes_and_mask(self, g2op_obs: BaseObservation) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
         """
         Aggregate per-element features into per-bus node features.
 
@@ -638,7 +629,7 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
 
         for f_idx, feat_name in enumerate(self.attr_to_observe):
             values = all_features[feat_name][connected]
-            if _BUS_AGGREGATION.get(feat_name) == "max":
+            if self._BUS_AGGREGATION.get(feat_name) == "max":
                 np.maximum.at(node_max[:, f_idx], active_slots, values)
             else:  # sum (also used as first step for mean)
                 np.add.at(node_features[:, f_idx], active_slots, values)
@@ -730,6 +721,451 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
         }
 
 
+# --- Element graph observation converter ---
+
+class ElementGraphObservationConverter(ObservationConverter[Dict]):
+    """
+    Element-level graph: one node per physical grid element (gen, load, line,
+    storage, bus, ground). Fixed static topology with dynamic edge features.
+
+    Node ordering: [gen | load | line | storage | (ground, bus1, bus2) × n_sub]
+
+    Node features (x_dim=26, heterogeneous, zero-padded per type):
+      Slots  0- 4: base — |p|, p, q, |v|, cos(θ)                  (all nodes)
+      Slots  5-17: gen  — g_norm, g_maxup, g_maxdown, g_minuptime,
+                           g_mindowntime, g_cost, g_startcost,
+                           g_shutdowncost, g_type×5                 (generators)
+      Slots 18-21: bus  — b_ground, b_bus1, b_bus2, b_cooldown      (buses)
+      Slots 22-25: line — ρ, p_tsoverflow, p_tscooldown,
+                           p_maintenance                             (powerlines)
+
+    Edges are static (precomputed once): each element is connected to every
+    busbar and ground node of its substation(s). Edge feature EDGE_ATTR[e, 0]
+    is 1 if the element is currently assigned to that specific bus, 0 otherwise.
+    EDGE_MASK is all-True (no padding — edge count is fixed).
+    """
+
+    # Feature layout for ElementGraphObservationConverter (x_dim = 26).
+    # Slots 0-4: base features shared by all node types.
+    # Slots 5-17: generator-specific features (zero for non-generators).
+    # Slots 18-21: bus-specific features (zero for non-buses).
+    # Slots 22-25: powerline-specific features (zero for non-powerlines).
+    _ELEM_X_DIM = 26
+    _ELEM_BASE_SLICE = slice(0, 5)  # |p|, p, q, |v|, cos(θ)
+    _ELEM_GEN_SLICE = slice(5, 18)  # g_norm, g_maxup, ..., g_type×5
+    _ELEM_BUS_SLICE = slice(18, 22)  # b_ground, b_bus1, b_bus2, b_cooldown
+    _ELEM_LINE_SLICE = slice(22, 26)  # ρ, p_tsoverflow, p_tscooldown, p_maintenance
+
+    # One-hot generator type encoding order used in grid2op
+    _GEN_TYPE_ORDER = ["solar", "wind", "hydro", "thermal", "nuclear"]
+
+    # Bus-slot offsets within each substation block: (ground=0, bus1=1, bus2=2)
+    _GROUND_OFFSET = 0
+    _BUS1_OFFSET = 1
+    _BUS2_OFFSET = 2
+
+    def __init__(
+        self,
+        g2op_obs_space: ObservationSpace,
+        verbose: bool = False,
+    ):
+        n_gen = g2op_obs_space.n_gen
+        n_load = g2op_obs_space.n_load
+        n_line = g2op_obs_space.n_line
+        n_storage = g2op_obs_space.n_storage
+        n_sub = g2op_obs_space.n_sub
+
+        self._n_gen = n_gen
+        self._n_load = n_load
+        self._n_line = n_line
+        self._n_storage = n_storage
+        self._n_sub = n_sub
+
+        # Node index offsets for each element group
+        self._gen_offset = 0
+        self._load_offset = n_gen
+        self._line_offset = n_gen + n_load
+        self._storage_offset = n_gen + n_load + n_line
+        self._bus_offset = n_gen + n_load + n_line + n_storage  # start of (ground, bus1, bus2) blocks
+        self._num_nodes = n_gen + n_load + n_line + n_storage + 3 * n_sub
+
+        # Substation membership for each element group
+        self._gen_subid = g2op_obs_space.gen_to_subid.astype(np.int64)
+        self._load_subid = g2op_obs_space.load_to_subid.astype(np.int64)
+        self._line_or_subid = g2op_obs_space.line_or_to_subid.astype(np.int64)
+        self._line_ex_subid = g2op_obs_space.line_ex_to_subid.astype(np.int64)
+        self._storage_subid = g2op_obs_space.storage_to_subid.astype(np.int64)
+
+        # Static generator features (don't change per step)
+        self._static_gen_features = self._build_static_gen_features(g2op_obs_space)
+
+        # Precompute static edge_index and lookup tables for dynamic edge_attr
+        self._edge_index, self._edge_element_idx, self._edge_bus_idx, \
+            self._fwd_bus_selector = self._build_static_edges()
+        self._num_edges = self._edge_index.shape[1]
+
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._num_nodes, self._ELEM_X_DIM), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._num_nodes - 1,
+                            shape=(2, self._num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1,
+                           shape=(self._num_edges,), dtype=np.bool_),
+            EDGES: Box(low=0, high=1,
+                       shape=(self._num_edges, 1), dtype=np.float32),
+            NODE_MASK: Box(low=0, high=1,
+                           shape=(self._num_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        self._normalizer = RunningMeanStd(shape=(self._ELEM_X_DIM,))
+        self._timings: dict[str, float] = {}
+
+        if verbose:
+            logger.info(
+                f"ElementGraphObservationConverter: {self._num_nodes} nodes "
+                f"({n_gen} gen, {n_load} load, {n_line} line, {n_storage} storage, "
+                f"{3 * n_sub} bus/ground), {self._num_edges} edges, "
+                f"x_dim={self._ELEM_X_DIM}."
+            )
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def observation_space(self) -> Dict:
+        return self._observation_space
+
+    @property
+    def num_nodes(self) -> int:
+        return self._num_nodes
+
+    @property
+    def max_nodes(self) -> int:
+        return self._num_nodes
+
+    @property
+    def x_dim(self) -> int:
+        return self._ELEM_X_DIM
+
+    @property
+    def num_edges(self) -> int:
+        return self._num_edges
+
+    # ------------------------------------------------------------------
+    # Static precomputation helpers
+    # ------------------------------------------------------------------
+
+    def _bus_node(self, sub_id: int, bus: int) -> int:
+        """
+        Node index for a busbar slot.
+
+        Args:
+            sub_id: Substation index.
+            bus:    0=ground, 1=bus1, 2=bus2.
+        Returns:
+            Absolute node index.
+        """
+        return self._bus_offset + 3 * sub_id + bus
+
+    def _build_static_gen_features(self, obs_space: ObservationSpace) -> npt.NDArray[np.float32]:
+        """
+        Precompute the time-invariant generator feature columns (slots 5-17).
+
+        Returns:
+            [n_gen, 13] float32 array of static generator features.
+        """
+        n_gen = self._n_gen
+        feats = np.zeros((n_gen, 13), dtype=np.float32)
+
+        # g_norm placeholder (slot 0 of gen block) — computed dynamically per step
+        # g_maxup … g_shutdowncost (slots 1-8)
+        feats[:, 1] = obs_space.gen_max_ramp_up
+        feats[:, 2] = obs_space.gen_max_ramp_down
+        feats[:, 3] = obs_space.gen_min_uptime
+        feats[:, 4] = obs_space.gen_min_downtime
+        feats[:, 5] = obs_space.gen_cost_per_MW
+        feats[:, 6] = obs_space.gen_startup_cost
+        feats[:, 7] = obs_space.gen_shutdown_cost
+
+        # g_type one-hot (slots 8-12)
+        for i, gen_type in enumerate(obs_space.gen_type):
+            t = gen_type.lower()
+            if t in self._GEN_TYPE_ORDER:
+                feats[i, 8 + self._GEN_TYPE_ORDER.index(t)] = 1.0
+
+        return feats
+
+    def _build_static_edges(self) -> tuple[
+        npt.NDArray[np.int64],
+        npt.NDArray[np.int64],
+        npt.NDArray[np.int64],
+        npt.NDArray[np.int64],
+    ]:
+        """
+        Build the static (time-invariant) bidirectional edge index.
+
+        Each element is connected to every busbar slot (ground=0, bus1=1, bus2=2)
+        at its substation. Lines connect at both endpoints (origin + extremity).
+        Loads do NOT connect to ground (disconnecting a load ends the episode).
+
+        Also builds fwd_bus_selector: an index into the per-timestep array
+        [gen_bus | load_bus | line_or_bus | line_ex_bus | storage_bus] for each
+        forward edge. Line or-side and ex-side edges point to different slices,
+        so _get_edge_attr uses the correct bus assignment for each endpoint.
+
+        Returns:
+            edge_index:        [2, E] int64 — (src, dst) pairs
+            edge_element_idx:  [E//2] int64 — element node index for each forward edge
+            edge_bus_idx:      [E//2] int64 — bus node index for each forward edge
+            fwd_bus_selector:  [E//2] int64 — index into concat bus array per forward edge
+        """
+        srcs, dsts = [], []
+        elem_idxs, bus_idxs, selectors = [], [], []
+
+        # Offsets into [gen_bus | load_bus | line_or_bus | line_ex_bus | storage_bus]
+        sel_gen_base = 0
+        sel_load_base = self._n_gen
+        sel_line_or_base = self._n_gen + self._n_load
+        sel_line_ex_base = self._n_gen + self._n_load + self._n_line
+        sel_storage_base = self._n_gen + self._n_load + 2 * self._n_line
+
+        def _add(elem_node: int, bus_node: int, selector: int) -> None:
+            srcs.extend([elem_node, bus_node])
+            dsts.extend([bus_node, elem_node])
+            elem_idxs.append(elem_node)
+            bus_idxs.append(bus_node)
+            selectors.append(selector)
+
+        # Generators: connect to ground, bus1, bus2 at their substation
+        for i in range(self._n_gen):
+            s = int(self._gen_subid[i])
+            for b in (self._GROUND_OFFSET, self._BUS1_OFFSET, self._BUS2_OFFSET):
+                _add(self._gen_offset + i, self._bus_node(s, b), sel_gen_base + i)
+
+        # Loads: connect to bus1, bus2 only (no ground)
+        for i in range(self._n_load):
+            s = int(self._load_subid[i])
+            for b in (self._BUS1_OFFSET, self._BUS2_OFFSET):
+                _add(self._load_offset + i, self._bus_node(s, b), sel_load_base + i)
+
+        # Lines: connect to ground, bus1, bus2 at both origin and extremity substations.
+        # Or-side edges use line_or_bus; ex-side edges use line_ex_bus.
+        for i in range(self._n_line):
+            line_node = self._line_offset + i
+            for b in (self._GROUND_OFFSET, self._BUS1_OFFSET, self._BUS2_OFFSET):
+                _add(line_node, self._bus_node(int(self._line_or_subid[i]), b),
+                     sel_line_or_base + i)
+            for b in (self._GROUND_OFFSET, self._BUS1_OFFSET, self._BUS2_OFFSET):
+                _add(line_node, self._bus_node(int(self._line_ex_subid[i]), b),
+                     sel_line_ex_base + i)
+
+        # Storage: connect to ground, bus1, bus2 at their substation
+        for i in range(self._n_storage):
+            s = int(self._storage_subid[i])
+            for b in (self._GROUND_OFFSET, self._BUS1_OFFSET, self._BUS2_OFFSET):
+                _add(self._storage_offset + i, self._bus_node(s, b), sel_storage_base + i)
+
+        edge_index = np.array([srcs, dsts], dtype=np.int64)
+        edge_element_idx = np.array(elem_idxs, dtype=np.int64)
+        edge_bus_idx = np.array(bus_idxs, dtype=np.int64)
+        fwd_bus_selector = np.array(selectors, dtype=np.int64)
+        return edge_index, edge_element_idx, edge_bus_idx, fwd_bus_selector
+
+    # ------------------------------------------------------------------
+    # Per-step feature computation
+    # ------------------------------------------------------------------
+
+    def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """
+        Build the [num_nodes, 26] node feature matrix for the current observation.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Node feature matrix [num_nodes, 26] float32.
+        """
+        X = np.zeros((self._num_nodes, self._ELEM_X_DIM), dtype=np.float32)
+
+        # --- Generators ---
+        g_p = g2op_obs.gen_p.astype(np.float32)
+        g_q = g2op_obs.gen_q.astype(np.float32)
+        g_v = g2op_obs.gen_v.astype(np.float32)
+        g_theta = g2op_obs.gen_theta.astype(np.float32)
+        g_idx = slice(self._gen_offset, self._gen_offset + self._n_gen)
+        X[g_idx, 0] = np.abs(g_p)
+        X[g_idx, 1] = g_p
+        X[g_idx, 2] = g_q
+        X[g_idx, 3] = np.abs(g_v)
+        X[g_idx, 4] = np.cos(np.deg2rad(g_theta))
+        # Static gen features (slots 5-17), g_norm is dynamic (slot 5)
+        X[g_idx, self._ELEM_GEN_SLICE] = self._static_gen_features
+        p_min = np.abs(g2op_obs.gen_pmin).astype(np.float32)
+        p_max = np.abs(g2op_obs.gen_pmax).astype(np.float32)
+        denom = p_max - p_min
+        g_norm = np.where(denom > 0, (np.abs(g_p) - p_min) / denom, 0.0)
+        X[g_idx, 5] = g_norm  # overwrite slot 5 (g_norm)
+
+        # --- Loads ---
+        l_p = g2op_obs.load_p.astype(np.float32)
+        l_q = g2op_obs.load_q.astype(np.float32)
+        l_v = g2op_obs.load_v.astype(np.float32)
+        l_theta = g2op_obs.load_theta.astype(np.float32)
+        l_idx = slice(self._load_offset, self._load_offset + self._n_load)
+        X[l_idx, 0] = np.abs(l_p)
+        X[l_idx, 1] = l_p
+        X[l_idx, 2] = l_q
+        X[l_idx, 3] = np.abs(l_v)
+        X[l_idx, 4] = np.cos(np.deg2rad(l_theta))
+
+        # --- Lines (single node per line, use origin-side electrical quantities) ---
+        ln_p = g2op_obs.p_or.astype(np.float32)
+        ln_q = g2op_obs.q_or.astype(np.float32)
+        ln_v = g2op_obs.v_or.astype(np.float32)
+        ln_theta = g2op_obs.theta_or.astype(np.float32)
+        ln_idx = slice(self._line_offset, self._line_offset + self._n_line)
+        X[ln_idx, 0] = np.abs(ln_p)
+        X[ln_idx, 1] = ln_p
+        X[ln_idx, 2] = ln_q
+        X[ln_idx, 3] = np.abs(ln_v)
+        X[ln_idx, 4] = np.cos(np.deg2rad(ln_theta))
+        X[ln_idx, 22] = g2op_obs.rho.astype(np.float32)
+        X[ln_idx, 23] = g2op_obs.timestep_overflow.astype(np.float32)
+        X[ln_idx, 24] = g2op_obs.time_before_cooldown_line.astype(np.float32)
+        X[ln_idx, 25] = g2op_obs.duration_next_maintenance.astype(np.float32)
+
+        # --- Storage ---
+        if self._n_storage > 0:
+            st_p = g2op_obs.storage_power.astype(np.float32)
+            st_idx = slice(self._storage_offset, self._storage_offset + self._n_storage)
+            # grid2op doesn't expose per-storage voltage/theta directly; use zeros
+            X[st_idx, 0] = np.abs(st_p)
+            X[st_idx, 1] = st_p
+
+        # --- Bus / Ground nodes ---
+        cooldown = g2op_obs.time_before_cooldown_sub.astype(np.float32)  # [n_sub]
+        for s in range(self._n_sub):
+            ground_node = self._bus_node(s, self._GROUND_OFFSET)
+            bus1_node = self._bus_node(s, self._BUS1_OFFSET)
+            bus2_node = self._bus_node(s, self._BUS2_OFFSET)
+            cd = cooldown[s]
+            # one-hot b_type: [b_ground, b_bus1, b_bus2]
+            X[ground_node, 18] = 1.0
+            X[ground_node, 21] = cd
+            X[bus1_node, 19] = 1.0
+            X[bus1_node, 21] = cd
+            X[bus2_node, 20] = 1.0
+            X[bus2_node, 21] = cd
+
+        return X
+
+    def _get_edge_attr(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """
+        Build the dynamic edge attribute array: 1 if the element is currently
+        connected to the specific bus node on that edge, else 0.
+
+        Uses _fwd_bus_selector to index into a concatenated bus array
+        [gen_bus | load_bus | line_or_bus | line_ex_bus | storage_bus], so
+        or-side and ex-side line edges get the correct endpoint bus assignment.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Edge attribute array [num_edges, 1] float32.
+        """
+        def _clamp(arr: npt.NDArray) -> npt.NDArray[np.int64]:
+            """Map bus -1 (disconnected) → 0 (ground slot)."""
+            return np.where(arr > 0, arr, 0).astype(np.int64)
+
+        storage_bus = (
+            _clamp(g2op_obs.storage_bus) if self._n_storage > 0
+            else np.zeros(0, dtype=np.int64)
+        )
+        # Layout: [gen_bus | load_bus | line_or_bus | line_ex_bus | storage_bus]
+        all_buses = np.concatenate([
+            _clamp(g2op_obs.gen_bus),
+            _clamp(g2op_obs.load_bus),
+            _clamp(g2op_obs.line_or_bus),
+            _clamp(g2op_obs.line_ex_bus),
+            storage_bus,
+        ])
+
+        bus_slot = (self._edge_bus_idx - self._bus_offset) % 3  # 0=ground, 1=bus1, 2=bus2
+        active = (all_buses[self._fwd_bus_selector] == bus_slot).astype(np.float32)
+
+        # edge_index interleaves (elem→bus, bus→elem) per edge pair, so forward
+        # edges land at even positions and reverse edges at odd positions.
+        attr_full = np.zeros(self._num_edges, dtype=np.float32)
+        attr_full[0::2] = active
+        attr_full[1::2] = active
+
+        return attr_full[:, np.newaxis]
+
+    # ------------------------------------------------------------------
+    # ObservationConverter interface
+    # ------------------------------------------------------------------
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to an element-level graph gym observation.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features = self._get_node_features(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        edge_attr = self._get_edge_attr(g2op_obs)
+        self._timings["edge_attr_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+        node_mask = np.ones(self._num_nodes, dtype=np.bool_)
+        edge_mask = np.ones(self._num_edges, dtype=np.bool_)
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: self._edge_index,
+            EDGE_MASK: edge_mask,
+            EDGES: edge_attr,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features using per-feature running statistics.
+
+        Args:
+            gym_obs: Graph observation dict with raw node features.
+        """
+        node_features = gym_obs[NODES]  # [num_nodes, 26]
+        self._normalizer.update(node_features)
+        normalized = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
+        return {
+            NODES: normalized.astype(np.float32),
+            EDGE_INDEX: gym_obs[EDGE_INDEX],
+            EDGE_MASK: gym_obs[EDGE_MASK],
+            EDGES: gym_obs[EDGES],
+            NODE_MASK: gym_obs[NODE_MASK],
+            GLOBAL: gym_obs[GLOBAL],
+        }
+
+    @staticmethod
+    def _get_global_features(g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """Extract time-based global features."""
+        return np.array([
+            g2op_obs.year, g2op_obs.month, g2op_obs.day,
+            g2op_obs.hour_of_day, g2op_obs.day_of_week, g2op_obs.minute_of_hour,
+        ], dtype=np.float32)
+
+
 # --- Flat observation converter ---
 
 class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
@@ -795,7 +1231,6 @@ class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
 
 
 # --- Factory ---
-
 def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config."""
     mode = env_config.get("observation_space", "FlatSpace")
@@ -815,6 +1250,11 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         return SubstationGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "ElementGraphObsSpace":
+        return ElementGraphObservationConverter(
+            g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "FlatObsSpace":
