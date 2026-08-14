@@ -16,9 +16,16 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from grid2op_env.observation_converter import GraphObservationConverter
-
-from grid2op_env.observation_converter import ObservationConverter
+from grid2op_env.observation_converter import (
+    ElementGraphObservationConverter,
+    GraphObservationConverter,
+    HeterogeneousGraphObservationConverter,
+    SubstationGraphObservationConverter,
+    ObservationConverter,
+    EDGES,
+    EDGE_MASK,
+    EDGE_TYPE,
+)
 from rarl import fully_connected_edge_index
 
 logger = logging.getLogger(__name__)
@@ -31,6 +38,28 @@ class NodeStyle:
     shape: str
     size: int
     label: str
+
+
+@dataclass
+class EdgeStyle:
+    """Visual style for a single edge in a graph visualization."""
+    color: str
+    width: float = 1.0
+    label: str = "Edge"
+    alpha: float = 1.0
+    linestyle: str = "-"
+
+
+_HETERO_EDGE_TYPE_STYLES: List[EdgeStyle] = [
+    EdgeStyle(color="darkorange",  width=2.0, label="Powerline (type 0)", alpha=1.0, linestyle="--"),
+    EdgeStyle(color="forestgreen", width=1.5, label="Same-bus (type 1)",  alpha=0.9, linestyle="-"),
+    EdgeStyle(color="crimson",     width=1.5, label="Diff-bus (type 2)",  alpha=0.9, linestyle=":"),
+]
+
+_ELEM_EDGE_STYLES: List[EdgeStyle] = [
+    EdgeStyle(color="lightgray",   width=0.6, label="Inactive connection", alpha=0.5, linestyle="-"),
+    EdgeStyle(color="forestgreen", width=1.8, label="Active connection",   alpha=1.0, linestyle="-"),
+]
 
 
 @dataclass
@@ -47,6 +76,7 @@ class PlottingArgs:
     node_sizes_override: Optional[dict[int, float]] = None  # Dict mapping node_id to size multiplier
     powerline_edge_colors: Optional[List[str]] = None  # Custom colors for powerline edges
     powerline_edge_widths: Optional[List[float]] = None  # Custom widths for powerline edges
+    edge_styles: Optional[List[EdgeStyle]] = None  # Per-edge style (parallel to powerline_edge_index columns)
     show_legend: bool = True
 
 
@@ -300,10 +330,17 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
             edge_tuple = tuple(sorted([int(src), int(dst)]))
             if edge_tuple not in seen_edges:
                 seen_edges.add(edge_tuple)
-                # Use custom colors and widths if provided
-                edge_color = args.powerline_edge_colors[i] if args.powerline_edge_colors is not None else "gray"
-                edge_width = args.powerline_edge_widths[i] if args.powerline_edge_widths is not None else 1
-                G.add_edge(int(src), int(dst), color=edge_color, weight=edge_width, type="Connection")
+                if args.edge_styles is not None:
+                    es = args.edge_styles[i]
+                    edge_color, edge_width = es.color, es.width
+                    edge_alpha, edge_linestyle, edge_label = es.alpha, es.linestyle, es.label
+                else:
+                    edge_color = args.powerline_edge_colors[i] if args.powerline_edge_colors is not None else "gray"
+                    edge_width = args.powerline_edge_widths[i] if args.powerline_edge_widths is not None else 1
+                    edge_alpha, edge_linestyle, edge_label = 1.0, "--", "Physical Connection"
+                G.add_edge(int(src), int(dst), color=edge_color, weight=edge_width,
+                           alpha=edge_alpha, style=edge_linestyle, label=edge_label,
+                           type="Connection")
 
     # latent edges
     if args.latent_edge_probs is not None:
@@ -350,20 +387,27 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
         )
         lc.set_zorder(1)
 
-    # draw base edges ON TOP with dashed style for visibility
+    # draw base edges ON TOP, grouped by (linestyle, alpha) so each group gets one draw call
     if conn_edges:
-        lc = nx.draw_networkx_edges(
-            G,
-            pos,
-            edgelist=[(u, v) for u, v, _ in conn_edges],
-            edge_color=[d["color"] for _, _, d in conn_edges],
-            width=[d["weight"] for _, _, d in conn_edges],
-            arrows=False,
-            style="--",  # Dashed style makes them distinguishable
-            alpha=1.0,  # Fully opaque
-            ax=ax
-        )
-        lc.set_zorder(3)  # Higher z-order to be on top
+        style_groups: dict = {}
+        for u, v, d in conn_edges:
+            key = (d.get("style", "--"), d.get("alpha", 1.0))
+            style_groups.setdefault(key, []).append((u, v, d))
+
+        for (linestyle, alpha), edges in style_groups.items():
+            lc = nx.draw_networkx_edges(
+                G,
+                pos,
+                edgelist=[(u, v) for u, v, _ in edges],
+                edge_color=[d["color"] for _, _, d in edges],
+                width=[d["weight"] for _, _, d in edges],
+                arrows=False,
+                style=linestyle,
+                alpha=alpha,
+                ax=ax,
+            )
+            if lc is not None:
+                lc.set_zorder(3)
 
     # draw nodes (with highest z-order to be on top of all edges)
     if args.node_styles is not None:
@@ -470,16 +514,21 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
                label=f"Node pairs with high\nposterior mean/variance")
         for i, c in enumerate(dependency_edge_colors_unique)
     ]
-    powerline_edge_color = [d["color"] for (_, _, d) in G.edges(data=True) if d["type"] == "Connection"]
-    if len(powerline_edge_color) > 0:
-        powerline_legend_entry = Line2D(
+    # Deduplicate connection edges by label for the legend
+    seen_conn_labels: dict = {}
+    for _, _, d in G.edges(data=True):
+        if d["type"] == "Connection":
+            lbl = d.get("label", "Physical Connection")
+            if lbl not in seen_conn_labels:
+                seen_conn_labels[lbl] = d
+    for lbl, d in seen_conn_labels.items():
+        edge_legend.insert(0, Line2D(
             [0], [0],
-            color=powerline_edge_color[0],
+            color=d["color"],
             lw=2,
-            linestyle='--',  # Match the dashed style
-            label=f"Physical Connection"
-        )
-        edge_legend.insert(0, powerline_legend_entry)
+            linestyle=d.get("style", "--"),
+            label=lbl,
+        ))
 
     # Combine and draw - use provided ax or current axes
     if ax is not None:
@@ -686,7 +735,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
     :param observation_space: the class of the observation space that dictates which entities are nodes
     :return: a list of node positions similar to the ones used by the grid2op plots
     """
-    if observation_space == GraphObservationConverter:
+    if observation_space in (GraphObservationConverter, HeterogeneousGraphObservationConverter):
         plot_helper = PlotMatplot(env.observation_space)
 
         r = 20.0
@@ -736,8 +785,155 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         ]
 
         return node_styles
+    elif observation_space == SubstationGraphObservationConverter:
+        plot_helper = PlotMatplot(env.observation_space)
+        layout = plot_helper._grid_layout
+
+        # Small horizontal offset to separate bus 1 and bus 2 nodes at each substation.
+        offset = 10.0
+
+        # Slot ordering: 2 * sub_id + (bus - 1), so bus 1 at even slots, bus 2 at odd slots.
+        node_styles = []
+        for sub_id in range(env.n_sub):
+            base = np.array(layout[f"sub_{sub_id}"], dtype=float)
+            node_styles.append(NodeStyle(
+                position=base + np.array([-offset, 0.0]),
+                color="steelblue",
+                shape="o",
+                size=200,
+                label="Busbar 1",
+            ))
+            node_styles.append(NodeStyle(
+                position=base + np.array([+offset, 0.0]),
+                color="tomato",
+                shape="o",
+                size=200,
+                label="Busbar 2",
+            ))
+
+        return node_styles
+    elif observation_space == ElementGraphObservationConverter:
+        plot_helper = PlotMatplot(env.observation_space)
+        layout = plot_helper._grid_layout
+
+        r = 40.0           # distance from substation center for element nodes
+        bus_h = 16.0       # horizontal half-spread for bus1/bus2
+        bus_v = 10.0       # vertical half-spread: buses above, ground below
+
+        def _pos_elem(sub_id: int, src_pos: npt.NDArray) -> npt.NDArray:
+            """Offset element node toward its substation center by distance r."""
+            target = np.array(layout[f"sub_{sub_id}"], dtype=float)
+            vec = target - src_pos
+            norm = np.linalg.norm(vec)
+            if norm == 0:
+                return target
+            return target - (vec / norm) * r
+
+        node_styles = []
+
+        # Generators
+        for gid, sid in enumerate(env.gen_to_subid):
+            src = np.array(layout.get(f"gen_{sid}_{gid}", layout[f"sub_{sid}"]), dtype=float)
+            node_styles.append(NodeStyle(
+                position=_pos_elem(int(sid), src),
+                color="green",
+                shape="p",
+                size=120,
+                label="Generator",
+            ))
+
+        # Loads
+        for lid, sid in enumerate(env.load_to_subid):
+            src = np.array(layout.get(f"load_{sid}_{lid}", layout[f"sub_{sid}"]), dtype=float)
+            node_styles.append(NodeStyle(
+                position=_pos_elem(int(sid), src),
+                color="orange",
+                shape="^",
+                size=120,
+                label="Load",
+            ))
+
+        # Lines: single node at midpoint between origin and extremity substation
+        for lid in range(env.n_line):
+            or_pos = np.array(layout[f"sub_{int(env.line_or_to_subid[lid])}"], dtype=float)
+            ex_pos = np.array(layout[f"sub_{int(env.line_ex_to_subid[lid])}"], dtype=float)
+            node_styles.append(NodeStyle(
+                position=(or_pos + ex_pos) / 2.0,
+                color="gray",
+                shape="o",
+                size=80,
+                label="Powerline",
+            ))
+
+        # Storage
+        for stor_id, sid in enumerate(env.storage_to_subid):
+            src = np.array(layout.get(f"storage_{sid}_{stor_id}", layout[f"sub_{sid}"]), dtype=float)
+            node_styles.append(NodeStyle(
+                position=_pos_elem(int(sid), src),
+                color="purple",
+                shape="D",
+                size=120,
+                label="Storage",
+            ))
+
+        # Bus/Ground nodes: 3 per substation in order (ground, bus1, bus2).
+        # Arranged in a triangle: ground below center, bus1 upper-left, bus2 upper-right.
+        for sub_id in range(env.n_sub):
+            base = np.array(layout[f"sub_{sub_id}"], dtype=float)
+            node_styles.append(NodeStyle(
+                position=base + np.array([0.0, -bus_v]),
+                color="black",
+                shape="x",
+                size=80,
+                label="Ground",
+            ))
+            node_styles.append(NodeStyle(
+                position=base + np.array([-bus_h, +bus_v]),
+                color="steelblue",
+                shape="s",
+                size=100,
+                label="Busbar 1",
+            ))
+            node_styles.append(NodeStyle(
+                position=base + np.array([+bus_h, +bus_v]),
+                color="tomato",
+                shape="s",
+                size=100,
+                label="Busbar 2",
+            ))
+
+        return node_styles
     else:
         raise NotImplementedError()
+
+
+def get_edge_styles(
+    gym_obs: dict,
+    observation_space: type[ObservationConverter],
+) -> Optional[List[EdgeStyle]]:
+    """
+    Return per-edge style objects for the active edges in a gym observation.
+
+    Returns one :class:`EdgeStyle` per column in the masked ``EDGE_INDEX``,
+    ordered the same way as ``gym_obs[EDGE_INDEX][:, edge_mask]``.
+    Returns *None* for converters that do not carry typed or attributed edges
+    (e.g. :class:`GraphObservationConverter`, :class:`SubstationGraphObservationConverter`).
+
+    :param gym_obs: gym observation dict produced by ``converter.to_gym(obs)``
+    :param observation_space: the converter class used to produce ``gym_obs``
+    :return: list of :class:`EdgeStyle` objects (one per active edge), or *None*
+    """
+    edge_mask = gym_obs[EDGE_MASK].astype(bool)
+
+    if observation_space == HeterogeneousGraphObservationConverter:
+        edge_types = gym_obs[EDGE_TYPE][edge_mask]
+        return [_HETERO_EDGE_TYPE_STYLES[int(t)] for t in edge_types]
+
+    if observation_space == ElementGraphObservationConverter:
+        edge_attrs = gym_obs[EDGES][:, 0][edge_mask]
+        return [_ELEM_EDGE_STYLES[int(a)] for a in edge_attrs]
+
+    return None
 
 
 def visualize_posterior(latent_edge_posterior: npt.NDArray, latent_edge_prior: npt.NDArray,
