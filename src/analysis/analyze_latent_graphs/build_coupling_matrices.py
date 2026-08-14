@@ -137,6 +137,7 @@ def get_ptdf_from_env(env: Environment) -> np.ndarray:
     """
     assert isinstance(env.backend, LightSimBackend)
     grid = env.backend._grid
+    # run dc powerflow with trivial starting values. PTDF only depends on the network topology not on the operating point
     Vinit = np.ones(grid.total_bus(), dtype=complex)
     _ = grid.dc_pf(Vinit, 10, 1e-8)
     return grid.get_ptdf()

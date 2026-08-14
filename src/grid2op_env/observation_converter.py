@@ -13,6 +13,7 @@ from grid2op.Observation import BaseObservation, ObservationSpace
 from grid2op.gym_compat import GymEnv
 from gymnasium.spaces import Dict, Box
 from gymnasium.wrappers.normalize import RunningMeanStd
+from lightsim2grid import LightSimBackend
 
 from grid2op_env.utils import get_attr_list
 
@@ -1248,6 +1249,310 @@ class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
         return result
 
 
+class PTDFGraphObservationConverter(GraphObservationConverter):
+    """
+    PTDF-based electrical distance graph.
+
+    Nodes represent busbars (up to 2 per substation → max_nodes = 2*n_sub).
+    Edges are fully connected over all bus-slot pairs; the edge weight is the
+    L1 PTDF distance:
+
+        D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|
+
+    which measures how differently a unit injection at bus i vs bus j
+    redistributes power across the transmission lines.
+
+    NODE_MASK marks buses with ≥1 connected element (active buses).
+    EDGE_MASK marks directed edges where both endpoint buses are active.
+    EDGES carries the running-normalized PTDF distance as a scalar [E, 1].
+
+    PTDF is topology-dependent but operating-point-independent (DC linearization),
+    so it is cached per line-status vector and only recomputed on topology changes.
+
+    Node features use the same attr_to_observe as GraphObservationConverter,
+    aggregated across all elements assigned to each bus:
+      - power features (active/reactive): sum
+      - voltage, voltage_angle: mean
+      - rho: max
+
+    Bus slot convention (aligns with PTDF column indices from lightsim2grid):
+        slot = (busbar - 1) * n_sub + sub_id    for busbar ∈ {1, 2}
+    Slots 0..n_sub-1 → busbar 1; slots n_sub..2*n_sub-1 → busbar 2.
+    """
+
+    _BUS_AGGREGATION: dict[str, str] = {
+        "voltage": "mean",
+        "voltage_angle_sin": "mean",
+        "voltage_angle_cos": "mean",
+        "rho": "max",
+    }
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        # Call parent to initialize _dims, _timings, attr_to_observe, _normalizer,
+        # and _compute_all_node_features (element-level feature extraction).
+        # Structure-specific attributes (_observation_space, _max_num_edges, etc.)
+        # are overridden below.
+        super().__init__(g2op_obs_space, attr_to_observe, verbose)
+
+        self._grid = backend._grid
+        self._n_sub = g2op_obs_space.n_sub
+
+        n_sub = self._n_sub
+        self._max_nodes = 2 * n_sub
+        self._max_num_edges = self._max_nodes * (self._max_nodes - 1)  # directed, no self-loops
+
+        # Substation id per element in flat order [line_or|line_ex|gen|load|storage],
+        # used to compute PTDF-convention bus slots: slot = (busbar-1)*n_sub + sub_id.
+        self._sub_ids_flat = np.concatenate([
+            g2op_obs_space.line_or_to_subid,
+            g2op_obs_space.line_ex_to_subid,
+            g2op_obs_space.gen_to_subid,
+            g2op_obs_space.load_to_subid,
+            g2op_obs_space.storage_to_subid,
+        ]).astype(np.int64)
+
+        # Feature aggregation indices (same strategy as SubstationGraphObservationConverter)
+        self._mean_feat_indices: list[int] = [
+            i for i, name in enumerate(self.attr_to_observe)
+            if self._BUS_AGGREGATION.get(name) == "mean"
+        ]
+        self._max_feat_indices: list[int] = [
+            i for i, name in enumerate(self.attr_to_observe)
+            if self._BUS_AGGREGATION.get(name) == "max"
+        ]
+
+        # Static fully-connected directed edge index over all bus slots (no self-loops)
+        idx = np.arange(self._max_nodes)
+        ii, jj = np.meshgrid(idx, idx, indexing="ij")
+        no_self_loop = ii != jj
+        self._edge_index_full = np.stack([ii[no_self_loop], jj[no_self_loop]]).astype(np.int64)
+
+        x_dim = len(self.attr_to_observe)
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf, shape=(self._max_nodes, x_dim), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._max_nodes - 1, shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1, shape=(self._max_num_edges,), dtype=np.bool_),
+            EDGES: Box(low=-np.inf, high=np.inf, shape=(self._max_num_edges, 1), dtype=np.float32),
+            NODE_MASK: Box(low=0, high=1, shape=(self._max_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        # Override node normalizer from parent; add scalar edge normalizer.
+        self._normalizer = RunningMeanStd(shape=(x_dim,))
+        self._edge_normalizer = RunningMeanStd(shape=(1,))
+
+        # PTDF cache: only recompute when line_status changes.
+        # _cached_D is derived from _cached_ptdf and shares the same lifetime.
+        self._cached_ptdf: Optional[np.ndarray] = None
+        self._cached_D: Optional[np.ndarray] = None
+        self._cached_line_status: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"PTDFGraphObservationConverter: {self._max_nodes} max nodes "
+                f"({n_sub} subs × 2 buses), {self._max_num_edges} directed edges, "
+                f"{x_dim} features per node ({', '.join(self.attr_to_observe)})."
+            )
+
+    @property
+    def num_nodes(self) -> int:
+        """Total bus slots (2 * n_sub); same as max_nodes for this converter."""
+        return self._max_nodes
+
+    @property
+    def max_nodes(self) -> int:
+        """Maximum number of nodes across all observations (= 2 * n_sub)."""
+        return self._max_nodes
+
+    @property
+    def max_num_edges(self) -> int:
+        """Number of directed edges in the fully-connected graph (max_nodes * (max_nodes - 1))."""
+        return self._max_num_edges
+
+    def _get_ptdf_cached(self, line_status: np.ndarray) -> np.ndarray:
+        """
+        Return the PTDF matrix, recomputing only when line_status has changed.
+
+        DC PTDF depends solely on network topology (line connectivity and
+        reactances), not on the current operating point, so a flat Vinit is
+        sufficient.  Caching avoids redundant DC power flow calls at every step.
+        The distance matrix D is cached alongside PTDF since it has the same
+        topology-dependent lifetime.
+
+        Note: dc_pf is called directly on the C++ grid model (not via
+        LightSimBackend.runpf).  This is safe because lightsim2grid maintains
+        fully separate solver objects for DC and AC computations, so this call
+        does not modify the AC voltage state used by subsequent env.step() calls.
+
+        Args:
+            line_status: Boolean array [n_line] of current line connection state.
+        Returns:
+            PTDF matrix [n_branches, 2*n_sub].
+        """
+        if (self._cached_line_status is None
+                or not np.array_equal(line_status, self._cached_line_status)):
+            Vinit = np.ones(self._grid.total_bus(), dtype=complex)
+            Vdc = self._grid.dc_pf(Vinit, 10, 1e-8)
+            if Vdc.shape[0] == 0:
+                raise RuntimeError(
+                    "DC power flow diverged; PTDF cannot be computed for current topology."
+                )
+            self._cached_ptdf = self._grid.get_ptdf()
+            self._cached_D = self._ptdf_distance_matrix(self._cached_ptdf)
+            self._cached_line_status = line_status.copy()
+        return self._cached_ptdf
+
+    def _ptdf_distance_matrix(self, PTDF: np.ndarray) -> np.ndarray:
+        """
+        Compute the pairwise L1 PTDF distance between all bus pairs.
+
+        D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|
+
+        Args:
+            PTDF: [n_branches, 2*n_sub] PTDF matrix.
+        Returns:
+            D: [2*n_sub, 2*n_sub] symmetric distance matrix.
+        """
+        diff = PTDF[:, :, np.newaxis] - PTDF[:, np.newaxis, :]  # (n_br, n_bus, n_bus)
+        return np.abs(diff).sum(axis=0)  # (2*n_sub, 2*n_sub)
+
+    def _get_nodes_and_mask(
+        self, g2op_obs: BaseObservation
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
+        """
+        Aggregate per-element features into per-bus node features.
+
+        Bus slot formula: slot = (busbar - 1) * n_sub + sub_id, busbar ∈ {1, 2}.
+        Disconnected elements (bus == -1) are excluded.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            node_features: [max_nodes, x_dim] float32
+            node_mask:     [max_nodes] bool — True for slots with ≥1 connected element
+        """
+        all_features = self._compute_all_node_features(g2op_obs)
+
+        bus_ids_flat = np.concatenate([
+            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
+            g2op_obs.gen_bus, g2op_obs.load_bus,
+            g2op_obs.storage_bus,
+        ])
+        connected = bus_ids_flat > 0
+        # PTDF bus slot: (busbar - 1) * n_sub + sub_id
+        active_slots = (
+            (bus_ids_flat[connected] - 1) * self._n_sub + self._sub_ids_flat[connected]
+        ).astype(np.int64)
+
+        x_dim = len(self.attr_to_observe)
+        node_features = np.zeros((self._max_nodes, x_dim), dtype=np.float64)
+        node_count = np.zeros(self._max_nodes, dtype=np.int64)
+        node_max = np.full((self._max_nodes, x_dim), -np.inf, dtype=np.float64)
+
+        np.add.at(node_count, active_slots, 1)
+
+        for f_idx, feat_name in enumerate(self.attr_to_observe):
+            values = all_features[feat_name][connected]
+            if self._BUS_AGGREGATION.get(feat_name) == "max":
+                np.maximum.at(node_max[:, f_idx], active_slots, values)
+            else:
+                np.add.at(node_features[:, f_idx], active_slots, values)
+
+        node_mask = node_count > 0
+        for f_idx in self._mean_feat_indices:
+            node_features[node_mask, f_idx] /= node_count[node_mask]
+        for f_idx in self._max_feat_indices:
+            node_features[node_mask, f_idx] = node_max[node_mask, f_idx]
+
+        return node_features.astype(np.float32), node_mask
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a PTDF-based electrical distance graph.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        Returns:
+            Dict with keys:
+              NODES:      [max_nodes, x_dim] float32, aggregated bus features (zeroed for inactive).
+              EDGE_INDEX: [2, max_num_edges] int64, static fully-connected directed index.
+              EDGE_MASK:  [max_num_edges] bool, True where both endpoint buses are active.
+              EDGES:      [max_num_edges, 1] float32, normalized L1 PTDF distance (zeroed for inactive).
+              NODE_MASK:  [max_nodes] bool, True for buses with ≥1 connected element.
+              GLOBAL:     [6] float32, time-based features.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features, node_mask = self._get_nodes_and_mask(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        self._get_ptdf_cached(g2op_obs.line_status)
+        D = self._cached_D
+        self._timings["ptdf_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        src, dst = self._edge_index_full[0], self._edge_index_full[1]
+        edge_weights = D[src, dst].astype(np.float32)[:, np.newaxis]  # [max_num_edges, 1]
+        edge_mask = node_mask[src] & node_mask[dst]
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: self._edge_index_full,
+            EDGE_MASK: edge_mask,
+            EDGES: edge_weights,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features and edge weights using separate running statistics.
+
+        Only active nodes (NODE_MASK=True) update the node normalizer; inactive
+        node features are zeroed out after normalization.  Only active edges
+        (EDGE_MASK=True) update the edge normalizer; inactive edges are zeroed.
+
+        Args:
+            gym_obs: PTDF graph observation dict with raw features.
+        """
+        node_features = gym_obs[NODES]   # (max_nodes, x_dim)
+        node_mask = gym_obs[NODE_MASK]   # (max_nodes,)
+        edge_weights = gym_obs[EDGES]    # (max_num_edges, 1)
+        edge_mask = gym_obs[EDGE_MASK]   # (max_num_edges,)
+
+        active_features = node_features[node_mask]
+        if active_features.shape[0] > 0:
+            self._normalizer.update(active_features)
+        normalized_nodes = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
+        normalized_nodes[~node_mask] = 0.0
+
+        active_edges = edge_weights[edge_mask]  # (n_active, 1)
+        if active_edges.shape[0] > 0:
+            self._edge_normalizer.update(active_edges)
+        normalized_edges = (edge_weights - self._edge_normalizer.mean) / np.sqrt(self._edge_normalizer.var + 1e-8)
+        normalized_edges[~edge_mask] = 0.0
+
+        return {
+            NODES: normalized_nodes.astype(np.float32),
+            EDGE_INDEX: gym_obs[EDGE_INDEX],
+            EDGE_MASK: edge_mask,
+            EDGES: normalized_edges.astype(np.float32),
+            NODE_MASK: node_mask,
+            GLOBAL: gym_obs[GLOBAL],
+        }
+
+
 # --- Factory ---
 def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config."""
@@ -1273,6 +1578,13 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
     elif mode == "ElementGraphObsSpace":
         return ElementGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "PTDFGraphObsSpace":
+        return PTDFGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
             verbose=env_config.get("verbose", False),
         )
     elif mode == "FlatObsSpace":
