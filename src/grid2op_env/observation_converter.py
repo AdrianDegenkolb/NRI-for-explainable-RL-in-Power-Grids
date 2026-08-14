@@ -35,7 +35,8 @@ _DEFAULT_NODE_FEATURES = [
     "active_power",
     "reactive_power",
     "voltage",
-    "voltage_angle",
+    "voltage_angle_cos",
+    "voltage_angle_sin",
     "rho",
 ]
 
@@ -59,10 +60,6 @@ class _GridDimensions:
             n_storage=obs_space.n_storage,
         )
 
-    @property
-    def num_nodes(self) -> int:
-        """Total number of graph nodes: line endpoints + gen + load + storage."""
-        return 2 * self.n_line + self.n_gen + self.n_load + self.n_storage
 
 
 class ObservationConverter(ABC, Generic[T]):
@@ -122,6 +119,9 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         self.attr_to_observe = attr_to_observe
         self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
+        self._num_nodes = (
+            2 * self._dims.n_line + self._dims.n_gen + self._dims.n_load + self._dims.n_storage
+        )
 
         num_connections = g2op_obs_space.sub_info
         self._max_num_edges = int((num_connections * (num_connections - 1)).sum()) + 2 * self._dims.n_line
@@ -130,11 +130,11 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         self._observation_space = Dict({
             NODES: Box(
                 low=-np.inf, high=np.inf,
-                shape=(self._dims.num_nodes, x_dim),
+                shape=(self._num_nodes, x_dim),
                 dtype=np.float32,
             ),
             EDGE_INDEX: Box(
-                low=0, high=self._dims.num_nodes - 1,
+                low=0, high=self._num_nodes - 1,
                 shape=(2, self._max_num_edges),
                 dtype=np.int64,
             ),
@@ -145,7 +145,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             ),
             NODE_MASK: Box(
                 low=0, high=1,
-                shape=(self._dims.num_nodes,),
+                shape=(self._num_nodes,),
                 dtype=np.bool_,
             ),
             GLOBAL: Box(
@@ -170,7 +170,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         # Candidate topology pairs: all (i, j) with i < j in the same substation.
         # Filtering to same-bus + connected is done dynamically; this eliminates the
         # O(N²) same_sub broadcast that was recomputed on every observation step.
-        N = self._dims.num_nodes
+        N = self._num_nodes
         ii, jj = np.triu_indices(N, k=1)
         same_sub_mask = sub_ids[ii] == sub_ids[jj]
         self._topo_cand_src = ii[same_sub_mask].astype(np.int64)
@@ -185,7 +185,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         if verbose:
             logger.info(
-                f"GraphObservationConverter: {self._dims.num_nodes} nodes, "
+                f"GraphObservationConverter: {self._num_nodes} nodes, "
                 f"<= {self._max_num_edges} edges, {x_dim} features per node "
                 f"({', '.join(attr_to_observe)})."
             )
@@ -196,12 +196,12 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
     @property
     def num_nodes(self) -> int:
-        return self._dims.num_nodes
+        return self._num_nodes
 
     @property
     def max_nodes(self) -> int:
         """Maximum number of nodes across all observations (= num_nodes for this converter)."""
-        return self._dims.num_nodes
+        return self._num_nodes
 
     @property
     def max_num_edges(self) -> int:
@@ -231,7 +231,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         edge_index_padded[:, :num_edges] = edge_index
         edge_mask = np.zeros(self._max_num_edges, dtype=bool)
         edge_mask[:num_edges] = True
-        node_mask = np.ones(self._dims.num_nodes, dtype=np.bool_)
+        node_mask = np.ones(self._num_nodes, dtype=np.bool_)
 
         result = self.normalize({
             NODES: node_features,
@@ -307,9 +307,12 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             "voltage": np.concatenate([
                 g2op_obs.v_or, g2op_obs.v_ex, g2op_obs.gen_v, g2op_obs.load_v, zeros_storage,
             ]),
-            "voltage_angle": np.cos(np.concatenate([
+            "voltage_angle_cos": np.cos(np.deg2rad(np.concatenate([
                 g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta, g2op_obs.storage_theta,
-            ])),
+            ]))),
+            "voltage_angle_sin": np.sin(np.deg2rad(np.concatenate([
+                g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta, g2op_obs.storage_theta,
+            ]))),
             # rho is a line-level quantity; non-line nodes get 0
             "rho": np.concatenate([
                 g2op_obs.rho, g2op_obs.rho, zeros_gen, zeros_load, zeros_storage,
@@ -483,7 +486,7 @@ class HeterogeneousGraphObservationConverter(GraphObservationConverter):
         edge_mask[:num_edges] = True
         edge_type_padded = np.zeros(self._max_num_edges, dtype=np.int64)
         edge_type_padded[:num_edges] = edge_types
-        node_mask = np.ones(self._dims.num_nodes, dtype=np.bool_)
+        node_mask = np.ones(self._num_nodes, dtype=np.bool_)
 
         result = self.normalize({
             NODES: node_features,
@@ -502,8 +505,6 @@ class HeterogeneousGraphObservationConverter(GraphObservationConverter):
         result[EDGE_TYPE] = gym_obs[EDGE_TYPE]
         return result
 
-
-# --- Substation graph observation converter ---
 
 class SubstationGraphObservationConverter(GraphObservationConverter):
     """
@@ -526,7 +527,8 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
     # Features not listed here default to "sum".
     _BUS_AGGREGATION: dict[str, str] = {
         "voltage": "mean",
-        "voltage_angle": "mean",
+        "voltage_angle_sin": "mean",
+        "voltage_angle_cos": "mean",
         "rho": "max",
     }
 
@@ -721,8 +723,6 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
         }
 
 
-# --- Element graph observation converter ---
-
 class ElementGraphObservationConverter(ObservationConverter[Dict]):
     """
     Element-level graph: one node per physical grid element (gen, load, line,
@@ -730,14 +730,15 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
 
     Node ordering: [gen | load | line | storage | (ground, bus1, bus2) × n_sub]
 
-    Node features (x_dim=26, heterogeneous, zero-padded per type):
-      Slots  0- 4: base — |p|, p, q, |v|, cos(θ)                  (all nodes)
-      Slots  5-17: gen  — g_norm, g_maxup, g_maxdown, g_minuptime,
-                           g_mindowntime, g_cost, g_startcost,
-                           g_shutdowncost, g_type×5                 (generators)
-      Slots 18-21: bus  — b_ground, b_bus1, b_bus2, b_cooldown      (buses)
-      Slots 22-25: line — ρ, p_tsoverflow, p_tscooldown,
-                           p_maintenance                             (powerlines)
+    Node features (x_dim=28, heterogeneous, zero-padded per type):
+      Slots  0- 4: base     — |p|, p, q, |v|, cos(θ)               (all nodes)
+      Slots  5-17: gen      — g_norm, g_maxup, g_maxdown, g_minuptime,
+                               g_mindowntime, g_cost, g_startcost,
+                               g_shutdowncost, g_type×5             (generators)
+      Slots 18-21: bus      — b_ground, b_bus1, b_bus2, b_cooldown  (buses)
+      Slots 22-25: line     — ρ, p_tsoverflow, p_tscooldown,
+                               p_maintenance                         (powerlines)
+      Slots 26-27: forecast — p_forecast, q_forecast                (gen/load only)
 
     Edges are static (precomputed once): each element is connected to every
     busbar and ground node of its substation(s). Edge feature EDGE_ATTR[e, 0]
@@ -745,16 +746,18 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
     EDGE_MASK is all-True (no padding — edge count is fixed).
     """
 
-    # Feature layout for ElementGraphObservationConverter (x_dim = 26).
+    # Feature layout for ElementGraphObservationConverter (x_dim = 28).
     # Slots 0-4: base features shared by all node types.
     # Slots 5-17: generator-specific features (zero for non-generators).
     # Slots 18-21: bus-specific features (zero for non-buses).
     # Slots 22-25: powerline-specific features (zero for non-powerlines).
-    _ELEM_X_DIM = 26
-    _ELEM_BASE_SLICE = slice(0, 5)  # |p|, p, q, |v|, cos(θ)
-    _ELEM_GEN_SLICE = slice(5, 18)  # g_norm, g_maxup, ..., g_type×5
-    _ELEM_BUS_SLICE = slice(18, 22)  # b_ground, b_bus1, b_bus2, b_cooldown
-    _ELEM_LINE_SLICE = slice(22, 26)  # ρ, p_tsoverflow, p_tscooldown, p_maintenance
+    # Slots 26-27: forecast features for gen/load (zero for all other types).
+    _ELEM_X_DIM = 28
+    _ELEM_BASE_SLICE = slice(0, 5)        # |p|, p, q, |v|, cos(θ)
+    _ELEM_GEN_SLICE = slice(5, 18)        # g_norm, g_maxup, ..., g_type×5
+    _ELEM_BUS_SLICE = slice(18, 22)       # b_ground, b_bus1, b_bus2, b_cooldown
+    _ELEM_LINE_SLICE = slice(22, 26)      # ρ, p_tsoverflow, p_tscooldown, p_maintenance
+    _ELEM_FORECAST_SLICE = slice(26, 28)  # p_forecast, q_forecast
 
     # One-hot generator type encoding order used in grid2op
     _GEN_TYPE_ORDER = ["solar", "wind", "hydro", "thermal", "nuclear"]
@@ -979,14 +982,27 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
 
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
         """
-        Build the [num_nodes, 26] node feature matrix for the current observation.
+        Build the [num_nodes, 28] node feature matrix for the current observation.
 
         Args:
             g2op_obs: Current grid2op observation.
         Returns:
-            Node feature matrix [num_nodes, 26] float32.
+            Node feature matrix [num_nodes, 28] float32.
         """
         X = np.zeros((self._num_nodes, self._ELEM_X_DIM), dtype=np.float32)
+
+        # --- Forecasts (slots 26-27): next-timestep p/q for gen and load ---
+        if not g2op_obs._is_done:
+            load_p_fc, load_q_fc, prod_p_fc, prod_q_fc, _ = g2op_obs.get_forecast_arrays()
+            gen_p_forecast = prod_p_fc[1].astype(np.float32)
+            gen_q_forecast = prod_q_fc[1].astype(np.float32)
+            load_p_forecast = load_p_fc[1].astype(np.float32)
+            load_q_forecast = load_q_fc[1].astype(np.float32)
+        else:
+            gen_p_forecast = np.zeros(self._n_gen, dtype=np.float32)
+            gen_q_forecast = np.zeros(self._n_gen, dtype=np.float32)
+            load_p_forecast = np.zeros(self._n_load, dtype=np.float32)
+            load_q_forecast = np.zeros(self._n_load, dtype=np.float32)
 
         # --- Generators ---
         g_p = g2op_obs.gen_p.astype(np.float32)
@@ -1006,6 +1022,8 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         denom = p_max - p_min
         g_norm = np.where(denom > 0, (np.abs(g_p) - p_min) / denom, 0.0)
         X[g_idx, 5] = g_norm  # overwrite slot 5 (g_norm)
+        X[g_idx, 26] = gen_p_forecast
+        X[g_idx, 27] = gen_q_forecast
 
         # --- Loads ---
         l_p = g2op_obs.load_p.astype(np.float32)
@@ -1018,6 +1036,8 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         X[l_idx, 2] = l_q
         X[l_idx, 3] = np.abs(l_v)
         X[l_idx, 4] = np.cos(np.deg2rad(l_theta))
+        X[l_idx, 26] = load_p_forecast
+        X[l_idx, 27] = load_q_forecast
 
         # --- Lines (single node per line, use origin-side electrical quantities) ---
         ln_p = g2op_obs.p_or.astype(np.float32)
@@ -1165,8 +1185,6 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs.hour_of_day, g2op_obs.day_of_week, g2op_obs.minute_of_hour,
         ], dtype=np.float32)
 
-
-# --- Flat observation converter ---
 
 class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
     """

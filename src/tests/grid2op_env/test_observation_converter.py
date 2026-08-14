@@ -24,7 +24,6 @@ from grid2op_env.observation_converter import (
     _GridDimensions,
     NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, EDGES, GLOBAL,
     _DEFAULT_NODE_FEATURES,
-    _ELEM_X_DIM, _ELEM_BASE_SLICE, _ELEM_GEN_SLICE, _ELEM_BUS_SLICE, _ELEM_LINE_SLICE,
 )
 
 ENV_NAME = "l2rpn_wcci_2020"
@@ -33,16 +32,6 @@ env = grid2op.make(ENV_NAME)
 
 class TestGridDimensions(unittest.TestCase):
     """Tests for the _GridDimensions dataclass."""
-
-    def test_num_nodes_without_storage(self):
-        """num_nodes equals 2*n_line + n_gen + n_load when n_storage=0."""
-        dims = _GridDimensions(n_gen=3, n_load=4, n_line=5, n_storage=0)
-        self.assertEqual(dims.num_nodes, 2 * 5 + 3 + 4)
-
-    def test_num_nodes_with_storage(self):
-        """Storage units contribute to num_nodes."""
-        dims = _GridDimensions(n_gen=3, n_load=4, n_line=5, n_storage=2)
-        self.assertEqual(dims.num_nodes, 2 * 5 + 3 + 4 + 2)
 
     def test_from_obs_space(self):
         """from_obs_space reads the correct attributes."""
@@ -58,14 +47,12 @@ class TestGraphObservationConverterSpace(unittest.TestCase):
 
     def setUp(self):
         self.converter = GraphObservationConverter(env.observation_space)
-        self.dims = _GridDimensions.from_obs_space(env.observation_space)
 
     def test_node_feature_shape(self):
         """NODES box has shape (num_nodes, x_dim)."""
-        num_nodes = self.dims.num_nodes
         x_dim = len(_DEFAULT_NODE_FEATURES)
         shape = self.converter.observation_space[NODES].shape
-        self.assertEqual(shape, (num_nodes, x_dim))
+        self.assertEqual(shape, (self.converter.num_nodes, x_dim))
 
     def test_edge_index_shape(self):
         """EDGE_INDEX box has shape (2, max_num_edges)."""
@@ -81,9 +68,8 @@ class TestGraphObservationConverterSpace(unittest.TestCase):
 
     def test_node_mask_shape(self):
         """NODE_MASK box has shape (num_nodes,)."""
-        num_nodes = self.dims.num_nodes
         shape = self.converter.observation_space[NODE_MASK].shape
-        self.assertEqual(shape, (num_nodes,))
+        self.assertEqual(shape, (self.converter.num_nodes,))
 
     def test_node_mask_matches_nodes_first_dim(self):
         """NODE_MASK length equals the first dim of NODES."""
@@ -731,14 +717,14 @@ class TestElementGraphObservationConverterSpace(unittest.TestCase):
         self.assertEqual(self.converter.num_nodes, expected)
 
     def test_x_dim(self):
-        """x_dim equals _ELEM_X_DIM (26)."""
-        self.assertEqual(self.converter.x_dim, _ELEM_X_DIM)
+        """x_dim equals ElementGraphObservationConverter._ELEM_X_DIM (28)."""
+        self.assertEqual(self.converter.x_dim, ElementGraphObservationConverter._ELEM_X_DIM)
 
     def test_node_shape(self):
-        """NODES box has shape (num_nodes, 26)."""
+        """NODES box has shape (num_nodes, 28)."""
         self.assertEqual(
             self.converter.observation_space[NODES].shape,
-            (self.converter.num_nodes, _ELEM_X_DIM),
+            (self.converter.num_nodes, ElementGraphObservationConverter._ELEM_X_DIM),
         )
 
     def test_edge_index_shape(self):
@@ -787,8 +773,8 @@ class TestElementGraphObservationConverterNodeFeatures(unittest.TestCase):
         self.X = self.converter._get_node_features(self.obs)
 
     def test_shape(self):
-        """Node feature matrix has shape (num_nodes, 26)."""
-        self.assertEqual(self.X.shape, (self.converter.num_nodes, _ELEM_X_DIM))
+        """Node feature matrix has shape (num_nodes, 28)."""
+        self.assertEqual(self.X.shape, (self.converter.num_nodes, ElementGraphObservationConverter._ELEM_X_DIM))
 
     def test_dtype(self):
         """Node features are float32."""
@@ -798,19 +784,19 @@ class TestElementGraphObservationConverterNodeFeatures(unittest.TestCase):
         """Generator-specific slots are zero for non-generator nodes."""
         non_gen = np.ones(self.converter.num_nodes, dtype=bool)
         non_gen[self.converter._gen_offset:self.converter._gen_offset + env.n_gen] = False
-        np.testing.assert_array_equal(self.X[non_gen, _ELEM_GEN_SLICE], 0.0)
+        np.testing.assert_array_equal(self.X[non_gen, ElementGraphObservationConverter._ELEM_GEN_SLICE], 0.0)
 
     def test_line_specific_slots_zero_for_non_line(self):
         """Powerline-specific slots are zero for non-powerline nodes."""
         non_line = np.ones(self.converter.num_nodes, dtype=bool)
         non_line[self.converter._line_offset:self.converter._line_offset + env.n_line] = False
-        np.testing.assert_array_equal(self.X[non_line, _ELEM_LINE_SLICE], 0.0)
+        np.testing.assert_array_equal(self.X[non_line, ElementGraphObservationConverter._ELEM_LINE_SLICE], 0.0)
 
     def test_bus_specific_slots_zero_for_non_bus(self):
         """Bus-specific slots are zero for non-bus nodes."""
         non_bus = np.ones(self.converter.num_nodes, dtype=bool)
         non_bus[self.converter._bus_offset:] = False
-        np.testing.assert_array_equal(self.X[non_bus, _ELEM_BUS_SLICE], 0.0)
+        np.testing.assert_array_equal(self.X[non_bus, ElementGraphObservationConverter._ELEM_BUS_SLICE], 0.0)
 
     def test_gen_rho_slot_is_zero(self):
         """Generators don't carry rho (line-specific slot 22)."""
@@ -841,6 +827,21 @@ class TestElementGraphObservationConverterNodeFeatures(unittest.TestCase):
         # |p| (slot 0) should be non-zero for active generators
         self.assertTrue((self.X[gen_slice, 0] >= 0).all())
         self.assertTrue((self.X[load_slice, 0] >= 0).all())
+
+    def test_forecast_slots_zero_for_non_gen_load(self):
+        """Forecast slots (26-27) are zero for lines, storage, and bus nodes."""
+        non_gen_load = np.ones(self.converter.num_nodes, dtype=bool)
+        non_gen_load[self.converter._gen_offset:self.converter._gen_offset + env.n_gen] = False
+        non_gen_load[self.converter._load_offset:self.converter._load_offset + env.n_load] = False
+        np.testing.assert_array_equal(self.X[non_gen_load, ElementGraphObservationConverter._ELEM_FORECAST_SLICE], 0.0)
+
+    def test_forecast_slots_present_for_gen_and_load(self):
+        """Forecast slots (26-27) are populated for generator and load nodes."""
+        gen_slice = slice(self.converter._gen_offset, self.converter._gen_offset + env.n_gen)
+        load_slice = slice(self.converter._load_offset, self.converter._load_offset + env.n_load)
+        # Forecasts are finite floats (not NaN/inf) — content depends on the scenario
+        self.assertTrue(np.isfinite(self.X[gen_slice, ElementGraphObservationConverter._ELEM_FORECAST_SLICE]).all())
+        self.assertTrue(np.isfinite(self.X[load_slice, ElementGraphObservationConverter._ELEM_FORECAST_SLICE]).all())
 
 
 class TestElementGraphObservationConverterEdges(unittest.TestCase):
