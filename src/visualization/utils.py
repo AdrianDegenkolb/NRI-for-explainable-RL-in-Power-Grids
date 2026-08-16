@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List
 
+import matplotlib.colors as mcolors
 import networkx as nx
 import numpy as np
 import numpy.typing as npt
@@ -20,7 +21,10 @@ from grid2op_env.observation_converter import (
     ElementGraphObservationConverter,
     GraphObservationConverter,
     HeterogeneousGraphObservationConverter,
+    LODFGraphObservationConverter,
+    PTDFGraphObservationConverter,
     SubstationGraphObservationConverter,
+    ZbusGraphObservationConverter,
     ObservationConverter,
     EDGES,
     EDGE_MASK,
@@ -903,6 +907,50 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
             ))
 
         return node_styles
+    elif observation_space in (PTDFGraphObservationConverter, ZbusGraphObservationConverter):
+        plot_helper = PlotMatplot(env.observation_space)
+        layout = plot_helper._grid_layout
+        offset = 10.0
+        n_sub = env.n_sub
+
+        # Bus slot ordering: slot = (busbar - 1) * n_sub + sub_id
+        # Slots 0..n_sub-1 → busbar 1; slots n_sub..2*n_sub-1 → busbar 2.
+        node_styles = [None] * (2 * n_sub)
+        for sub_id in range(n_sub):
+            base = np.array(layout[f"sub_{sub_id}"], dtype=float)
+            node_styles[sub_id] = NodeStyle(
+                position=base + np.array([-offset, 0.0]),
+                color="steelblue",
+                shape="o",
+                size=200,
+                label="Busbar 1",
+            )
+            node_styles[n_sub + sub_id] = NodeStyle(
+                position=base + np.array([+offset, 0.0]),
+                color="tomato",
+                shape="o",
+                size=200,
+                label="Busbar 2",
+            )
+        return node_styles
+    elif observation_space == LODFGraphObservationConverter:
+        plot_helper = PlotMatplot(env.observation_space)
+        layout = plot_helper._grid_layout
+
+        # One node per powerline, positioned at the midpoint between its
+        # origin and extremity substation.
+        node_styles = []
+        for lid in range(env.n_line):
+            or_pos = np.array(layout[f"sub_{int(env.line_or_to_subid[lid])}"], dtype=float)
+            ex_pos = np.array(layout[f"sub_{int(env.line_ex_to_subid[lid])}"], dtype=float)
+            node_styles.append(NodeStyle(
+                position=(or_pos + ex_pos) / 2.0,
+                color="steelblue",
+                shape="o",
+                size=100,
+                label="Powerline",
+            ))
+        return node_styles
     else:
         raise NotImplementedError()
 
@@ -910,28 +958,48 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
 def get_edge_styles(
     gym_obs: dict,
     observation_space: type[ObservationConverter],
+    edge_mask: Optional[npt.NDArray] = None,
 ) -> Optional[List[EdgeStyle]]:
     """
     Return per-edge style objects for the active edges in a gym observation.
 
     Returns one :class:`EdgeStyle` per column in the masked ``EDGE_INDEX``,
-    ordered the same way as ``gym_obs[EDGE_INDEX][:, edge_mask]``.
+    ordered the same way as ``gym_obs[EDGE_INDEX][:, mask]``.
     Returns *None* for converters that do not carry typed or attributed edges
     (e.g. :class:`GraphObservationConverter`, :class:`SubstationGraphObservationConverter`).
 
     :param gym_obs: gym observation dict produced by ``converter.to_gym(obs)``
     :param observation_space: the converter class used to produce ``gym_obs``
+    :param edge_mask: optional boolean mask override (e.g. a top-K filter); if
+                      *None* ``gym_obs[EDGE_MASK]`` is used.
     :return: list of :class:`EdgeStyle` objects (one per active edge), or *None*
     """
-    edge_mask = gym_obs[EDGE_MASK].astype(bool)
+    mask = gym_obs[EDGE_MASK].astype(bool) if edge_mask is None else edge_mask.astype(bool)
 
     if observation_space == HeterogeneousGraphObservationConverter:
-        edge_types = gym_obs[EDGE_TYPE][edge_mask]
+        edge_types = gym_obs[EDGE_TYPE][mask]
         return [_HETERO_EDGE_TYPE_STYLES[int(t)] for t in edge_types]
 
     if observation_space == ElementGraphObservationConverter:
-        edge_attrs = gym_obs[EDGES][:, 0][edge_mask]
+        edge_attrs = gym_obs[EDGES][:, 0][mask]
         return [_ELEM_EDGE_STYLES[int(a)] for a in edge_attrs]
+
+    if observation_space in (PTDFGraphObservationConverter,
+                             LODFGraphObservationConverter,
+                             ZbusGraphObservationConverter):
+        weights = np.nan_to_num(gym_obs[EDGES][:, 0][mask], nan=0.0, posinf=0.0, neginf=0.0)
+        w_min, w_max = weights.min(), weights.max()
+        norm_w = np.clip((weights - w_min) / (w_max - w_min + 1e-9), 0.0, 1.0)
+        cmap = plt.get_cmap("YlOrRd")
+        return [
+            EdgeStyle(
+                color=mcolors.to_hex(cmap(float(w))),
+                width=0.1 + 3 * float(w),
+                alpha=0.1 + 0.9 * float(w),
+                label="Coupling strength",
+            )
+            for w in norm_w
+        ]
 
     return None
 

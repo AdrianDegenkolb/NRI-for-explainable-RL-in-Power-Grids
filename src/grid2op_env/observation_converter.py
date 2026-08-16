@@ -1420,7 +1420,7 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
             D: [2*n_sub, 2*n_sub] symmetric distance matrix.
         """
         diff = PTDF[:, :, np.newaxis] - PTDF[:, np.newaxis, :]  # (n_br, n_bus, n_bus)
-        return np.abs(diff).sum(axis=0)  # (2*n_sub, 2*n_sub)
+        return np.nan_to_num(np.abs(diff).sum(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
 
     def _get_nodes_and_mask(
         self, g2op_obs: BaseObservation
@@ -1553,6 +1553,364 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         }
 
 
+class LODFGraphObservationConverter(ObservationConverter[Dict]):
+    """
+    LODF-based contingency coupling graph.
+
+    Nodes represent powerlines (n_line nodes, fixed count — no padding).
+    Edges are fully connected between all line pairs; the edge weight is:
+
+        W[i, j] = |LODF[i, j]|
+
+    where LODF[i, j] is the Line Outage Distribution Factor — the fractional
+    change in flow on line i when line j is removed.  High |LODF| means the
+    two lines are tightly coupled under contingency: tripping one strongly
+    affects the other.
+
+    NODE_MASK is True for connected lines (obs.line_status).
+    EDGE_MASK is True only when both endpoint lines are connected.
+    EDGES carries the running-normalized |LODF| value as a scalar [E, 1].
+
+    Like PTDF, LODF depends only on network topology (not on operating point),
+    so it is cached per line-status vector and recomputed only on topology changes.
+
+    Node features per line (x_dim = 7):
+      0: rho              — relative line loading
+      1: p_or             — active power flow (origin side)
+      2: q_or             — reactive power flow (origin side)
+      3: v_or             — voltage magnitude (origin side)
+      4: cos(theta_or)    — voltage angle cosine (origin side)
+      5: sin(theta_or)    — voltage angle sine (origin side)
+      6: line_status      — 1.0 if connected, 0.0 if disconnected
+    """
+
+    _X_DIM = 7
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        verbose: bool = False,
+    ):
+        if g2op_obs_space.n_line == 0:
+            raise ValueError("LODFGraphObservationConverter requires n_line > 0.")
+
+        self._grid = backend._grid
+        self._n_line = g2op_obs_space.n_line
+
+        n_line = self._n_line
+        self._num_edges = n_line * (n_line - 1)  # directed, no self-loops
+
+        # Static fully-connected directed edge index (no self-loops)
+        idx = np.arange(n_line)
+        ii, jj = np.meshgrid(idx, idx, indexing="ij")
+        no_self_loop = ii != jj
+        self._edge_index = np.stack([ii[no_self_loop], jj[no_self_loop]]).astype(np.int64)
+
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf, shape=(n_line, self._X_DIM), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=n_line - 1, shape=(2, self._num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1, shape=(self._num_edges,), dtype=np.bool_),
+            EDGES: Box(low=-np.inf, high=np.inf, shape=(self._num_edges, 1), dtype=np.float32),
+            NODE_MASK: Box(low=0, high=1, shape=(n_line,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        self._normalizer = RunningMeanStd(shape=(self._X_DIM,))
+        self._edge_normalizer = RunningMeanStd(shape=(1,))
+        self._timings: dict[str, float] = {}
+
+        # LODF cache: _cached_D = |LODF[:n_line, :n_line]|, shares lifetime with LODF.
+        self._cached_D: Optional[np.ndarray] = None
+        self._cached_line_status: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"LODFGraphObservationConverter: {n_line} nodes (powerlines), "
+                f"{self._num_edges} directed edges, x_dim={self._X_DIM}."
+            )
+
+    @property
+    def observation_space(self) -> Dict:
+        return self._observation_space
+
+    @property
+    def num_nodes(self) -> int:
+        """Number of powerline nodes (= n_line, fixed)."""
+        return self._n_line
+
+    @property
+    def max_nodes(self) -> int:
+        """Maximum number of nodes across all observations (= n_line)."""
+        return self._n_line
+
+    @property
+    def num_edges(self) -> int:
+        """Total directed edges in the fully-connected line graph."""
+        return self._num_edges
+
+    def _get_lodf_cached(self, line_status: np.ndarray) -> None:
+        """
+        Recompute |LODF[:n_line, :n_line]| and store in _cached_D when topology changes.
+
+        LODF is topology-dependent but operating-point-independent (DC linearization),
+        so caching on line_status is sufficient.
+
+        Note: dc_pf is called directly on the C++ grid model.  This is safe because
+        lightsim2grid maintains separate DC and AC solver objects; the AC voltage state
+        used by subsequent env.step() calls is not affected.
+
+        Args:
+            line_status: Boolean array [n_line] of current line connection state.
+        """
+        if (self._cached_line_status is None
+                or not np.array_equal(line_status, self._cached_line_status)):
+            Vinit = np.ones(self._grid.total_bus(), dtype=complex)
+            Vdc = self._grid.dc_pf(Vinit, 10, 1e-8)
+            if Vdc.shape[0] == 0:
+                raise RuntimeError(
+                    "DC power flow diverged; LODF cannot be computed for current topology."
+                )
+            lodf = self._grid.get_lodf()  # (n_branches, n_branches)
+            lodf_sub = np.nan_to_num(
+                lodf[:self._n_line, :self._n_line], nan=0.0, posinf=0.0, neginf=0.0
+            )
+            self._cached_D = np.abs(lodf_sub)  # (n_line, n_line)
+            self._cached_line_status = line_status.copy()
+
+    def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """
+        Build the [n_line, 7] node feature matrix for the current observation.
+
+        Features for disconnected lines (line_status == False) are zeroed out.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Node feature matrix [n_line, 7] float32.
+        """
+        line_status = g2op_obs.line_status  # dtype bool, shape (n_line,)
+        theta_or = np.deg2rad(g2op_obs.theta_or).astype(np.float32)
+        X = np.column_stack([
+            g2op_obs.rho.astype(np.float32),
+            g2op_obs.p_or.astype(np.float32),
+            g2op_obs.q_or.astype(np.float32),
+            g2op_obs.v_or.astype(np.float32),
+            np.cos(theta_or),
+            np.sin(theta_or),
+            line_status.astype(np.float32),
+        ])  # (n_line, 7)
+        X[~line_status] = 0.0
+        return X
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to an LODF-based contingency coupling graph.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        Returns:
+            Dict with keys:
+              NODES:      [n_line, 7] float32, per-line electrical features (zeroed for disconnected).
+              EDGE_INDEX: [2, n_line*(n_line-1)] int64, static fully-connected directed index.
+              EDGE_MASK:  [n_line*(n_line-1)] bool, True where both endpoint lines are connected.
+              EDGES:      [n_line*(n_line-1), 1] float32, normalized |LODF[i,j]| (zeroed for inactive).
+              NODE_MASK:  [n_line] bool, True for connected lines.
+              GLOBAL:     [6] float32, time-based features.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features = self._get_node_features(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        self._get_lodf_cached(g2op_obs.line_status)
+        self._timings["lodf_ms"] = (time.perf_counter() - t0) * 1000
+        if self._cached_D is None:
+            raise RuntimeError("LODF cache is uninitialized after _get_lodf_cached — DC PF likely failed.")
+
+        node_mask = g2op_obs.line_status.astype(bool)
+        global_features = self._get_global_features(g2op_obs)
+
+        src, dst = self._edge_index[0], self._edge_index[1]
+        edge_weights = self._cached_D[src, dst].astype(np.float32)[:, np.newaxis]  # [num_edges, 1]
+        edge_mask = node_mask[src] & node_mask[dst]
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: self._edge_index,
+            EDGE_MASK: edge_mask,
+            EDGES: edge_weights,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict[str, npt.NDArray]) -> dict[str, npt.NDArray]:
+        """
+        Normalize node features and edge weights using separate running statistics.
+
+        Only connected lines (NODE_MASK=True) update the node normalizer; disconnected
+        line features are zeroed after normalization.  Only active edges (EDGE_MASK=True)
+        update the edge normalizer; inactive edges are zeroed.
+
+        Args:
+            gym_obs: LODF graph observation dict with raw features.
+        """
+        node_features = gym_obs[NODES]   # (n_line, 7)
+        node_mask = gym_obs[NODE_MASK]   # (n_line,)
+        edge_weights = gym_obs[EDGES]    # (num_edges, 1)
+        edge_mask = gym_obs[EDGE_MASK]   # (num_edges,)
+
+        active_features = node_features[node_mask]
+        if active_features.shape[0] > 0:
+            self._normalizer.update(active_features)
+        normalized_nodes = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
+        normalized_nodes[~node_mask] = 0.0
+
+        active_edges = edge_weights[edge_mask]  # (n_active, 1)
+        if active_edges.shape[0] > 0:
+            self._edge_normalizer.update(active_edges)
+        normalized_edges = (edge_weights - self._edge_normalizer.mean) / np.sqrt(self._edge_normalizer.var + 1e-8)
+        normalized_edges[~edge_mask] = 0.0
+
+        return {
+            NODES: normalized_nodes.astype(np.float32),
+            EDGE_INDEX: gym_obs[EDGE_INDEX],
+            EDGE_MASK: edge_mask,
+            EDGES: normalized_edges.astype(np.float32),
+            NODE_MASK: node_mask,
+            GLOBAL: gym_obs[GLOBAL],
+        }
+
+    @staticmethod
+    def _get_global_features(g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """Extract time-based global features."""
+        return np.array([
+            g2op_obs.year, g2op_obs.month, g2op_obs.day,
+            g2op_obs.hour_of_day, g2op_obs.day_of_week, g2op_obs.minute_of_hour,
+        ], dtype=np.float32)
+
+
+class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
+    """
+    Zbus-based electrical admittance graph.
+
+    Nodes represent busbars (up to 2 per substation → max_nodes = 2*n_sub).
+    Edges are fully connected over all bus-slot pairs; the edge weight is the
+    bus-to-bus admittance derived from the bus impedance matrix:
+
+        W[i, j] = 1 / (|Zbus[i, j]| + ε)
+
+    where Zbus = pinv(Ybus) (Moore-Penrose pseudoinverse of the bus admittance
+    matrix).  High admittance means buses are electrically close; near-zero
+    admittance means they are electrically isolated.
+
+    NODE_MASK, EDGE_MASK, EDGES, node features, and normalization are inherited
+    unchanged from PTDFGraphObservationConverter.
+
+    Unlike PTDF/LODF, computing Ybus does not require running a DC power flow —
+    it is derived directly from network topology and line parameters.  Zbus
+    depends on both line connectivity (line_status) and busbar assignments
+    (topo_vect), so the cache key is obs.topo_vect (which encodes both).
+    """
+
+    # Denominator guard: prevents division by zero for isolated/disconnected buses.
+    _ZBUS_EPS = 1e-6
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        # Inherit full bus-level structure (obs space, edge index, normalizers,
+        # _get_nodes_and_mask, normalize, _get_global_features).
+        # Structure-specific cache variables are overridden below.
+        super().__init__(backend, g2op_obs_space, attr_to_observe, verbose)
+
+        # Replace PTDF cache with Zbus cache keyed on the full topology vector.
+        # topo_vect encodes both line status and busbar assignments, so any
+        # topology change that affects Ybus is detected.
+        del self._cached_ptdf
+        self._cached_D = None
+        self._cached_line_status = None          # unused; kept to avoid AttributeError on parent methods
+        self._cached_topo_vect: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"ZbusGraphObservationConverter: {self._max_nodes} max nodes "
+                f"({self._n_sub} subs × 2 buses), {self._max_num_edges} directed edges, "
+                f"{len(self.attr_to_observe)} features per node ({', '.join(self.attr_to_observe)})."
+            )
+
+    def _get_zbus_cached(self, topo_vect: np.ndarray) -> None:
+        """
+        Recompute the admittance matrix 1/(|Zbus| + ε) when topology changes.
+
+        Zbus = pinv(Ybus) where Ybus = grid.get_Ybus() (sparse, (2*n_sub, 2*n_sub)).
+        Ybus encodes both line connectivity and busbar assignments, so caching on
+        the full topo_vect catches both line trips and bus-bar splits.
+
+        No dc_pf is required — get_Ybus() reads directly from network parameters.
+
+        Args:
+            topo_vect: Integer array [dim_topo] encoding current busbar assignments.
+        """
+        if (self._cached_topo_vect is None
+                or not np.array_equal(topo_vect, self._cached_topo_vect)):
+            import scipy.linalg
+            Ybus = self._grid.get_Ybus()            # sparse CSC, (2*n_sub, 2*n_sub), complex
+            Zbus = scipy.linalg.pinv(Ybus.toarray())  # dense, (2*n_sub, 2*n_sub), complex
+            self._cached_D = 1.0 / (np.abs(Zbus) + self._ZBUS_EPS)  # (2*n_sub, 2*n_sub)
+            self._cached_topo_vect = topo_vect.copy()
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a Zbus-based electrical admittance graph.
+
+        Args:
+            g2op_obs: The grid2op observation to convert.
+        Returns:
+            Dict with keys:
+              NODES:      [max_nodes, x_dim] float32, aggregated bus features (zeroed for inactive).
+              EDGE_INDEX: [2, max_num_edges] int64, static fully-connected directed index.
+              EDGE_MASK:  [max_num_edges] bool, True where both endpoint buses are active.
+              EDGES:      [max_num_edges, 1] float32, normalized 1/|Zbus[i,j]| (zeroed for inactive).
+              NODE_MASK:  [max_nodes] bool, True for buses with ≥1 connected element.
+              GLOBAL:     [6] float32, time-based features.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features, node_mask = self._get_nodes_and_mask(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        self._get_zbus_cached(g2op_obs.topo_vect)
+        self._timings["zbus_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        src, dst = self._edge_index_full[0], self._edge_index_full[1]
+        edge_weights = self._cached_D[src, dst].astype(np.float32)[:, np.newaxis]  # [max_num_edges, 1]
+        edge_mask = node_mask[src] & node_mask[dst]
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: self._edge_index_full,
+            EDGE_MASK: edge_mask,
+            EDGES: edge_weights,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+
 # --- Factory ---
 def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config."""
@@ -1582,6 +1940,19 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         )
     elif mode == "PTDFGraphObsSpace":
         return PTDFGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "LODFGraphObsSpace":
+        return LODFGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "ZbusGraphObsSpace":
+        return ZbusGraphObservationConverter(
             backend=gym_env.init_env.backend,
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),
