@@ -21,9 +21,12 @@ from grid2op_env.observation_converter import (
     ElementGraphObservationConverter,
     GraphObservationConverter,
     HeterogeneousGraphObservationConverter,
+    ElementLODFGraphObservationConverter,
     LODFGraphObservationConverter,
     PTDFGraphObservationConverter,
     SubstationGraphObservationConverter,
+    SubstationPTDFGraphObservationConverter,
+    SubstationZbusGraphObservationConverter,
     ZbusGraphObservationConverter,
     ObservationConverter,
     EDGES,
@@ -789,7 +792,9 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         ]
 
         return node_styles
-    elif observation_space == SubstationGraphObservationConverter:
+    elif observation_space in (SubstationGraphObservationConverter,
+                               SubstationPTDFGraphObservationConverter,
+                               SubstationZbusGraphObservationConverter):
         plot_helper = PlotMatplot(env.observation_space)
         layout = plot_helper._grid_layout
 
@@ -816,7 +821,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
             ))
 
         return node_styles
-    elif observation_space == ElementGraphObservationConverter:
+    elif observation_space in (ElementGraphObservationConverter, ElementLODFGraphObservationConverter):
         plot_helper = PlotMatplot(env.observation_space)
         layout = plot_helper._grid_layout
 
@@ -980,6 +985,35 @@ def get_edge_styles(
         edge_types = gym_obs[EDGE_TYPE][mask]
         return [_HETERO_EDGE_TYPE_STYLES[int(t)] for t in edge_types]
 
+    if observation_space == ElementLODFGraphObservationConverter:
+        edge_types = gym_obs[EDGE_TYPE][mask]   # [total_E]
+        edge_attrs = gym_obs[EDGES][:, 0][mask]  # [total_E]
+
+        # Normalise LODF weights (type-1 only) for colour mapping.
+        lodf_weights = edge_attrs[edge_types == 1]
+        if lodf_weights.size > 0:
+            w_min, w_max = lodf_weights.min(), lodf_weights.max()
+            norm_lodf = np.clip((lodf_weights - w_min) / (w_max - w_min + 1e-9), 0.0, 1.0)
+        else:
+            norm_lodf = np.empty(0)
+        cmap = plt.get_cmap("YlOrRd")
+
+        lodf_idx = 0
+        styles: List[EdgeStyle] = []
+        for t, attr in zip(edge_types, edge_attrs):
+            if int(t) == 0:
+                styles.append(_ELEM_EDGE_STYLES[int(np.clip(attr, 0, 1))])
+            else:
+                w = float(norm_lodf[lodf_idx])
+                lodf_idx += 1
+                styles.append(EdgeStyle(
+                    color=mcolors.to_hex(cmap(w)),
+                    width=0.1 + 2.0 * w,
+                    alpha=0.1 + 0.7 * w,
+                    label="LODF coupling (type 1)",
+                ))
+        return styles
+
     if observation_space == ElementGraphObservationConverter:
         edge_attrs = gym_obs[EDGES][:, 0][mask]
         return [_ELEM_EDGE_STYLES[int(a)] for a in edge_attrs]
@@ -1000,6 +1034,46 @@ def get_edge_styles(
             )
             for w in norm_w
         ]
+
+    if observation_space in (SubstationPTDFGraphObservationConverter,
+                             SubstationZbusGraphObservationConverter):
+        edge_types = gym_obs[EDGE_TYPE][mask]   # [total_E]
+        edge_attrs = gym_obs[EDGES][:, 0][mask]  # [total_E]
+
+        # Normalise physics-edge weights (type 1) for colour mapping.
+        type1_sel = edge_types == 1
+        phys_weights = np.nan_to_num(edge_attrs[type1_sel], nan=0.0, posinf=0.0, neginf=0.0)
+        if phys_weights.size > 0:
+            w_min, w_max = phys_weights.min(), phys_weights.max()
+            norm_phys = np.clip((phys_weights - w_min) / (w_max - w_min + 1e-9), 0.0, 1.0)
+        else:
+            norm_phys = np.empty(0)
+        cmap = plt.get_cmap("YlOrRd")
+
+        phys_idx = 0
+        styles: List[EdgeStyle] = []
+        for t in edge_types:
+            if int(t) == 0:
+                styles.append(EdgeStyle(
+                    color="steelblue",
+                    width=1.0,
+                    alpha=0.7,
+                    label="Topology (type 0)",
+                    linestyle="dashed",
+                ))
+            else:
+                w = float(norm_phys[phys_idx])
+                phys_idx += 1
+                label = ("PTDF distance (type 1)"
+                         if observation_space == SubstationPTDFGraphObservationConverter
+                         else "Zbus admittance (type 1)")
+                styles.append(EdgeStyle(
+                    color=mcolors.to_hex(cmap(w)),
+                    width=0.1 + 2.5 * w,
+                    alpha=0.1 + 0.8 * w,
+                    label=label,
+                ))
+        return styles
 
     return None
 

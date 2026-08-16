@@ -1,0 +1,2 @@
+# Graph observation space — required by GNN and RAGNN models.
+observation_space: SubstationGraphObsSpace

@@ -27,6 +27,7 @@ EDGES = "edge_features"         # keys edge features in the observation [E, e_di
 EDGE_MASK = "edge_mask"         # keys boolean mask that masks which rows in the returned edge-feature-tensor actually encode edge features [E]
 EDGE_INDEX = "edge_index"       # keys the edge index which notes node pairs that are connected by notes [2, E]
 EDGE_TYPE = "edge_type"         # keys edge types per edge [E]
+EDGE_WEIGHTS = "edge_weights"    # keys the edge weight per edge [E]
 GLOBAL = "global_features"      # keys global features in the observation
 
 
@@ -1187,6 +1188,229 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         ], dtype=np.float32)
 
 
+class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
+    """
+    Element-level graph extended with LODF contingency-coupling edges.
+
+    Inherits the element-to-busbar static topology from
+    :class:`ElementGraphObservationConverter`:
+
+    * Type 0 — element-bus connections (binary edge attr: 1 if active bus assignment)
+
+    Adds a second edge type:
+
+    * Type 1 — directed LODF coupling edges (line[i] → line[j], i ≠ j)
+
+    Powerline nodes sit at indices ``line_offset + i`` = ``n_gen + n_load + i``.
+    Edge weight ``EDGES[e, 0]`` for a type-1 edge is ``|LODF[i, j]|`` — the
+    fractional flow change on line i when line j trips.
+
+    All type-0 edges carry the binary bus-assignment attribute from the parent so
+    that ``EDGES`` is uniform in shape across both types.  Type-0 edges are always
+    active; type-1 LODF edges are active only when both line i and line j are
+    connected (``line_status[i] & line_status[j]``).
+
+    LODF depends only on network topology, so it is cached per ``line_status``
+    and recomputed only on topology changes via the shared
+    :func:`_compute_lodf` module-level helper.
+
+    ``EDGE_TYPE`` is declared as ``Box(low=0, high=1, …)``; the downstream
+    :class:`~rarl_rllib.ppo.gnn_ppo_model.GNNBaselineModel` derives
+    ``num_edge_types = high + 1 = 2`` automatically.
+
+    Observation keys
+    ----------------
+    NODES      : [num_nodes, 28]         — element node features (identical to parent)
+    EDGE_INDEX : [2, max_num_edges]      — padded connectivity
+    EDGE_MASK  : [max_num_edges]         — True for active edges
+    EDGES      : [max_num_edges, 1]      — bus assignment (type 0) or |LODF| (type 1)
+    EDGE_TYPE  : [max_num_edges]         — 0/1 per edge, 0 for padding
+    NODE_MASK  : [num_nodes]             — all True (element nodes always present)
+    GLOBAL     : [6]                     — time-based global features
+
+    :param backend: LightSimBackend instance (for LODF via ``get_lodf()``).
+    :param g2op_obs_space: grid2op observation space.
+    :param verbose: log converter dimensions on construction.
+    """
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        verbose: bool = False,
+    ):
+        super().__init__(g2op_obs_space, verbose)
+        self._grid = backend._grid
+
+        n_line = self._n_line
+
+        # Directed LODF edges: line[i] → line[j] for all i ≠ j.
+        # Powerline nodes start at self._line_offset = n_gen + n_load.
+        self._n_lodf_edges = n_line * (n_line - 1)
+        idx = np.arange(n_line)
+        ii, jj = np.meshgrid(idx, idx, indexing="ij")
+        no_self_loop = ii != jj
+        self._lodf_edge_index = np.stack([
+            ii[no_self_loop] + self._line_offset,
+            jj[no_self_loop] + self._line_offset,
+        ]).astype(np.int64)  # [2, n_lodf_edges]
+
+        self._max_num_edges = self._num_edges + self._n_lodf_edges
+
+        # Rebuild obs space with padded shapes and new EDGE_TYPE key.
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._num_nodes, self._ELEM_X_DIM), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._num_nodes - 1,
+                            shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.bool_),
+            EDGES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._max_num_edges, 1), dtype=np.float32),
+            EDGE_TYPE: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.int64),
+            NODE_MASK: Box(low=0, high=1,
+                           shape=(self._num_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        self._edge_normalizer = RunningMeanStd(shape=(1,))
+        self._cached_D: Optional[np.ndarray] = None
+        self._cached_line_status: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"ElementLODFGraphObservationConverter: {self._num_nodes} nodes, "
+                f"<= {self._max_num_edges} edges "
+                f"({self._num_edges} element-bus + {self._n_lodf_edges} LODF), "
+                f"x_dim={self._ELEM_X_DIM}."
+            )
+
+    def _get_lodf_cached(self, line_status: np.ndarray) -> None:
+        """
+        Update _cached_D when line_status changes. Delegates to :func:`_compute_lodf`.
+
+        Args:
+            line_status: Boolean array [n_line] of current line connection state.
+        """
+        self._cached_D, self._cached_line_status = _compute_lodf(
+            self._grid, self._n_line, line_status,
+            self._cached_line_status, self._cached_D,
+        )
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to an element+LODF graph observation.
+
+        Type-0 edges are the static element-bus connections (binary bus-assignment
+        attr); type-1 LODF edges are directed powerline-to-powerline edges.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Dict with keys NODES, EDGE_INDEX, EDGE_MASK, EDGES, EDGE_TYPE,
+            NODE_MASK, GLOBAL.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features = self._get_node_features(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        edge_attr = self._get_edge_attr(g2op_obs)   # [num_edges, 1] binary
+        self._timings["edge_attr_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        self._get_lodf_cached(g2op_obs.line_status)
+        self._timings["lodf_ms"] = (time.perf_counter() - t0) * 1000
+
+        # Local line indices (0-based) for LODF src/dst lookup.
+        lodf_src_local = self._lodf_edge_index[0] - self._line_offset
+        lodf_dst_local = self._lodf_edge_index[1] - self._line_offset
+        raw_lodf = self._cached_D[lodf_src_local, lodf_dst_local].astype(np.float32)
+        line_status = g2op_obs.line_status.astype(bool)
+        lodf_mask = line_status[lodf_src_local] & line_status[lodf_dst_local]
+
+        global_features = self._get_global_features(g2op_obs)
+
+        n0 = self._num_edges
+        n1 = self._n_lodf_edges
+        E = self._max_num_edges
+
+        edge_index_padded = np.zeros((2, E), dtype=np.int64)
+        edge_index_padded[:, :n0] = self._edge_index
+        edge_index_padded[:, n0:n0 + n1] = self._lodf_edge_index
+
+        edge_mask = np.zeros(E, dtype=bool)
+        edge_mask[:n0] = True                      # type-0 always active
+        edge_mask[n0:n0 + n1] = lodf_mask
+
+        edge_type = np.zeros(E, dtype=np.int64)
+        edge_type[n0:n0 + n1] = 1
+
+        edges_padded = np.zeros((E, 1), dtype=np.float32)
+        edges_padded[:n0] = edge_attr
+        edges_padded[n0:n0 + n1, 0] = raw_lodf
+
+        node_mask = np.ones(self._num_nodes, dtype=np.bool_)
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: edge_index_padded,
+            EDGE_MASK: edge_mask,
+            EDGES: edges_padded,
+            EDGE_TYPE: edge_type,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features and LODF edge attributes with separate running statistics.
+
+        * Nodes: running normalizer from parent (all element nodes always present).
+        * Type-1 (LODF) edges: separate running normalizer on active |LODF| values.
+        * Type-0 (element-bus) edges: binary attribute, passed through unchanged.
+        * EDGE_TYPE, EDGE_INDEX, NODE_MASK, GLOBAL pass through unchanged.
+
+        Args:
+            gym_obs: Raw observation dict from to_gym.
+        """
+        node_features = gym_obs[NODES]
+        self._normalizer.update(node_features)
+        normalized_nodes = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
+
+        edges = gym_obs[EDGES]          # (E, 1)
+        edge_mask = gym_obs[EDGE_MASK]  # (E,)
+        edge_type = gym_obs[EDGE_TYPE]  # (E,)
+
+        lodf_active = edge_mask & (edge_type == 1)
+        active_lodf_vals = edges[lodf_active]
+        if active_lodf_vals.shape[0] > 0:
+            self._edge_normalizer.update(active_lodf_vals)
+
+        normalized_edges = np.zeros_like(edges)
+        normalized_edges[edge_type == 0] = edges[edge_type == 0]   # pass binary attrs through
+        if lodf_active.any():
+            normalized_edges[lodf_active] = (
+                (active_lodf_vals - self._edge_normalizer.mean)
+                / np.sqrt(self._edge_normalizer.var + 1e-8)
+            )
+
+        return {
+            NODES: normalized_nodes.astype(np.float32),
+            EDGE_INDEX: gym_obs[EDGE_INDEX],
+            EDGE_MASK: edge_mask,
+            EDGES: normalized_edges.astype(np.float32),
+            EDGE_TYPE: edge_type,
+            NODE_MASK: gym_obs[NODE_MASK],
+            GLOBAL: gym_obs[GLOBAL],
+        }
+
+
 class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
     """
     Converts grid2op observations into a flat Dict observation where each key
@@ -1247,6 +1471,47 @@ class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
             result[attr] = normalized[offset:offset + size].reshape(shape).astype(np.float32)
             offset += size
         return result
+
+
+def _compute_ptdf_distance(
+    grid,
+    line_status: np.ndarray,
+    cached_line_status: Optional[np.ndarray],
+    cached_ptdf: Optional[np.ndarray],
+    cached_D: Optional[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Return (ptdf, D, line_status_copy), recomputing only when line_status changes.
+
+    D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|  (L1 PTDF distance, [2*n_sub, 2*n_sub]).
+
+    DC PF is called directly on the C++ grid model, which is safe because
+    lightsim2grid keeps separate DC and AC solver objects.
+
+    Args:
+        grid: lightsim2grid GridModel instance (backend._grid).
+        line_status: Boolean array [n_line] of current line connection state.
+        cached_line_status: Previously cached line_status (or None).
+        cached_ptdf: Previously cached PTDF matrix (or None).
+        cached_D: Previously cached distance matrix (or None).
+    Returns:
+        (ptdf, D, line_status_copy) — ptdf is [n_branches, 2*n_sub],
+        D is [2*n_sub, 2*n_sub] symmetric, non-negative.
+    Raises:
+        RuntimeError: if the DC power flow diverges.
+    """
+    if cached_line_status is not None and np.array_equal(line_status, cached_line_status):
+        return cached_ptdf, cached_D, cached_line_status
+    Vinit = np.ones(grid.total_bus(), dtype=complex)
+    Vdc = grid.dc_pf(Vinit, 10, 1e-8)
+    if Vdc.shape[0] == 0:
+        raise RuntimeError(
+            "DC power flow diverged; PTDF cannot be computed for current topology."
+        )
+    ptdf = grid.get_ptdf()
+    diff = ptdf[:, :, np.newaxis] - ptdf[:, np.newaxis, :]  # (n_br, n_bus, n_bus)
+    D = np.nan_to_num(np.abs(diff).sum(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
+    return ptdf, D, line_status.copy()
 
 
 class PTDFGraphObservationConverter(GraphObservationConverter):
@@ -1379,48 +1644,19 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         """
         Return the PTDF matrix, recomputing only when line_status has changed.
 
-        DC PTDF depends solely on network topology (line connectivity and
-        reactances), not on the current operating point, so a flat Vinit is
-        sufficient.  Caching avoids redundant DC power flow calls at every step.
-        The distance matrix D is cached alongside PTDF since it has the same
-        topology-dependent lifetime.
-
-        Note: dc_pf is called directly on the C++ grid model (not via
-        LightSimBackend.runpf).  This is safe because lightsim2grid maintains
-        fully separate solver objects for DC and AC computations, so this call
-        does not modify the AC voltage state used by subsequent env.step() calls.
+        Delegates to the module-level :func:`_compute_ptdf_distance` helper which
+        is shared with :class:`SubstationPTDFGraphObservationConverter`.
 
         Args:
             line_status: Boolean array [n_line] of current line connection state.
         Returns:
             PTDF matrix [n_branches, 2*n_sub].
         """
-        if (self._cached_line_status is None
-                or not np.array_equal(line_status, self._cached_line_status)):
-            Vinit = np.ones(self._grid.total_bus(), dtype=complex)
-            Vdc = self._grid.dc_pf(Vinit, 10, 1e-8)
-            if Vdc.shape[0] == 0:
-                raise RuntimeError(
-                    "DC power flow diverged; PTDF cannot be computed for current topology."
-                )
-            self._cached_ptdf = self._grid.get_ptdf()
-            self._cached_D = self._ptdf_distance_matrix(self._cached_ptdf)
-            self._cached_line_status = line_status.copy()
+        self._cached_ptdf, self._cached_D, self._cached_line_status = _compute_ptdf_distance(
+            self._grid, line_status,
+            self._cached_line_status, self._cached_ptdf, self._cached_D,
+        )
         return self._cached_ptdf
-
-    def _ptdf_distance_matrix(self, PTDF: np.ndarray) -> np.ndarray:
-        """
-        Compute the pairwise L1 PTDF distance between all bus pairs.
-
-        D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|
-
-        Args:
-            PTDF: [n_branches, 2*n_sub] PTDF matrix.
-        Returns:
-            D: [2*n_sub, 2*n_sub] symmetric distance matrix.
-        """
-        diff = PTDF[:, :, np.newaxis] - PTDF[:, np.newaxis, :]  # (n_br, n_bus, n_bus)
-        return np.nan_to_num(np.abs(diff).sum(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
 
     def _get_nodes_and_mask(
         self, g2op_obs: BaseObservation
@@ -1553,6 +1789,44 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         }
 
 
+def _compute_lodf(
+    grid,
+    n_line: int,
+    line_status: np.ndarray,
+    cached_line_status: Optional[np.ndarray],
+    cached_D: Optional[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return (D, new_line_status) where D = |LODF[:n_line, :n_line]|.
+
+    Recomputes only when *line_status* differs from *cached_line_status*.
+    DC PF is called directly on the C++ grid model, which is safe because
+    lightsim2grid keeps separate DC and AC solver objects.
+
+    Args:
+        grid: lightsim2grid GridModel instance (backend._grid).
+        n_line: number of AC transmission lines.
+        line_status: boolean array [n_line] of current connectivity.
+        cached_line_status: previously cached line_status (or None).
+        cached_D: previously cached distance matrix (or None).
+    Returns:
+        (D, line_status_copy) — D is [n_line, n_line] float64, non-negative.
+    Raises:
+        RuntimeError: if the DC power flow diverges.
+    """
+    if cached_line_status is not None and np.array_equal(line_status, cached_line_status):
+        return cached_D, cached_line_status
+    Vinit = np.ones(grid.total_bus(), dtype=complex)
+    Vdc = grid.dc_pf(Vinit, 10, 1e-8)
+    if Vdc.shape[0] == 0:
+        raise RuntimeError(
+            "DC power flow diverged; LODF cannot be computed for current topology."
+        )
+    lodf = grid.get_lodf()
+    lodf_sub = np.nan_to_num(lodf[:n_line, :n_line], nan=0.0, posinf=0.0, neginf=0.0)
+    return np.abs(lodf_sub), line_status.copy()
+
+
 class LODFGraphObservationConverter(ObservationConverter[Dict]):
     """
     LODF-based contingency coupling graph.
@@ -1651,32 +1925,18 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
 
     def _get_lodf_cached(self, line_status: np.ndarray) -> None:
         """
-        Recompute |LODF[:n_line, :n_line]| and store in _cached_D when topology changes.
+        Update _cached_D and _cached_line_status if line_status has changed.
 
-        LODF is topology-dependent but operating-point-independent (DC linearization),
-        so caching on line_status is sufficient.
-
-        Note: dc_pf is called directly on the C++ grid model.  This is safe because
-        lightsim2grid maintains separate DC and AC solver objects; the AC voltage state
-        used by subsequent env.step() calls is not affected.
+        Delegates to the module-level :func:`_compute_lodf` helper which is
+        shared with :class:`ElementLODFGraphObservationConverter`.
 
         Args:
             line_status: Boolean array [n_line] of current line connection state.
         """
-        if (self._cached_line_status is None
-                or not np.array_equal(line_status, self._cached_line_status)):
-            Vinit = np.ones(self._grid.total_bus(), dtype=complex)
-            Vdc = self._grid.dc_pf(Vinit, 10, 1e-8)
-            if Vdc.shape[0] == 0:
-                raise RuntimeError(
-                    "DC power flow diverged; LODF cannot be computed for current topology."
-                )
-            lodf = self._grid.get_lodf()  # (n_branches, n_branches)
-            lodf_sub = np.nan_to_num(
-                lodf[:self._n_line, :self._n_line], nan=0.0, posinf=0.0, neginf=0.0
-            )
-            self._cached_D = np.abs(lodf_sub)  # (n_line, n_line)
-            self._cached_line_status = line_status.copy()
+        self._cached_D, self._cached_line_status = _compute_lodf(
+            self._grid, self._n_line, line_status,
+            self._cached_line_status, self._cached_D,
+        )
 
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
         """
@@ -1794,6 +2054,37 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         ], dtype=np.float32)
 
 
+def _compute_zbus_admittance(
+    grid,
+    topo_vect: np.ndarray,
+    cached_topo_vect: Optional[np.ndarray],
+    cached_D: Optional[np.ndarray],
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return (D, topo_vect_copy) where D[i,j] = 1 / (|Zbus[i,j]| + eps).
+
+    Recomputes only when topo_vect differs from cached_topo_vect.
+    No DC PF is required — get_Ybus() reads directly from network parameters.
+
+    Args:
+        grid: lightsim2grid GridModel instance (backend._grid).
+        topo_vect: Integer array [dim_topo] encoding current busbar assignments.
+        cached_topo_vect: Previously cached topo_vect (or None).
+        cached_D: Previously cached admittance matrix (or None).
+        eps: Denominator guard to avoid division by zero (default 1e-6).
+    Returns:
+        (D, topo_vect_copy) — D is [2*n_sub, 2*n_sub] float, non-negative.
+    """
+    if cached_topo_vect is not None and np.array_equal(topo_vect, cached_topo_vect):
+        return cached_D, cached_topo_vect
+    import scipy.linalg
+    Ybus = grid.get_Ybus()
+    Zbus = scipy.linalg.pinv(Ybus.toarray())
+    D = 1.0 / (np.abs(Zbus) + eps)
+    return D, topo_vect.copy()
+
+
 class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
     """
     Zbus-based electrical admittance graph.
@@ -1851,22 +2142,16 @@ class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
         """
         Recompute the admittance matrix 1/(|Zbus| + ε) when topology changes.
 
-        Zbus = pinv(Ybus) where Ybus = grid.get_Ybus() (sparse, (2*n_sub, 2*n_sub)).
-        Ybus encodes both line connectivity and busbar assignments, so caching on
-        the full topo_vect catches both line trips and bus-bar splits.
-
-        No dc_pf is required — get_Ybus() reads directly from network parameters.
+        Delegates to the module-level :func:`_compute_zbus_admittance` helper
+        which is shared with :class:`SubstationZbusGraphObservationConverter`.
 
         Args:
             topo_vect: Integer array [dim_topo] encoding current busbar assignments.
         """
-        if (self._cached_topo_vect is None
-                or not np.array_equal(topo_vect, self._cached_topo_vect)):
-            import scipy.linalg
-            Ybus = self._grid.get_Ybus()            # sparse CSC, (2*n_sub, 2*n_sub), complex
-            Zbus = scipy.linalg.pinv(Ybus.toarray())  # dense, (2*n_sub, 2*n_sub), complex
-            self._cached_D = 1.0 / (np.abs(Zbus) + self._ZBUS_EPS)  # (2*n_sub, 2*n_sub)
-            self._cached_topo_vect = topo_vect.copy()
+        self._cached_D, self._cached_topo_vect = _compute_zbus_admittance(
+            self._grid, topo_vect,
+            self._cached_topo_vect, self._cached_D, self._ZBUS_EPS,
+        )
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
         """
@@ -1911,6 +2196,448 @@ class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
         return result
 
 
+class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverter):
+    """
+    Substation-level graph extended with PTDF electrical-distance edges.
+
+    Inherits the sparse powerline topology from
+    :class:`SubstationGraphObservationConverter`:
+
+    * Type 0 — powerline edges (bus_or[l] ↔ bus_ex[l], one per connected line)
+
+    Adds a second edge type:
+
+    * Type 1 — fully-connected directed PTDF-distance edges between all bus slots
+
+    Edge weight ``EDGES[e, 0]`` for a type-1 edge (i → j) is the L1 PTDF distance:
+
+        D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|
+
+    Only active edges (EDGE_MASK=True) carry a non-zero attribute; inactive
+    type-0 edges and padding positions are zeroed.
+
+    PTDF depends only on network topology (not on the operating point), so it
+    is cached per ``line_status`` and recomputed only on topology changes using
+    the shared :func:`_compute_ptdf_distance` module-level helper.
+
+    Slot convention: this converter inherits the Substation slot ordering
+    (slot = 2*sub_id + (bus - 1)), while lightsim2grid returns PTDF in the
+    PTDF/Ybus convention (slot = (bus - 1)*n_sub + sub_id).  A one-time
+    permutation ``_sub_to_ptdf`` is applied when caching D so that all
+    subsequent indexing uses Substation slot order consistently.
+    ``_sub_to_ptdf[s] = s//2 + (s%2)*n_sub`` maps each Substation slot s to
+    its corresponding PTDF slot, so
+    ``D_sub = D_ptdf[np.ix_(_sub_to_ptdf, _sub_to_ptdf)]`` gives
+    ``D_sub[i, j] = D_ptdf[ptdf(i), ptdf(j)]`` — the correct reindexing.
+
+    ``EDGE_TYPE`` is declared as ``Box(low=0, high=1, …)``; the downstream
+    :class:`~rarl_rllib.ppo.gnn_ppo_model.GNNBaselineModel` derives
+    ``num_edge_types = high + 1 = 2`` automatically.
+
+    Observation keys
+    ----------------
+    NODES      : [max_nodes, x_dim]   — aggregated bus features (zeroed for inactive)
+    EDGE_INDEX : [2, max_num_edges]   — padded connectivity
+    EDGE_MASK  : [max_num_edges]      — True for active edges
+    EDGES      : [max_num_edges, 1]   — 0.0 for type-0, PTDF distance for type-1
+    EDGE_TYPE  : [max_num_edges]      — 0/1 per edge, 0 for padding
+    NODE_MASK  : [max_nodes]          — True for active bus slots
+    GLOBAL     : [6]                  — time-based global features
+
+    :param backend: LightSimBackend instance.
+    :param g2op_obs_space: grid2op observation space.
+    :param attr_to_observe: node feature names (defaults to ``_DEFAULT_NODE_FEATURES``).
+    :param verbose: log converter dimensions on construction.
+    """
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        super().__init__(g2op_obs_space, attr_to_observe, verbose)
+        self._grid = backend._grid
+        n_sub = self._n_sub
+
+        # Permutation: PTDF slot (busbar-1)*n_sub+sub_id  →  Substation slot 2*sub_id+(busbar-1)
+        s = np.arange(2 * n_sub)
+        # Maps Substation slot s → PTDF slot: s//2 + (s%2)*n_sub.
+        # Used as D_sub = D_ptdf[ix_(sub_to_ptdf, sub_to_ptdf)] so that
+        # D_sub[i, j] = D_ptdf[ptdf(i), ptdf(j)] (correct reindexing).
+        self._sub_to_ptdf: npt.NDArray[np.int64] = (s // 2 + (s % 2) * n_sub).astype(np.int64)
+
+        # Fully-connected directed edge index over all bus slots (no self-loops).
+        self._n_phys_edges: int = self._max_nodes * (self._max_nodes - 1)
+        idx = np.arange(self._max_nodes)
+        ii, jj = np.meshgrid(idx, idx, indexing="ij")
+        no_self_loop = ii != jj
+        self._phys_edge_index: npt.NDArray[np.int64] = np.stack(
+            [ii[no_self_loop], jj[no_self_loop]]
+        ).astype(np.int64)  # [2, n_phys_edges]
+
+        # Topology edges from parent: 2 * n_line (bidirectional powerline edges).
+        # Expand to include physics edges.
+        self._max_num_edges = self._max_num_edges + self._n_phys_edges
+
+        x_dim = len(self.attr_to_observe)
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._max_nodes, x_dim), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._max_nodes - 1,
+                            shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.bool_),
+            EDGES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._max_num_edges, 1), dtype=np.float32),
+            EDGE_TYPE: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.int64),
+            NODE_MASK: Box(low=0, high=1,
+                           shape=(self._max_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        self._edge_normalizer = RunningMeanStd(shape=(1,))
+
+        # PTDF cache (in Substation slot order after permutation).
+        self._cached_ptdf: Optional[np.ndarray] = None
+        self._cached_D: Optional[np.ndarray] = None
+        self._cached_line_status: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"SubstationPTDFGraphObservationConverter: {self._max_nodes} max nodes "
+                f"({n_sub} subs × 2 buses), {self._max_num_edges} edges "
+                f"({self._max_num_edges - self._n_phys_edges} topology + "
+                f"{self._n_phys_edges} PTDF), x_dim={x_dim}."
+            )
+
+    def _get_ptdf_cached(self, line_status: np.ndarray) -> None:
+        """
+        Update _cached_D (in Substation slot order) when line_status changes.
+
+        Delegates to :func:`_compute_ptdf_distance`, then applies the
+        PTDF-to-Substation slot permutation so subsequent indexing is
+        consistent with the node ordering used by this converter.
+
+        Args:
+            line_status: Boolean array [n_line] of current line connection state.
+        """
+        prev_D = self._cached_D
+        self._cached_ptdf, D_ptdf, self._cached_line_status = _compute_ptdf_distance(
+            self._grid, line_status,
+            self._cached_line_status, self._cached_ptdf, self._cached_D,
+        )
+        if D_ptdf is not prev_D:
+            # Cache was stale — apply slot permutation before storing.
+            self._cached_D = D_ptdf[np.ix_(self._sub_to_ptdf, self._sub_to_ptdf)]
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a substation+PTDF graph observation.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Dict with keys NODES, EDGE_INDEX, EDGE_MASK, EDGES, EDGE_TYPE,
+            NODE_MASK, GLOBAL.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features, node_mask = self._get_nodes_and_mask(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        edge_index_topo = self._get_edge_index(g2op_obs)   # [2, n_topo_edges]
+        self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
+        n_topo = edge_index_topo.shape[1]
+
+        t0 = time.perf_counter()
+        self._get_ptdf_cached(g2op_obs.line_status)
+        self._timings["ptdf_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        src, dst = self._phys_edge_index[0], self._phys_edge_index[1]
+        phys_weights = self._cached_D[src, dst].astype(np.float32)  # [n_phys_edges]
+        phys_mask = node_mask[src] & node_mask[dst]                  # [n_phys_edges]
+
+        n_total = n_topo + self._n_phys_edges
+        E = self._max_num_edges
+
+        edge_index_padded = np.zeros((2, E), dtype=np.int64)
+        edge_index_padded[:, :n_topo] = edge_index_topo
+        edge_index_padded[:, n_topo:n_total] = self._phys_edge_index
+
+        edge_mask = np.zeros(E, dtype=bool)
+        edge_mask[:n_topo] = True
+        edge_mask[n_topo:n_total] = phys_mask
+
+        edge_type = np.zeros(E, dtype=np.int64)
+        edge_type[n_topo:n_total] = 1
+
+        edges_padded = np.zeros((E, 1), dtype=np.float32)
+        edges_padded[n_topo:n_total, 0] = phys_weights
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: edge_index_padded,
+            EDGE_MASK: edge_mask,
+            EDGES: edges_padded,
+            EDGE_TYPE: edge_type,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features and PTDF edge weights with separate running statistics.
+
+        Node normalization is inherited from the parent (active nodes only).
+        Type-1 (PTDF) edge attributes are normalized using a separate running
+        normalizer; only active type-1 edges update the statistics.
+        Type-0 (topology) edge attributes remain 0.0.
+
+        Args:
+            gym_obs: Raw observation dict from to_gym.
+        """
+        base = super().normalize(gym_obs)   # handles NODES, passes rest through
+
+        edges = gym_obs[EDGES]              # (E, 1)
+        edge_mask = gym_obs[EDGE_MASK]      # (E,)
+        edge_type = gym_obs[EDGE_TYPE]      # (E,)
+
+        phys_active = edge_mask & (edge_type == 1)
+        active_vals = edges[phys_active]    # (n_active, 1)
+        if active_vals.shape[0] > 0:
+            self._edge_normalizer.update(active_vals)
+        normalized_edges = np.zeros_like(edges)
+        if phys_active.any():
+            normalized_edges[phys_active] = (
+                (active_vals - self._edge_normalizer.mean)
+                / np.sqrt(self._edge_normalizer.var + 1e-8)
+            )
+
+        return {
+            **base,
+            EDGES: normalized_edges.astype(np.float32),
+            EDGE_TYPE: edge_type,
+        }
+
+
+class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverter):
+    """
+    Substation-level graph extended with Zbus electrical-admittance edges.
+
+    Inherits the sparse powerline topology from
+    :class:`SubstationGraphObservationConverter`:
+
+    * Type 0 — powerline edges (bus_or[l] ↔ bus_ex[l], one per connected line)
+
+    Adds a second edge type:
+
+    * Type 1 — fully-connected directed Zbus-admittance edges between all bus slots
+
+    Edge weight ``EDGES[e, 0]`` for a type-1 edge (i → j) is:
+
+        D[i, j] = 1 / (|Zbus[i, j]| + ε)
+
+    where ``Zbus = pinv(Ybus)`` (Moore-Penrose pseudoinverse of the bus admittance
+    matrix).  High admittance means the two buses are electrically close.
+
+    Unlike PTDF, Zbus depends on both line connectivity and busbar assignments,
+    so it is cached per ``topo_vect`` using the shared
+    :func:`_compute_zbus_admittance` module-level helper.
+
+    The same PTDF-to-Substation slot permutation as
+    :class:`SubstationPTDFGraphObservationConverter` is applied when caching
+    so that all indexing uses Substation slot order consistently.
+
+    ``EDGE_TYPE`` is declared as ``Box(low=0, high=1, …)``; the downstream
+    :class:`~rarl_rllib.ppo.gnn_ppo_model.GNNBaselineModel` derives
+    ``num_edge_types = high + 1 = 2`` automatically.
+
+    :param backend: LightSimBackend instance.
+    :param g2op_obs_space: grid2op observation space.
+    :param attr_to_observe: node feature names (defaults to ``_DEFAULT_NODE_FEATURES``).
+    :param verbose: log converter dimensions on construction.
+    """
+
+    _ZBUS_EPS: float = 1e-6
+
+    def __init__(
+        self,
+        backend: LightSimBackend,
+        g2op_obs_space: ObservationSpace,
+        attr_to_observe: Optional[list[str]] = None,
+        verbose: bool = False,
+    ):
+        super().__init__(g2op_obs_space, attr_to_observe, verbose)
+        self._grid = backend._grid
+        n_sub = self._n_sub
+
+        # Permutation: PTDF slot (busbar-1)*n_sub+sub_id  →  Substation slot 2*sub_id+(busbar-1)
+        s = np.arange(2 * n_sub)
+        # Maps Substation slot s → PTDF slot: s//2 + (s%2)*n_sub.
+        # Used as D_sub = D_ptdf[ix_(sub_to_ptdf, sub_to_ptdf)] so that
+        # D_sub[i, j] = D_ptdf[ptdf(i), ptdf(j)] (correct reindexing).
+        self._sub_to_ptdf: npt.NDArray[np.int64] = (s // 2 + (s % 2) * n_sub).astype(np.int64)
+
+        # Fully-connected directed edge index (no self-loops).
+        self._n_phys_edges: int = self._max_nodes * (self._max_nodes - 1)
+        idx = np.arange(self._max_nodes)
+        ii, jj = np.meshgrid(idx, idx, indexing="ij")
+        no_self_loop = ii != jj
+        self._phys_edge_index: npt.NDArray[np.int64] = np.stack(
+            [ii[no_self_loop], jj[no_self_loop]]
+        ).astype(np.int64)
+
+        self._max_num_edges = self._max_num_edges + self._n_phys_edges
+
+        x_dim = len(self.attr_to_observe)
+        self._observation_space = Dict({
+            NODES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._max_nodes, x_dim), dtype=np.float32),
+            EDGE_INDEX: Box(low=0, high=self._max_nodes - 1,
+                            shape=(2, self._max_num_edges), dtype=np.int64),
+            EDGE_MASK: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.bool_),
+            EDGES: Box(low=-np.inf, high=np.inf,
+                       shape=(self._max_num_edges, 1), dtype=np.float32),
+            EDGE_TYPE: Box(low=0, high=1,
+                           shape=(self._max_num_edges,), dtype=np.int64),
+            NODE_MASK: Box(low=0, high=1,
+                           shape=(self._max_nodes,), dtype=np.bool_),
+            GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+        })
+
+        self._edge_normalizer = RunningMeanStd(shape=(1,))
+
+        # Zbus cache (in Substation slot order after permutation).
+        self._cached_D: Optional[np.ndarray] = None
+        self._cached_topo_vect: Optional[np.ndarray] = None
+
+        if verbose:
+            logger.info(
+                f"SubstationZbusGraphObservationConverter: {self._max_nodes} max nodes "
+                f"({n_sub} subs × 2 buses), {self._max_num_edges} edges "
+                f"({self._max_num_edges - self._n_phys_edges} topology + "
+                f"{self._n_phys_edges} Zbus), x_dim={x_dim}."
+            )
+
+    def _get_zbus_cached(self, topo_vect: np.ndarray) -> None:
+        """
+        Update _cached_D (in Substation slot order) when topo_vect changes.
+
+        Delegates to :func:`_compute_zbus_admittance`, then applies the
+        PTDF-to-Substation slot permutation.
+
+        Args:
+            topo_vect: Integer array [dim_topo] encoding current busbar assignments.
+        """
+        prev_D = self._cached_D
+        D_ptdf, self._cached_topo_vect = _compute_zbus_admittance(
+            self._grid, topo_vect,
+            self._cached_topo_vect, self._cached_D, self._ZBUS_EPS,
+        )
+        if D_ptdf is not prev_D:
+            self._cached_D = D_ptdf[np.ix_(self._sub_to_ptdf, self._sub_to_ptdf)]
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """
+        Convert a grid2op observation to a substation+Zbus graph observation.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+        Returns:
+            Dict with keys NODES, EDGE_INDEX, EDGE_MASK, EDGES, EDGE_TYPE,
+            NODE_MASK, GLOBAL.
+        """
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
+        node_features, node_mask = self._get_nodes_and_mask(g2op_obs)
+        self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        edge_index_topo = self._get_edge_index(g2op_obs)
+        self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
+        n_topo = edge_index_topo.shape[1]
+
+        t0 = time.perf_counter()
+        self._get_zbus_cached(g2op_obs.topo_vect)
+        self._timings["zbus_ms"] = (time.perf_counter() - t0) * 1000
+
+        global_features = self._get_global_features(g2op_obs)
+
+        src, dst = self._phys_edge_index[0], self._phys_edge_index[1]
+        phys_weights = self._cached_D[src, dst].astype(np.float32)
+        phys_mask = node_mask[src] & node_mask[dst]
+
+        n_total = n_topo + self._n_phys_edges
+        E = self._max_num_edges
+
+        edge_index_padded = np.zeros((2, E), dtype=np.int64)
+        edge_index_padded[:, :n_topo] = edge_index_topo
+        edge_index_padded[:, n_topo:n_total] = self._phys_edge_index
+
+        edge_mask = np.zeros(E, dtype=bool)
+        edge_mask[:n_topo] = True
+        edge_mask[n_topo:n_total] = phys_mask
+
+        edge_type = np.zeros(E, dtype=np.int64)
+        edge_type[n_topo:n_total] = 1
+
+        edges_padded = np.zeros((E, 1), dtype=np.float32)
+        edges_padded[n_topo:n_total, 0] = phys_weights
+
+        result = self.normalize({
+            NODES: node_features,
+            EDGE_INDEX: edge_index_padded,
+            EDGE_MASK: edge_mask,
+            EDGES: edges_padded,
+            EDGE_TYPE: edge_type,
+            NODE_MASK: node_mask,
+            GLOBAL: global_features,
+        })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """
+        Normalize node features and Zbus edge weights with separate running statistics.
+
+        Args:
+            gym_obs: Raw observation dict from to_gym.
+        """
+        base = super().normalize(gym_obs)
+
+        edges = gym_obs[EDGES]
+        edge_mask = gym_obs[EDGE_MASK]
+        edge_type = gym_obs[EDGE_TYPE]
+
+        phys_active = edge_mask & (edge_type == 1)
+        active_vals = edges[phys_active]
+        if active_vals.shape[0] > 0:
+            self._edge_normalizer.update(active_vals)
+        normalized_edges = np.zeros_like(edges)
+        if phys_active.any():
+            normalized_edges[phys_active] = (
+                (active_vals - self._edge_normalizer.mean)
+                / np.sqrt(self._edge_normalizer.var + 1e-8)
+            )
+
+        return {
+            **base,
+            EDGES: normalized_edges.astype(np.float32),
+            EDGE_TYPE: edge_type,
+        }
+
+
 # --- Factory ---
 def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config."""
@@ -1951,8 +2678,28 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
             g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
         )
+    elif mode == "ElementLODFGraphObsSpace":
+        return ElementLODFGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            verbose=env_config.get("verbose", False),
+        )
     elif mode == "ZbusGraphObsSpace":
         return ZbusGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "SubstationPTDFGraphObsSpace":
+        return SubstationPTDFGraphObservationConverter(
+            backend=gym_env.init_env.backend,
+            g2op_obs_space=gym_env.init_env.observation_space,
+            attr_to_observe=env_config.get("attr_to_observe"),
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "SubstationZbusGraphObsSpace":
+        return SubstationZbusGraphObservationConverter(
             backend=gym_env.init_env.backend,
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=env_config.get("attr_to_observe"),

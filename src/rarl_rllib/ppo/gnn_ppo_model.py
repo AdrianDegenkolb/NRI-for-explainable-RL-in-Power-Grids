@@ -9,7 +9,7 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import nn, Tensor
 
-from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK
+from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, EDGE_WEIGHTS, EDGES
 from rarl import BaselineGNN
 from rarl_rllib.common import assert_graph_obs_space_and_get_x_dim
 
@@ -29,6 +29,8 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
             hidden_dim=kwargs['gnn']['hidden_dim'],
             x_out_dim=kwargs['gnn']['out_dim'],
             num_layers=kwargs['gnn']['num_layers'],
+            num_edge_types=int(obs_space[EDGE_TYPE].high.flat[0]) + 1 if EDGE_TYPE in obs_space.spaces else 1,
+            edge_dim=obs_space[EDGES].shape[-1] if EDGES in obs_space.spaces else None,
             dropout_prob=kwargs['gnn'].get('dropout_prob', 0.0),
             residual=kwargs['gnn'].get('residual', True),
         )
@@ -50,6 +52,9 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
         node_features_batch = input_dict["obs"][NODES]   # [B, max_N, node_dim]
         edge_index_batch = input_dict["obs"][EDGE_INDEX]  # [B, 2, E_max]
         edge_mask = input_dict["obs"][EDGE_MASK]          # [B, E_max]
+        edge_types = input_dict["obs"].get(EDGE_TYPE)
+        edge_weights = input_dict["obs"].get(EDGE_WEIGHTS)
+        edge_attr = input_dict["obs"].get(EDGES)
 
         B, max_N, _ = node_features_batch.shape
         device = node_features_batch.device
@@ -86,7 +91,20 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
         valid_edges = edge_mask.bool()
         ei_flat = ei_remapped.permute(1, 0, 2)[:, valid_edges]
 
-        gnn_out: Tensor = self.gnn(x=x, batch=batch, edge_index=ei_flat.to(dtype=torch.long))
+        # Filter optional per-edge tensors from [B, E_max, ...] to [total_E, ...]
+        if edge_attr is not None:
+            edge_attr = edge_attr[valid_edges]       # [total_E, e_dim]
+        if edge_types is not None:
+            edge_types = edge_types[valid_edges]     # [total_E]
+
+        gnn_out: Tensor = self.gnn(
+            x=x,
+            batch=batch,
+            edge_index=ei_flat.to(dtype=torch.long),
+            edge_weights=edge_weights,
+            edge_attr=edge_attr,
+            edge_types=edge_types
+        )
 
         logits, _ = self.mlp({"obs": gnn_out}, state, seq_lens)
         return logits, []
