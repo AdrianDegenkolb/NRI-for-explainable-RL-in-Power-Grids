@@ -9,6 +9,7 @@ Inspired by Ying et al. "Do Transformers Really Perform Bad for Graph Representa
 (NeurIPS 2021) and adapted for the RARL edge-inference task.
 """
 
+import time
 from typing import Optional
 
 import torch
@@ -55,6 +56,7 @@ class GraphormerNRIEncoder(nn.Module):
         self.num_edge_types = num_edge_types
 
         self._cache = GraphDataCache()
+        self._timings: dict[str, float] = {}
         self.node_in_lin = nn.Linear(x_dim, hidden_dim)
         self.centrality = CentralityEncoding(max_degree, hidden_dim)
         self.spatial = SpatialEncoding(max_path_distance)
@@ -111,7 +113,11 @@ class GraphormerNRIEncoder(nn.Module):
 
         with torch.no_grad():
             graph_data = Data(x=x, edge_index=powerline_edge_index, batch=batch)
+            t0 = time.perf_counter()
             in_deg, out_deg, path_dists = self._cache.get(graph_data)
+            self._timings["graph_data_cache_ms"] = (time.perf_counter() - t0) * 1000
+            self._timings["graph_data_compute_ms"] = self._cache._timings["graph_data_compute_ms"]
+            # in_degree and out_degree should be the same here since the edge index contains both directions
             node_deg = torch.max(in_deg, out_deg)
 
         h = self.node_in_lin(x) + self.centrality(node_deg)

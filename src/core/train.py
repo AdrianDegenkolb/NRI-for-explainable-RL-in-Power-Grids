@@ -17,6 +17,7 @@ from ray import air, tune
 from ray.tune.experiment import Trial
 from ray.tune.result_grid import ResultGrid
 from ray.tune.schedulers import ASHAScheduler
+from ray.tune.logger import TBXLoggerCallback
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
@@ -25,7 +26,7 @@ from algorithms.custom_ppo import CustomPPO
 from algorithms.custom_sac import CustomSAC
 from algorithms.optuna_search import MyOptunaSearch
 from core.constants import RL_POLICY, Style
-from core.evaluate import evaluate_rllib_checkpoint
+from core.loading import load_config, preprocess_config, load_rllib_agent
 from core.utils import delete_nested_key
 from rarl_rllib.callback import TuneCallback
 
@@ -101,6 +102,59 @@ class TimeStopper(Stopper):
         return time() - self._start > self._deadline
 
 
+def _run_post_training_analysis(
+    trial_path: Path,
+    checkpoint_name: str,
+    test_env_name: str,
+    num_episodes: int,
+    env_config: dict,
+) -> None:
+    """Load the best checkpoint and run the full post-training analysis suite."""
+    from rarl_rllib.model import RARLModel
+    from analysis.post_training.runner import PostTrainingRunner
+    from analysis.post_training.analyzers import SurvivalAnalyzer, CongestionProfileAnalyzer, TopologyActionAnalyzer
+    from analysis.post_training.analyzers.h1_coupling import H1ElectricalCouplingAnalyzer
+    from analysis.post_training.analyzers.h2_coupling import H2RiskCouplingAnalyzer
+    from analysis.post_training.analyzers.h3_coupling import H3ActionEffectAnalyzer
+
+    agent, env, _ = load_rllib_agent(
+        checkpoint_path=trial_path,
+        policy_name=RL_POLICY,
+        checkpoint_name=checkpoint_name,
+        env_name=test_env_name,
+        env_config=env_config,
+    )
+
+    out_dir = trial_path / "analysis"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Analysis output directory: %s", out_dir)
+
+    has_encoder = isinstance(getattr(agent._rllib_agent, "model", None), RARLModel)
+    logger.info("Encoder model detected: %s", has_encoder)
+
+    analyzers = [
+        SurvivalAnalyzer(),
+        CongestionProfileAnalyzer(env_name=test_env_name),
+        TopologyActionAnalyzer(env_name=test_env_name),
+    ]
+    if has_encoder:
+        analyzers += [
+            H1ElectricalCouplingAnalyzer(out_dir=out_dir / "h1"),
+            H2RiskCouplingAnalyzer(out_dir=out_dir / "h2"),
+            H3ActionEffectAnalyzer(out_dir=out_dir / "h3"),
+        ]
+
+    runner = PostTrainingRunner(agent, env, analyzers)
+    runner.run(num_episodes=num_episodes)
+    runner.save_all(out_dir)
+
+    # Copy TensorBoard event files so the analysis folder is self-contained
+    import shutil
+    for tf_file in trial_path.glob("events.out.tfevents.*"):
+        shutil.copy2(tf_file, out_dir / tf_file.name)
+    logger.info("Analysis complete. Results in: %s", out_dir)
+
+
 def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
     """Run RLLib PPO training driven by the Hydra config.
 
@@ -145,7 +199,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
 
     job_id = _get_job_id(cfg)
 
-    storage_path = os.path.abspath(os.path.join(os.getcwd(), "results", "experiments"))
+    storage_path = os.path.abspath(os.path.join(os.getcwd(), "results"))
     os.makedirs(storage_path, exist_ok=True)
 
     algorithm = OmegaConf.select(cfg, "training.algorithm", default="ppo")
@@ -180,6 +234,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
             storage_path=storage_path,
             stop={"timesteps_total": exp.nb_timesteps},
             callbacks=[
+                TBXLoggerCallback(),
                 TuneCallback(
                     exp.my_log_level,
                     opt.score_metric,
@@ -191,7 +246,7 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
                 checkpoint_frequency=exp.checkpoint_freq,
                 checkpoint_at_end=True,
                 checkpoint_score_attribute=opt.score_metric,
-                num_to_keep=5,
+                num_to_keep=3,
             ),
             verbose=exp.verbose,
         ),
@@ -289,38 +344,35 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
         with best_result.checkpoint.as_directory() as checkpoint_dir:
             print("Best checkpoint: ", checkpoint_dir)
 
-    # --- Post-training evaluation ---
+    # --- Post-training analysis ---
     post_eval = exp.post_training_evaluation
     test_env_name = rllib_cfg["env_config"]["env_name"].removesuffix("_train") + "_test"
     if post_eval.enabled:
         if best_result.checkpoint is None:
-            print(f"{Style.BOLD}Skipping post-training evaluation: no checkpoint available.{Style.END}")
+            print(f"{Style.BOLD}Skipping post-training analysis: no checkpoint available.{Style.END}")
             return result_grid
         print(f"\n{Style.BOLD}{'=' * 80}{Style.END}")
-        print(f"{Style.BOLD}Evaluating best checkpoint...{Style.END}")
+        print(f"{Style.BOLD}Running post-training analysis...{Style.END}")
         with best_result.checkpoint.as_directory() as checkpoint_dir:
+            trial_path = Path(checkpoint_dir).parent
             checkpoint_name = os.path.basename(checkpoint_dir)
             num_episodes = (
                 get_num_available_episodes(test_env_name)
                 if post_eval.num_episodes in ("all", None)
                 else int(post_eval.num_episodes)
             )
-            max_episode_length = post_eval.max_episode_length
-            print(f"Evaluation environment: {test_env_name}  |  Episodes: {num_episodes}")
+            print(f"Environment: {test_env_name}  |  Episodes: {num_episodes}")
             try:
-                evaluate_rllib_checkpoint(
-                    checkpoint_path=Path(checkpoint_dir).parent,
-                    policy_name=RL_POLICY,
+                _run_post_training_analysis(
+                    trial_path=trial_path,
                     checkpoint_name=checkpoint_name,
-                    env_name_override=test_env_name,
+                    test_env_name=test_env_name,
                     num_episodes=num_episodes,
-                    max_episode_length=max_episode_length,
-                    visualize=post_eval.visualize,
-                    seed=exp.seed,
+                    env_config=rllib_cfg["env_config"],
                 )
-                print(f"{Style.BOLD}Evaluation completed successfully!{Style.END}")
+                print(f"{Style.BOLD}Post-training analysis completed!{Style.END}")
             except Exception as e:
-                print(f"{Style.BOLD}Warning: Evaluation failed: {e}{Style.END}")
+                print(f"{Style.BOLD}Warning: Post-training analysis failed: {e}{Style.END}")
                 traceback.print_exc()
         print(f"{Style.BOLD}{'=' * 80}{Style.END}\n")
 
@@ -369,17 +421,26 @@ def trial_dir_name(trial: Trial):
     return "{}_{}".format(trial.custom_trial_name, datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
 
 def print_details(rllib_cfg: Dict[str, Any]) -> None:
-    logger.info(f'Using reward function:   {rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__}')
-    logger.info(f'Using action space:      {rllib_cfg["env_config"]["action_space"]}')
-    logger.info(f'Using observation space: {rllib_cfg["env_config"]["observation_space"]}')
+    chronics_dir = rllib_cfg["env_config"].get("chronics_dir")
+    if chronics_dir is None:
+        chronics_dir = grid2op.get_current_local_dir()
+
+    logger.info(f'Using reward function:      {rllib_cfg["env_config"]["grid2op_kwargs"]["reward_class"].__class__.__name__}')
+    logger.info(f'Using action space:         {rllib_cfg["env_config"]["action_space"]}')
+    logger.info(f'Using observation space:    {rllib_cfg["env_config"]["observation_space"]}')
+    logger.info(f'Chronics are accessed from: {chronics_dir}')
+    logger.info(f'Chronics are cached:        {rllib_cfg["env_config"].get("use_chronics_cache", False)}')
 
 
 def _setup_ray(exp):
     # --- Init Ray ---
     os.environ["RAY_DEDUP_LOGS"] = "0"
     os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
+    os.environ["TUNE_DISABLE_AUTO_CALLBACK_LOGGERS"] = "1"  # suppress result.json + progress.csv
     os.environ["WANDB_MODE"] = "offline"
     os.environ["WANDB_SILENT"] = "true"
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    os.environ["PYTHONWARNINGS"] = "ignore:Could not parse CUBLAS_WORKSPACE_CONFIG:UserWarning"
     ray.init(local_mode=exp.ray_local_mode)
     logger.info(f"Ray initialized in {'local' if exp.ray_local_mode else 'cluster'} mode.")
-    logger.info(f"Ray sees GPUs:{ray.available_resources().get('GPU', 0)}")
+    logger.info(f"Ray sees GPUs: {ray.available_resources().get('GPU', 0)}")

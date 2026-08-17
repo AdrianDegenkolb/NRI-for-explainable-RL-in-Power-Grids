@@ -10,7 +10,6 @@ from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 from tqdm import tqdm
 
-from analysis.analyze_latent_graphs.hypo3_action_effect_coupling import get_reconfigured_nodes
 from experiments.utils import AgentSpec, load_agent_from_spec
 from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
 from visualization import GridPlottingArgs, visualize_grid
@@ -39,12 +38,6 @@ class CrossValidateResult:
         self.backup_agent_completed = backup_agent_completed or {}
         self.connected_lines_before_failure: Dict[str, List[int]] = {}
         self.rhos_before_failure: Dict[str, List[int]] = {}
-        # Per-node reconfiguration counts accumulated over all evaluated steps [N], set lazily
-        self._node_action_counts: Optional[npt.NDArray] = None
-        self._total_steps: int = 0
-        # Per-substation action counts and acting-step counter for the spatial distribution
-        self._sub_action_counts: Optional[npt.NDArray] = None
-        self._action_steps: int = 0
 
 
 def run_until_failure(agent: BaseAgent, g2op_env: Environment, backup_env: Environment, result: CrossValidateResult) -> bool:
@@ -69,36 +62,6 @@ def run_until_failure(agent: BaseAgent, g2op_env: Environment, backup_env: Envir
     num_steps = 0
     while True:
         action = agent.act(obs, reward=reward, done=done)
-
-        # --- Track reconfiguration frequency ---
-        reconfigured = get_reconfigured_nodes(action, obs)
-        if reconfigured:
-            N = 2 * obs.n_line + obs.n_gen + obs.n_load
-            n_sub = obs.n_sub
-            if result._node_action_counts is None:
-                result._node_action_counts = np.zeros(N, dtype=np.int64)
-            if result._sub_action_counts is None:
-                result._sub_action_counts = np.zeros(n_sub, dtype=np.int64)
-            for node_idx in reconfigured:
-                if 0 <= node_idx < N:
-                    result._node_action_counts[node_idx] += 1
-            # Map reconfigured nodes → substations and count each substation at most once per step
-            touched_subs: set = set()
-            n_line = obs.n_line
-            n_gen  = obs.n_gen
-            for node_idx in reconfigured:
-                if node_idx < n_line:                        # line_or
-                    touched_subs.add(int(obs.line_or_to_subid[node_idx]))
-                elif node_idx < 2 * n_line:                 # line_ex
-                    touched_subs.add(int(obs.line_ex_to_subid[node_idx - n_line]))
-                elif node_idx < 2 * n_line + n_gen:         # gen
-                    touched_subs.add(int(obs.gen_to_subid[node_idx - 2 * n_line]))
-                else:                                        # load
-                    touched_subs.add(int(obs.load_to_subid[node_idx - 2 * n_line - n_gen]))
-            for s in touched_subs:
-                result._sub_action_counts[s] += 1
-            result._action_steps += 1
-        result._total_steps += 1
 
         new_obs, reward, done, info = g2op_env.step(action)
         num_steps += 1
@@ -390,219 +353,6 @@ def compute_failing_edges_data(results: List[CrossValidateResult], save_dir: Pat
 
     return lines_connected_before, rhos_before_failure, pl_edge_index, powerline_edge_indices_arr
 
-
-# ---------------------------------------------------------------------------
-# Reconfiguration frequency
-# ---------------------------------------------------------------------------
-
-def compute_reconfiguration_frequency_data(
-    results: List[CrossValidateResult],
-    save_dir: Path,
-) -> Dict[str, npt.NDArray]:
-    """
-    Collect per-substation action counts from each *failing* agent's rollout and
-    normalise them into an empirical probability distribution over substations.
-
-    For each timestep where a non-do-nothing action was taken, the acting substation
-    is incremented once.  Dividing by the total number of acting steps gives
-    P(action at substation s), which sums to 1 across substations.
-
-    Saved files
-    -----------
-    reconfig_freq_agent_names.npy           – 1-D array of agent names
-    reconfig_freq_<agent>.npy               – probability distribution [n_sub]
-    reconfig_sub_counts_<agent>.npy         – raw integer substation count array [n_sub]
-    reconfig_action_steps_<agent>.npy       – scalar: total acting steps
-    reconfig_counts_<agent>.npy             – raw node-level count array [N] (legacy)
-    reconfig_total_steps_<agent>.npy        – scalar: total steps evaluated (legacy)
-
-    :param results: list of cross-validation results (one per agent pair)
-    :param save_dir: directory in which to save the .npy files
-    :return: mapping agent_name → probability distribution array [n_sub]
-    """
-    # Aggregate per *failing* agent
-    agent_sub_counts: Dict[str, npt.NDArray] = {}
-    agent_action_steps: Dict[str, int] = {}
-    # Legacy node-level data kept for backward compat
-    agent_node_counts: Dict[str, npt.NDArray] = {}
-    agent_total_steps: Dict[str, int] = {}
-
-    for result in results:
-        name = result.failing_agent.name
-
-        # --- substation-level (new) ---
-        if result._sub_action_counts is not None:
-            if name in agent_sub_counts:
-                agent_sub_counts[name] = agent_sub_counts[name] + result._sub_action_counts
-                agent_action_steps[name] = agent_action_steps[name] + result._action_steps
-            else:
-                agent_sub_counts[name] = result._sub_action_counts.copy()
-                agent_action_steps[name] = result._action_steps
-
-        # --- node-level (legacy) ---
-        if result._node_action_counts is not None:
-            if name in agent_node_counts:
-                agent_node_counts[name] = agent_node_counts[name] + result._node_action_counts
-                agent_total_steps[name] = agent_total_steps[name] + result._total_steps
-            else:
-                agent_node_counts[name] = result._node_action_counts.copy()
-                agent_total_steps[name] = result._total_steps
-
-    freq: Dict[str, npt.NDArray] = {}
-    for name, sub_counts in agent_sub_counts.items():
-        acting = max(agent_action_steps[name], 1)
-        freq[name] = sub_counts.astype(np.float64) / acting
-
-    save_dir.mkdir(parents=True, exist_ok=True)
-    agent_names = list(freq.keys())
-    np.save(save_dir / "reconfig_freq_agent_names.npy", np.array(agent_names))
-    for name in agent_names:
-        safe = name.replace(" ", "_")
-        np.save(save_dir / f"reconfig_freq_{safe}.npy", freq[name])
-        np.save(save_dir / f"reconfig_sub_counts_{safe}.npy", agent_sub_counts[name])
-        np.save(save_dir / f"reconfig_action_steps_{safe}.npy", np.array(agent_action_steps[name]))
-        # legacy files
-        if name in agent_node_counts:
-            np.save(save_dir / f"reconfig_counts_{safe}.npy", agent_node_counts[name])
-            np.save(save_dir / f"reconfig_total_steps_{safe}.npy", np.array(agent_total_steps[name]))
-    logger.info("Saved reconfiguration frequency data to %s", save_dir)
-
-    return freq
-
-
-def _shrink_axis_box(ax, left: float = 0.0, right: float = 0.0,
-                     bottom: float = 0.0, top: float = 0.0):
-    """Shrink an axis inside its allocated cell by fractions of its size."""
-    pos = ax.get_position()
-    new_x0 = pos.x0 + pos.width * left
-    new_y0 = pos.y0 + pos.height * bottom
-    new_w = pos.width * (1.0 - left - right)
-    new_h = pos.height * (1.0 - bottom - top)
-    ax.set_position([new_x0, new_y0, new_w, new_h])
-
-
-def _paint_single_agent_reconfig(
-    agent_name: str,
-    freq: npt.NDArray,   # [N] normalised frequency (counts / total_steps)
-    pl_edge_index: npt.NDArray,
-    save_path: Path,
-    show: bool = False,
-):
-    """
-    Render a histogram figure for one agent's reconfiguration frequency.
-
-    The graph visualisation is shown in the combined failing-edges figure
-    (column 2); this standalone figure contains only the bar chart and
-    its colorbar.
-    """
-    N = freq.shape[0]
-    counts_pct = freq * 100.0          # convert to percent of timesteps
-
-    cmap = mpl.colormaps["YlOrRd"]
-    zero_color = (0.85, 0.85, 0.85, 1.0)
-    vmax = 0.12
-    norm = mpl.colors.Normalize(vmin=0.0, vmax=vmax)
-
-    fig = plt.figure(figsize=(7, 4), constrained_layout=False)
-    gs = fig.add_gridspec(
-        nrows=1, ncols=2,
-        width_ratios=[1.0, 0.05],
-        wspace=0.12,
-    )
-    ax_hist = fig.add_subplot(gs[0, 0])
-    cax = fig.add_subplot(gs[0, 1])
-
-    st = fig.suptitle(
-        f"Node reconfiguration frequency (%) — {agent_name}",
-        x=0.5, y=0.98, ha="center",
-    )
-
-
-    _shrink_axis_box(ax_hist, left=0.03, right=0.03, bottom=0.06, top=0.06)
-    _shrink_axis_box(cax, left=0.0, right=0.0, bottom=0.06, top=0.06)
-
-    hist_pos = ax_hist.get_position()
-    cax_pos = cax.get_position()
-    cax.set_position([cax_pos.x0, hist_pos.y0, cax_pos.width, hist_pos.height])
-
-    x = np.arange(N)
-    bar_colors = [zero_color if c <= 0.0 else cmap(norm(c)) for c in counts_pct]
-    ax_hist.bar(x, counts_pct, color=bar_colors, edgecolor="none")
-    ax_hist.set_xlabel("Node index")
-    ax_hist.set_ylabel("Reconfiguration frequency (%)")
-    ax_hist.set_xlim(-0.5, N - 0.5)
-    ax_hist.margins(x=0.02, y=0.05)
-    ax_hist.set_ylim(0.0, vmax)
-
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    cb = fig.colorbar(sm, cax=cax)
-    cb.set_label("Reconfiguration\nfrequency (%)")
-
-    fig.subplots_adjust(top=0.86)
-
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", pad_inches=0.05, bbox_extra_artists=[st])
-    fig.savefig(save_path.with_suffix(".svg"), bbox_inches="tight", pad_inches=0.05,
-                bbox_extra_artists=[st])
-    if show:
-        plt.show()
-    plt.close(fig)
-
-
-def paint_reconfiguration_frequency(
-    freq: Dict[str, npt.NDArray],
-    pl_edge_index: npt.NDArray,
-    save_dir: Path,
-    show: bool = False,
-):
-    """
-    Paint per-agent reconfiguration-frequency histogram figures.
-
-    The graph visualisation is embedded in the combined failing-edges figure.
-    One ``reconfig_freq_<agent>.png/.svg`` file (histogram only) is created per agent.
-
-    :param freq: mapping agent_name → normalised frequency array [N]
-    :param pl_edge_index: powerline edge-index (shape 2 × n_edges)
-    :param save_dir: directory in which to save the figures
-    :param show: whether to display figures interactively
-    """
-    for agent_name, f in freq.items():
-        safe = agent_name.replace(" ", "_")
-        _paint_single_agent_reconfig(
-            agent_name=agent_name,
-            freq=f,
-            pl_edge_index=pl_edge_index,
-            save_path=save_dir / f"reconfig_freq_{safe}.svg",
-            show=show,
-        )
-
-
-def repaint_reconfiguration_frequency(
-    data_dir: Path,
-    save_dir: Path,
-    show: bool = False,
-):
-    """
-    Load saved reconfiguration-frequency data from *data_dir* and repaint the figures.
-
-    :param data_dir: directory containing the ``reconfig_freq_*.npy`` files
-    :param save_dir: directory in which to save the figures
-    :param show: whether to display figures interactively
-    """
-    agent_names: List[str] = np.load(
-        data_dir / "reconfig_freq_agent_names.npy", allow_pickle=True
-    ).tolist()
-    pl_edge_index = np.load(data_dir / "failing_edges_pl_edge_index.npy")
-
-    freq: Dict[str, npt.NDArray] = {}
-    for name in agent_names:
-        safe = name.replace(" ", "_")
-        p = data_dir / f"reconfig_freq_{safe}.npy"
-        if p.exists():
-            freq[name] = np.load(p)
-
-    paint_reconfiguration_frequency(freq, pl_edge_index, save_dir, show=show)
 
 def paint_cross_validation_results(
     cv_map: np.ndarray,
@@ -1314,7 +1064,6 @@ def visualize_failing_edges(
     )
     if not lines_connected_before:
         return
-    freq = compute_reconfiguration_frequency_data(results, data_dir)
     # Load the freshly-saved global stats to pass to the combined figure
     _loaded = _load_failing_edges_data(data_dir)
     _agent_names = _loaded[0]
@@ -1332,7 +1081,7 @@ def visualize_failing_edges(
     _combined = save_path_combined or save_path_connectivity.with_name("failing_edges_combined" + save_path_connectivity.suffix)
     paint_failing_edges_combined(
         lines_connected_before, rhos_before_failure, pl_edge_index, powerline_edge_indices,
-        _combined, freq=freq or None, show=show,
+        _combined, freq=None, show=show,
         rho_global_stats=rho_global_stats,
         conn_global_stats=conn_global_stats,
     )
@@ -1450,27 +1199,13 @@ def repaint_failing_edges(
         conn_global_stats = {a: {'mean': _conn_gm[a], 'std': _conn_gs[a], 'min': _conn_gn[a]}
                              for a in agent_names}
 
-    # Load reconfiguration frequency data if available
-    freq: Optional[Dict[str, npt.NDArray]] = None
-    reconfig_names_path = data_dir / "reconfig_freq_agent_names.npy"
-    if reconfig_names_path.exists():
-        reconfig_names: List[str] = np.load(reconfig_names_path, allow_pickle=True).tolist()
-        freq = {}
-        for name in reconfig_names:
-            safe = name.replace(" ", "_")
-            p = data_dir / f"reconfig_freq_{safe}.npy"
-            if p.exists():
-                freq[name] = np.load(p)
-        if not freq:
-            freq = None
-
     _combined = save_path_combined or save_path_connectivity.with_name(
         "failing_edges_combined" + save_path_connectivity.suffix
     )
     paint_failing_edges_combined(
         lines_connected_before, rhos_before_failure,
         pl_edge_index, powerline_edge_indices,
-        _combined, freq=freq, show=show,
+        _combined, freq=None, show=show,
         rho_global_stats=rho_global_stats,
         conn_global_stats=conn_global_stats,
     )

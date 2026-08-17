@@ -18,4 +18,7 @@ gnn:
   out_dim: 64
   num_layers: 3
   residual: true
+  conv_type: gcn
   edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy
+  sparsify_threshold: 0.0  # sum of interaction-type probs below this → edge dropped. 0.0 = disabled
+  diagnose_every: 0        # run self-loop diagnostic every N eval calls. 0 = disabled

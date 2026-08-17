@@ -1,3 +1,5 @@
+import logging
+import time
 import typing
 from typing import Optional, List, Tuple
 
@@ -9,6 +11,8 @@ from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import nn, Tensor
+
+logger = logging.getLogger(__name__)
 
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
 from rarl import RAFeatureExtractor
@@ -90,6 +94,27 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
 
         x_dim = assert_graph_obs_space_and_get_x_dim(obs_space)
 
+        # Compute top-K budget (0 = disabled)
+        sparse_cfg = cfg.get("sparsification", {})
+        top_k_mult = sparse_cfg.get("top_k_multiplier", 0)
+        top_k_budget = 0
+        if top_k_mult > 0:
+            n_powerlines = sparse_cfg.get("n_powerlines_directed", 0)
+            if n_powerlines > 0:
+                temperature = sparse_cfg.get("temperature", 0.5)
+                top_k_budget = int(top_k_mult * (1 + temperature) * n_powerlines)
+                logger.info(
+                    "Top-K sparsification enabled: multiplier=%s temperature=%s "
+                    "n_powerlines_directed=%s → K_budget=%d",
+                    top_k_mult, temperature, n_powerlines, top_k_budget,
+                )
+            else:
+                logger.warning(
+                    "top_k_multiplier=%s but n_powerlines_directed not set; "
+                    "sparsification disabled. Add n_lines to env config.",
+                    top_k_mult,
+                )
+
         self.ragnn = RAFeatureExtractor(
             x_dim=x_dim,
             graph_max_degree=enc_cfg["max_degree"],
@@ -104,6 +129,10 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
             residual=gnn_cfg.get("residual", True),
             tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
+            top_k_budget=top_k_budget,
+            conv_type=gnn_cfg.get("conv_type", "gcn"),
+            sparsify_threshold=gnn_cfg.get("sparsify_threshold", 0.0),
+            diagnose_every=gnn_cfg.get("diagnose_every", 0),
         )
 
         gnn_out_space = Box(-np.inf, np.inf, shape=(gnn_cfg["out_dim"],), dtype=np.float32)
@@ -115,6 +144,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
             name=name + "_fcn",
         )
         self.batched_p_z_given_x: Optional[Tensor] = None
+        self._timings: dict[str, float] = {}
 
     def forward(self, input_dict: typing.Dict[str, TensorType], state: List[TensorType], seq_lens: TensorType) -> Tuple[
         TensorType, List[TensorType]]:
@@ -122,6 +152,8 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         edge_index_batch = input_dict["obs"][EDGE_INDEX]  # [B, 2, E_max]
         edge_mask = input_dict["obs"][EDGE_MASK]  # [B, E_max]
 
+        # --- Edge preprocessing ---
+        t0 = time.perf_counter()
         B, N, _ = node_features_batch.shape
         device = node_features_batch.device
 
@@ -137,6 +169,7 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         # Add per-graph node offsets
         offsets = (torch.arange(B, device=device) * N).repeat_interleave(valid_edges.sum(1))
         edge_index_batch += offsets.unsqueeze(0)
+        self._timings["edge_prep_ms"] = (time.perf_counter() - t0) * 1000
 
         # RAGNN to produce graph-level representation [B, gnn_out_dim]
         gnn_out, self.batched_p_z_given_x = self.ragnn(
@@ -146,8 +179,13 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
         )
 
         # Pass GNN output through FCN (which expects input_dict format)
+        t0 = time.perf_counter()
         mlp_input_dict = {"obs": gnn_out}
         logits, _ = self.mlp(mlp_input_dict, state, seq_lens)
+        self._timings["fcn_ms"] = (time.perf_counter() - t0) * 1000
+
+        # Collect all sub-module timings
+        self._timings.update(self.ragnn._timings)
         return logits, []
 
     def get_posterior(self) -> Tensor:

@@ -3,9 +3,8 @@ from pathlib import Path
 from typing import List
 
 from analysis.cross_validate_models.cross_validate import CrossValidateResult, cross_validate, \
-    save_cross_validate_results, compute_reconfiguration_frequency_data, compute_cross_validation_data, \
-    compute_failing_edges_data, repaint_failing_edges, repaint_reconfiguration_frequency, \
-    repaint_cross_validation_results
+    save_cross_validate_results, compute_cross_validation_data, \
+    compute_failing_edges_data, repaint_failing_edges, repaint_cross_validation_results
 from experiments.utils import AgentSpec
 
 

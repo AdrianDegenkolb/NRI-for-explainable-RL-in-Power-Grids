@@ -1,0 +1,20 @@
+defaults:
+  - experiment: minimal
+  - training: ppo_test
+  - model: ragnn_minimal
+  - obs_space: graph
+  - reward: constant
+  - relation_awareness: minimal
+  - env: case14
+  - opponent: disabled
+  - evaluation: minimal
+  - rollouts: minimal
+  - callbacks: default
+  - optimization: disabled
+  - _self_
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${experiment.storage_path}/${experiment.name}

@@ -440,9 +440,17 @@ class Hypothesis1verifier(PosteriorAnalyzer):
         self._save_array(added_mi_arr,                self.outdir / f"mutual_info_{cs}_added.npy")
         self._save_array(added_edge_corr,             self.outdir / f"edgewise_temporal_pearson_{cs}_added.npy")
         self._save_array(added_edge_spearman,         self.outdir / f"edgewise_temporal_spearman_{cs}_added.npy")
-        self._save_array(P_T,    self.outdir / "posterior_over_time.npy")
-        self._save_array(PR_T,   self.outdir / "prior_over_time.npy")
-        self._save_array(C_T,    self.outdir / "coupling_over_time.npy")
+        # Save a random subsample of flattened (C, P, PR) triples for KDE repaint.
+        # The full arrays would be ~2.5 GB each; 50K samples are sufficient for KDE.
+        _rng = np.random.default_rng(0)
+        _n = min(50_000, P_T.size)
+        _idx = _rng.choice(P_T.size, size=_n, replace=False)
+        np.savez_compressed(
+            self.outdir / "kde_sample.npz",
+            P=P_T.ravel()[_idx].astype(np.float32),
+            PR=PR_T.ravel()[_idx].astype(np.float32),
+            C=C_T.ravel()[_idx].astype(np.float32),
+        )
         self._save_array(mean_c, self.outdir / "coupling_mean.npy")
 
         self.generate_plots(
@@ -483,7 +491,14 @@ class Hypothesis1verifier(PosteriorAnalyzer):
             print(f"{name} over t={num_timesteps}: mean={xf.mean():.4f}, std={xf.std():.4f}, "
                   f"median={np.median(xf):.4f}, n_valid={xf.size}")
 
-        print("\n--- Posterior vs coupling ---")
+        print(f"\n=== Hypothesis 1: Electrical Coupling ===")
+        print(f"  Correlating C_ij^elec(t) vs edge-existence probability across all E edges, "
+              f"computed at each of t={num_timesteps} timesteps (distribution reported).")
+        print(f"  C_ij^elec(t) = PTDF-derived electrical coupling at step t  "
+              f"(how much power injected at node i flows through edge ij)")
+        print(f"  Edge-wise temporal: Spearman_t(P_t(edge_ij), C_ij^elec(t)) per edge "
+              f"(one value per edge, mean over edges reported)")
+        print(f"\n--- Posterior P(edge_ij | obs_t) vs C_ij^elec(t) ---")
         summarize("Spearman rho", spearman_rho)
         summarize("Pearson r", pearson_r)
         summarize("Kendall tau", kendall_tau_arr)
@@ -497,7 +512,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
             if f.size:
                 print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
-        print("\n--- Prior vs coupling (baseline) ---")
+        print("\n--- Prior P(edge_ij) vs C_ij^elec(t)  [baseline] ---")
         summarize("Spearman rho", prior_spearman_rho)
         summarize("Pearson r", prior_pearson_r)
         summarize("Kendall tau", prior_kendall_tau_arr)
@@ -512,7 +527,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
                 print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
         if removed_spearman_rho is not None:
-            print("\n--- Edges removed p(1-q) vs coupling ---")
+            print("\n--- Edges removed p(1-q) = p_prior*(1-p_post) vs C_ij^elec(t) ---")
             summarize("Spearman rho", removed_spearman_rho)
             summarize("Pearson r", removed_pearson_r)
             summarize("Kendall tau", removed_kendall_tau_arr)
@@ -527,7 +542,7 @@ class Hypothesis1verifier(PosteriorAnalyzer):
                     print(f"{lbl}: mean={f.mean():.4f}, std={f.std():.4f}, median={np.median(f):.4f}, n={f.size}")
 
         if added_spearman_rho is not None:
-            print("\n--- Edges added q(1-p) vs coupling ---")
+            print("\n--- Edges added q(1-p) = p_post*(1-p_prior) vs C_ij^elec(t) ---")
             summarize("Spearman rho", added_spearman_rho)
             summarize("Pearson r", added_pearson_r)
             summarize("Kendall tau", added_kendall_tau_arr)
@@ -645,9 +660,10 @@ class Hypothesis1verifier(PosteriorAnalyzer):
         added_edge_corr          = _try_load(self.outdir / f"edgewise_temporal_pearson_{cs}_added.npy")
         added_edge_spearman      = _try_load(self.outdir / f"edgewise_temporal_spearman_{cs}_added.npy")
 
-        P_T  = np.load(self.outdir / "posterior_over_time.npy")
-        PR_T = np.load(self.outdir / "prior_over_time.npy")
-        C_T  = np.load(self.outdir / "coupling_over_time.npy")
+        _kde = np.load(self.outdir / "kde_sample.npz")
+        P_T  = _kde["P"].reshape(1, -1).astype(np.float64)
+        PR_T = _kde["PR"].reshape(1, -1).astype(np.float64)
+        C_T  = _kde["C"].reshape(1, -1).astype(np.float64)
 
         self.generate_plots(
             C_T, P_T, PR_T,

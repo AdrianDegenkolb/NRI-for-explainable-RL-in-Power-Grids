@@ -422,7 +422,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
     @staticmethod
     def _save_scatter(values: np.ndarray, title: str, xlabel: str, ylabel: str, outpath: Path):
@@ -437,7 +437,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout()
         plt.savefig(outpath.parent / (outpath.stem + ".png"))
         plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-        plt.show()
+        plt.close()
 
 
     # ------------------------------------------------------------------
@@ -551,7 +551,14 @@ class Hypothesis3verifier(PosteriorAnalyzer):
                 _fv_plain(agg_removed, name), _fv_plain(agg_added, name),
             ])
 
-        print(f"\n=== Hypothesis 3: Action-Effect Coupling ===\n")
+        print(f"\n=== Hypothesis 3: Action-Effect Coupling ===")
+        print(f"  Correlating C_ij^effect(t) vs edge-existence probability across all E edges.")
+        print(f"  C_ij^effect(t) = delta_r_j(t)  if node i was reconfigured at step t, else 0")
+        print(f"  where delta_r_j(t) = |r_j(t) - r_j(t-1)|  (absolute risk change at destination node)")
+        print(f"  Per-step: Spearman(C_ij^effect(t), P_{{t-1}}(edge_ij))  at each action step, "
+              f"mean +/- std reported over all action steps")
+        print(f"  Global:   Spearman(mean_t C_ij^effect, mean_t P(edge_ij))  once on time-averaged arrays")
+        print(f"  Agg:      Spearman(C_ij^effect_agg, mean_t P(edge_ij))  row-normalised aggregation\n")
         print(tabulate(rows, headers=headers, tablefmt="rounded_outline", floatfmt=".4f"))
 
     def on_evaluation_end(self):
@@ -692,9 +699,6 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
         # --- Save ---
         self.outdir.mkdir(parents=True, exist_ok=True)
-        self._save_array(C_T,                self.outdir / "C_effect_over_time.npy")
-        self._save_array(P_T,                self.outdir / "posterior_over_time.npy")
-        self._save_array(PR_T,               self.outdir / "prior_over_time.npy")
         self._save_array(C_mean,             self.outdir / "C_effect_mean_edge.npy")
         self._save_array(C_agg,              self.outdir / "C_effect_agg_edge.npy")
         self._save_array(P_mean,             self.outdir / "posterior_mean_edge.npy")
@@ -818,19 +822,11 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
     def repaint(self):
         """Re-loads all saved arrays and regenerates all plots."""
-        C_T    = np.load(self.outdir / "C_effect_over_time.npy")
-        P_T    = np.load(self.outdir / "posterior_over_time.npy")
-        PR_T   = np.load(self.outdir / "prior_over_time.npy")
-        C_mean = np.load(self.outdir / "C_effect_mean_edge.npy")
-        P_mean = np.load(self.outdir / "posterior_mean_edge.npy")
+        C_mean  = np.load(self.outdir / "C_effect_mean_edge.npy")
+        P_mean  = np.load(self.outdir / "posterior_mean_edge.npy")
         PR_mean = np.load(self.outdir / "prior_mean_edge.npy")
         agg_path = self.outdir / "C_effect_agg_edge.npy"
-        if agg_path.exists():
-            C_agg = np.load(agg_path)
-        else:
-            E = C_T.shape[1]
-            N_infer = int(round((1 + (1 + 4 * E) ** 0.5) / 2))
-            C_agg = self._build_aggregated_coupling(C_T, num_nodes=N_infer)
+        C_agg = np.load(agg_path) if agg_path.exists() else C_mean
 
         spearman_rho     = np.load(self.outdir / "spearman_rho.npy")
         pearson_r        = np.load(self.outdir / "pearson_r.npy")
@@ -872,7 +868,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         node_counts = np.load(counts_path) if counts_path.exists() else None
 
         self.generate_plots(
-            C_T, P_T, PR_T, C_mean, C_agg, P_mean, PR_mean,
+            None, None, None, C_mean, C_agg, P_mean, PR_mean,
             spearman_rho, pearson_r, kendall_tau_arr, topk_arr, roc_auc_arr, ap_arr, mi_arr,
             prior_spearman_rho, prior_pearson_r, prior_kendall_tau_arr, prior_topk_arr,
             prior_roc_auc_arr, prior_ap_arr, prior_mi_arr,
@@ -1008,7 +1004,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             fig.savefig(self.outdir / fname, bbox_inches="tight", pad_inches=0.05, bbox_extra_artists=[st])
             fig.savefig(self.outdir / (Path(fname).stem + ".svg"), bbox_inches="tight", pad_inches=0.05,
                         bbox_extra_artists=[st])
-            plt.show()
+            plt.close()
 
     # ------------------------------------------------------------------
     # Plots
@@ -1016,9 +1012,9 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
     def generate_plots(
         self,
-        C_T: npt.NDArray,               # [T_action, E]
-        P_T: npt.NDArray,               # [T_action, E] – posterior
-        PR_T: npt.NDArray,              # [T_action, E] – prior  (baseline)
+        C_T: npt.NDArray | None,        # [T_action, E] – unused, kept for API compat
+        P_T: npt.NDArray | None,        # [T_action, E] – unused, kept for API compat
+        PR_T: npt.NDArray | None,       # [T_action, E] – unused, kept for API compat
         C_mean: npt.NDArray,            # [E]
         C_agg: npt.NDArray,             # [E] sum-over-time then row-normalised
         P_mean: npt.NDArray,            # [E]
@@ -1103,7 +1099,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             plt.tight_layout(rect=[0, 0, 1, 0.95])
             plt.savefig(outpath.parent / (outpath.stem + ".png"))
             plt.savefig(outpath.parent / (outpath.stem + ".svg"))
-            plt.show()
+            plt.close()
 
         # ---- 4-panel histograms: posterior | prior | removed p(1-q) | added q(1-p) ----
         def _hist4(post_vals, prior_vals, rem_vals, add_vals,
@@ -1133,7 +1129,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
             stem = outpath.stem + "_4way"
             plt.savefig(outpath.parent / (stem + ".png"))
             plt.savefig(outpath.parent / (stem + ".svg"))
-            plt.show()
+            plt.close()
 
         # ---- Graph visualisation ----
         # if self._environment is None or self._powerline_edge_index is None:
@@ -1154,7 +1150,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         #     plt.tight_layout()
         #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.png")
         #     plt.savefig(self.outdir / "bar_node_reconfiguration_counts.svg")
-        #     plt.show()
+        #     plt.close()
 
         # ---- KDE: mean C conditioned on posterior (left) and prior (right) ----
         fig, axes = plt.subplots(1, 2, figsize=(10, 3.5), sharex=True, sharey=True)
@@ -1176,7 +1172,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.savefig(self.outdir / "kde_C_effect_conditioned_on_posterior_prior.png")
         plt.savefig(self.outdir / "kde_C_effect_conditioned_on_posterior_prior.svg")
-        plt.show()
+        plt.close()
 
         # # ---- KDE: mean C conditioned on removed p(1-q) and added q(1-p) ----
         # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
@@ -1198,7 +1194,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.png")
         # plt.savefig(self.outdir / "kde_C_effect_conditioned_on_removed_added.svg")
-        # plt.show()
+        # plt.close()
 
         # # Scatter: posterior / prior / removed / added vs mean C
         # for mean_val, suffix in [
@@ -1236,7 +1232,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.png")
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_posterior_prior.svg")
-        # plt.show()
+        # plt.close()
         #
         # # ---- KDE: aggregated C conditioned on removed and added ----
         # fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharex=True, sharey=True)
@@ -1257,7 +1253,7 @@ class Hypothesis3verifier(PosteriorAnalyzer):
         # plt.tight_layout(rect=[0, 0, 1, 0.95])
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.png")
         # plt.savefig(self.outdir / "kde_C_effect_agg_conditioned_on_removed_added.svg")
-        # plt.show()
+        # plt.close()
 
         # Scatter: removed / added vs aggregated C
         # for mean_val, suffix in [

@@ -110,6 +110,8 @@ def _build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         "reward_finish": env.reward_finish,
         "curriculum_training": env.curriculum_training,
         "curriculum_thresholds": list(env.curriculum_thresholds),
+        "chronics_dir": env.get("chronics_dir", None),
+        "use_chronics_cache": env.get("use_chronics_cache", False),
     }
 
     if cfg.opponent.enabled:
@@ -149,6 +151,17 @@ def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
     custom_model_config["sampling"] = OmegaConf.to_container(
         cfg.relation_awareness.sampling, resolve=True
     )
+
+    # sparsification config: merge RA sparsification params with env-derived powerline count
+    sparse_cfg = OmegaConf.to_container(
+        cfg.relation_awareness.get("sparsification", {}), resolve=True
+    )
+    if sparse_cfg.get("top_k_multiplier", 0) > 0:
+        env_tmp = grid2op.make(cfg.env.env_name + "_train")
+        sparse_cfg["n_powerlines_directed"] = 2 * env_tmp.n_line
+        env_tmp.close()
+        sparse_cfg["temperature"] = float(cfg.relation_awareness.prior.temperature)
+        custom_model_config["sparsification"] = sparse_cfg
 
     return {
         "fcnet_hiddens": list(model.fcnet_hiddens),
@@ -272,9 +285,14 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers
     rllib_cfg["num_gpus_per_learner_worker"] = rollouts.num_gpus_per_learner_worker
-    # Old RLLib API (_enable_learner_api=False) uses num_gpus on the main process.
-    # Set it to the total GPU count so the trainer process can also utilize GPUs.
-    rllib_cfg["num_gpus"] = rollouts.num_gpus_per_learner_worker * rollouts.num_learner_workers
+    rllib_cfg["batch_mode"] = rollouts.batch_mode
+    # This project runs the old RLlib API stack (_enable_learner_api=False), which has
+    # no separate learner-worker actors: training happens on the single driver process
+    # via multi_gpu_train_one_step(). `num_learner_workers`/`num_gpus_per_learner_worker`
+    # are new-API-stack fields that RLlib's old-API resource request ignores entirely
+    # (see Algorithm.default_resource_request: driver GPU = config.num_gpus). The only
+    # knob that actually grants the driver a GPU is `rollouts.num_gpus` below.
+    rllib_cfg["num_gpus"] = rollouts.num_gpus
     rllib_cfg["count_steps_by"] = training.get("count_steps_by", rollouts.count_steps_by)
     rllib_cfg["keep_per_episode_custom_metrics"] = rollouts.keep_per_episode_custom_metrics
     rllib_cfg["framework"] = rollouts.framework
@@ -298,19 +316,6 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Grid2Op local dir setup
-# ---------------------------------------------------------------------------
-
-def _setup_grid2op_dir(workdir: str, env_name: str) -> None:
-    local_env_path = os.path.join(workdir, f"data_grid2op/{env_name}")
-    if os.path.exists(local_env_path):
-        grid2op.change_local_dir(os.path.join(workdir, "data_grid2op"))
-    else:
-        grid2op.change_local_dir(os.path.expanduser("~/data_grid2op"))
-    logger.info("Grid2Op data dir: %s", grid2op.get_current_local_dir())
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -319,8 +324,6 @@ def main(cfg: DictConfig) -> None:
     OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)  # fail fast on missing values
 
     set_seed(cfg.experiment.seed)
-
-    _setup_grid2op_dir(os.getcwd(), cfg.env.env_name + "_train")
 
     rllib_cfg = build_rllib_config(cfg)
     run_training(rllib_cfg, cfg)

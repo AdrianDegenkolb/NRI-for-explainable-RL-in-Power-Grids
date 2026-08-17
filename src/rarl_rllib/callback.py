@@ -29,11 +29,12 @@ Designed to be composed with other RLlib callbacks::
 import logging
 import time
 import torch
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 
 import grid2op
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from numpy._typing import NDArray
 from ray._private.dict import unflattened_lookup
 from ray.rllib import RolloutWorker, BaseEnv, Policy
 from ray.rllib.algorithms.algorithm import Algorithm
@@ -47,9 +48,12 @@ from ray.tune.experimental.output import (
     _current_best_trial,
 )
 from tabulate import tabulate
+from torch.utils.data import Dataset
 
 from core.constants import RL_POLICY, HIGH_LEVEL_AGENT
+from core.pretraining import Pretrainer
 from grid2op_env.observation_converter import GraphObservationConverter
+from rarl import GraphormerNRIEncoder
 from rarl.annealing import AnnealingState
 from visualization import PlottingArgs, visualize_graph, get_node_styles
 
@@ -153,6 +157,76 @@ class AnnealingCallback(DefaultCallbacks):
         algorithm.workers.foreach_worker(_update)
 
 
+class PretrainingCallback(DefaultCallbacks):
+    """
+    Pretrains the GraphormerNRIEncoder to reproduce the prior distribution
+    before RL training begins.
+
+    Parameters are read from ``policy.config["relation_awareness"]["pretraining"]``:
+      - ``num_epochs``:       training epochs (0 = skip pretraining)
+      - ``num_observations``: environment steps to collect for the dataset
+      - ``lr``:               Adam learning rate for the encoder
+
+    Prior and loss parameters are read from ``policy.config["relation_awareness"]``.
+    Silently skips if the model has no encoder or ``num_epochs == 0``.
+    After pretraining, syncs the updated weights to all remote workers.
+    """
+
+    def on_algorithm_init(self, *, algorithm: Algorithm, **kwargs) -> None:
+        super().on_algorithm_init(algorithm=algorithm, **kwargs)
+
+        policy = _get_policy(algorithm)
+        if policy is None or not hasattr(policy, "model"):
+            logger.warning("PretrainingCallback: no policy/model found, skipping.")
+            return
+
+        model = policy.model
+        if not (hasattr(model, "ragnn") and hasattr(model.ragnn, "encoder")):
+            logger.info("PretrainingCallback: model has no encoder, skipping.")
+            return
+
+        ra_cfg = policy.config.get("relation_awareness", {})
+        pretrain_cfg = ra_cfg.get("pretraining", {})
+        num_epochs = pretrain_cfg.get("num_epochs", 0)
+        if num_epochs == 0:
+            logger.info("PretrainingCallback: num_epochs=0, skipping.")
+            return
+
+        num_observations = pretrain_cfg.get("num_observations", 100)
+        lr = pretrain_cfg.get("lr", 1e-3)
+        prior_cfg = ra_cfg.get("prior", {})
+        loss_cfg = ra_cfg.get("loss", {})
+        latent_cfg = ra_cfg.get("latent_space", {})
+        device = str(next(model.parameters()).device)
+
+        pretrainer = Pretrainer(
+            env_config=algorithm.config.env_config,
+            prior_prob_for_graph_edge=prior_cfg.get("prior_prob_for_graph_edge", 0.9),
+            temperature=prior_cfg.get("temperature", 0.5),
+            num_edge_types=latent_cfg.get("num_edge_types", 2),
+            beta=loss_cfg.get("beta_graph_edges_end", loss_cfg.get("beta_graph_edges", 1.0)),
+            beta_non_graph=loss_cfg.get("beta_non_graph_edges_end", loss_cfg.get("beta_non_graph_edges", 1.0)),
+            lr=lr,
+            device=device,
+            verbose=True,
+        )
+
+        logger.info(
+            f"PretrainingCallback: pretraining encoder for {num_epochs} epochs "
+            f"on {num_observations} observations (device={device})."
+        )
+        results = pretrainer.run(model.ragnn.encoder, num_observations=num_observations, num_epochs=num_epochs)
+        logger.info(
+            f"PretrainingCallback: done. "
+            f"Final loss={results.losses_per_epoch[-1]:.4f}, "
+            f"mean time/epoch={sum(results.time_ms_per_epoch) / len(results.time_ms_per_epoch):.1f}ms."
+        )
+
+        if algorithm.workers.num_remote_workers() > 0:
+            algorithm.workers.sync_weights(policies=[RL_POLICY])
+            logger.info("PretrainingCallback: synced pretrained weights to remote workers.")
+
+
 class TuneCallback(TuneReporterBase):
     def __init__(
             self,
@@ -201,6 +275,7 @@ class TuneCallback(TuneReporterBase):
             result: Dict,
             **info,
     ):
+        self.print_heartbeat(trials)
         if self.log_level:
             # start printing after first evaluation
             if result['training_iteration'] % self._eval_freq == 0:
@@ -257,7 +332,11 @@ class CustomMetricsCallback(DefaultCallbacks):
         self.powerline_edge_index = obs_space._get_edge_index(env.reset())
         policy = _get_policy(algorithm)
         if policy is not None and hasattr(policy, "model"):
-            logger.info(f"Instantiated model class: {type(policy.model).__name__}")
+            model_device = next(policy.model.parameters()).device
+            logger.info(
+                f"Instantiated model class: {type(policy.model).__name__} "
+                f"on device={model_device} (config.num_gpus={algorithm.config.num_gpus})"
+            )
 
         if hasattr(algorithm, "curriculum_training") and algorithm.curriculum_training:
             print(f"Start with curriculum level {self.curr_level}")
@@ -399,6 +478,71 @@ class CustomMetricsCallback(DefaultCallbacks):
                     )
                 )
                 print(f"Curriculum level increased to {self.curr_level}")
+
+
+class TimerCallback(DefaultCallbacks):
+    """
+    Collects per-step wall-clock timings from the environment and model and
+    logs them to TensorBoard as custom metrics.
+
+    Environment timings (per-episode means across all sub-environments):
+      g2op_step_ms, heuristic_ms, obs_conversion_ms, forecast_ms, edge_index_ms
+
+    Model timings (last learning forward pass, read from local policy):
+      edge_prep_ms, encoder_ms, graph_data_cache_ms, graph_data_compute_ms,
+      gumbel_noise_ms, gumbel_softmax_ms, sparsification_ms, gnn_ms, fcn_ms
+
+    Note: model timings reflect the *learning* forward pass, not inference.
+    They are only populated for models that expose a ``_timings`` dict
+    (i.e. RAActorCriticModel).
+    """
+
+    _ENV_TIMER_KEYS = [
+        "g2op_step_ms",
+        "heuristic_ms",
+        "obs_conversion_ms",
+        "forecast_ms",
+        "edge_index_ms",
+    ]
+
+    def on_episode_end(
+        self,
+        *,
+        episode: EpisodeV2,
+        worker: Optional[RolloutWorker] = None,
+        base_env: Optional[BaseEnv] = None,
+        policies: Optional[Policy] = None,
+        env_index: Optional[int] = None,
+        **kwargs: Dict[str, Any],
+    ) -> None:
+        if base_env is None:
+            return
+        envs = base_env.get_sub_environments()
+        for key in self._ENV_TIMER_KEYS:
+            values = [
+                env._timing_sum.get(key, 0.0) / max(env._timing_count, 1)
+                for env in envs
+                if hasattr(env, "_timing_sum")
+            ]
+            if values:
+                episode.custom_metrics[key] = np.mean(values)
+
+    def on_train_result(
+        self,
+        *,
+        algorithm: "Algorithm",
+        result: dict,
+        **kwargs,
+    ) -> None:
+        policy = _get_policy(algorithm)
+        if policy is None or not hasattr(policy, "model"):
+            return
+        model = policy.model
+        if not hasattr(model, "_timings") or not model._timings:
+            return
+        custom = result.setdefault("custom_metrics", {})
+        for key, val in model._timings.items():
+            custom[key] = val
 
 
 def _fig_to_chw_uint8(fig):

@@ -72,8 +72,10 @@ def create_graph_edge_mask(graph_edges: Tensor, all_edges: Tensor) -> Tensor:
     :param all_edges: Full edge index to mask [2, E_all].
     :return: Bool mask [E_all].
     """
+    device = all_edges.device
     all_edges_T = all_edges.T  # [E_all, 2]
-    mask = torch.zeros(all_edges_T.shape[0], dtype=torch.bool)
+    graph_edges = graph_edges.to(device)
+    mask = torch.zeros(all_edges_T.shape[0], dtype=torch.bool, device=device)
     reversed_edges = graph_edges[[1, 0], :]
 
     for e in range(graph_edges.shape[1]):
@@ -109,9 +111,12 @@ def get_prior_tensor(
     """
     assert prior_for_graph_edges.shape == prior_for_non_graph_edges.shape
 
+    device = all_edges.device
     mask = create_graph_edge_mask(graph_edges, all_edges)
     E = mask.shape[0]
-    prior = torch.zeros((E, num_edge_types), dtype=torch.float32)
+    prior = torch.zeros((E, num_edge_types), dtype=torch.float32, device=device)
+    prior_for_graph_edges = prior_for_graph_edges.to(device)
+    prior_for_non_graph_edges = prior_for_non_graph_edges.to(device)
 
     # Spread "exists" probability evenly over the first (K-1) types
     prior[mask, : num_edge_types - 1] = prior_for_graph_edges[0] / (num_edge_types - 1)

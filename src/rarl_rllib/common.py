@@ -14,13 +14,24 @@ RASACTorchPolicy rely on:
   metrics into the format expected by RLlib's stats pipeline.
 """
 
-from typing import Dict, Tuple, List
+import logging
+import time
+from typing import Dict, Tuple
 
 import torch
 from gymnasium import spaces
 from ray.rllib import SampleBatch
 from ray.rllib.utils.typing import TensorType
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
+
+# Profiling state — tracks cumulative time across gradient steps.
+_prof_calls: int = 0
+_prof_total_prior: float = 0.0
+_prof_total_kl: float = 0.0
+_PROF_LOG_EVERY: int = 10  # log once every N gradient steps
+
 
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
 from rarl import compute_ra_kl_loss, fully_connected_edge_index, get_prior_tensor
@@ -47,6 +58,7 @@ def init_ra_config(policy, config: dict) -> None:
     policy.temperature = policy._prior_cfg["temperature"]
 
 
+
 def apply_ra_kl_loss(
     policy,
     model: RARLModel,
@@ -54,11 +66,20 @@ def apply_ra_kl_loss(
     base_loss: TensorType,
 ) -> TensorType:
     """Add KL regularization term to *base_loss* and store RA tower stats."""
+    global _prof_calls, _prof_total_prior, _prof_total_kl
+
     obs = train_batch["obs"]
+
+    t0 = time.perf_counter()
     prior_tensor, graph_edge_masks = build_prior_and_graph_masks(
         policy, obs[EDGE_INDEX], obs[EDGE_MASK]
     )
+    t1 = time.perf_counter()
+
     posteriors: Tensor = model.get_posterior()
+    device = posteriors.device
+    prior_tensor = prior_tensor.to(device)
+    graph_edge_masks = graph_edge_masks.to(device)
 
     kl_loss, kl_stats = compute_ra_kl_loss(
         posteriors=posteriors,
@@ -67,6 +88,22 @@ def apply_ra_kl_loss(
         beta=policy.current_beta_graph,
         beta_non_graph=policy.current_beta_non_graph,
     )
+    t2 = time.perf_counter()
+
+    _prof_calls += 1
+    _prof_total_prior += t1 - t0
+    _prof_total_kl += t2 - t1
+
+    if _prof_calls % _PROF_LOG_EVERY == 0:
+        batch_size = obs[EDGE_INDEX].shape[0]
+        logger.warning(
+            "[RA profiling] grad-step=%d  batch=%d  "
+            "build_prior=%.3fs (avg %.3fs)  kl_loss=%.3fs (avg %.3fs)",
+            _prof_calls, batch_size,
+            t1 - t0, _prof_total_prior / _prof_calls,
+            t2 - t1, _prof_total_kl / _prof_calls,
+        )
+
     store_ra_tower_stats(model, kl_loss, kl_stats, prior_tensor, posteriors, policy)
 
     if isinstance(base_loss, tuple):
@@ -109,11 +146,25 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
     stats = {k: v for k, v in candidates.items() if v is not None}
 
     gnn_stats = towers[0].tower_stats.get("ra_gnn_stats")
-    if gnn_stats is not None:
+    if gnn_stats is not None and all("ra_gnn_stats" in t.tower_stats for t in towers):
         for key in gnn_stats:
-            stats[f"relation_awareness/gnn/{key}"] = torch.mean(
-                torch.stack([t.tower_stats["ra_gnn_stats"][key].detach() for t in towers])
+            if all(key in t.tower_stats["ra_gnn_stats"] for t in towers):
+                stats[f"relation_awareness/gnn/{key}"] = torch.mean(
+                    torch.stack([t.tower_stats["ra_gnn_stats"][key].detach().cpu() for t in towers])
+                ).item()
+
+    sparsif_stats = towers[0].tower_stats.get("ra_sparsification_stats")
+    if sparsif_stats is not None and all(
+        "ra_sparsification_stats" in t.tower_stats for t in towers
+    ):
+        for key in sparsif_stats:
+            stats[f"relation_awareness/{key}"] = torch.mean(
+                torch.stack([
+                    t.tower_stats["ra_sparsification_stats"][key].detach().cpu()
+                    for t in towers
+                ])
             ).item()
+
     return stats
 
 
@@ -126,6 +177,8 @@ def store_ra_tower_stats(
     policy,
 ) -> None:
     """Write RARL metrics into model.tower_stats for later aggregation."""
+    global _sparsif_log_calls
+
     model.tower_stats.update({
         "ra_kl_loss":                  kl_loss,
         "ra_kl_graph":                 kl_stats["kl_graph_edges"],
@@ -142,6 +195,11 @@ def store_ra_tower_stats(
         "ra_current_tau":              torch.as_tensor(policy.current_tau,            dtype=torch.float32),
         "ra_gnn_stats":                model.ragnn.gnn.stats,
     })
+
+    # Sparsification diagnostics — written every iteration (stats already computed in forward pass)
+    sparsif_stats = getattr(model.ragnn, "_sparsification_stats", {})
+    if sparsif_stats:
+        model.tower_stats["ra_sparsification_stats"] = sparsif_stats
 
 
 def _get_from_conf_with_fallback(config: dict, key: str, fallback_key: str) -> float:
@@ -161,34 +219,40 @@ def build_prior_and_graph_masks(
     all_graph_edges: Tensor,
     edge_masks_obs: Tensor,
 ) -> Tuple[Tensor, Tensor]:
-    """Compute batched prior tensor and graph-edge affiliation masks."""
-    N, _ = policy.observation_space[NODES].shape
-    all_edges = fully_connected_edge_index(N)
+    """Return batched prior tensor and graph-edge affiliation masks.
 
-    batched_priors: List[Tensor] = []
-    batched_graph_masks: List[Tensor] = []
-
-    for i in range(all_graph_edges.shape[0]):
-        valid_edges = all_graph_edges[i][:, edge_masks_obs[i].bool()]
-
+    The prior is fully determined by fixed config values (``prior_prob_for_graph_edge``,
+    ``temperature``) and the static grid topology, so it is computed once on the first
+    call and cached on the policy.  Line disconnections change which edges are active
+    but their effect on the prior is negligible and intentionally ignored.
+    """
+    if not hasattr(policy, "_cached_prior"):
+        N, _ = policy.observation_space[NODES].shape
+        all_edges = fully_connected_edge_index(N)
+        # Use the full powerline topology from the first batch item (no mask applied).
+        graph_edges = all_graph_edges[0]
         g_prior, ng_prior = get_priors(
             prob_graph_edges_exist=policy.prior_prob_for_graph_edge,
-            num_graph_edges=valid_edges.shape[1],
-            num_non_graph_edges=all_edges.shape[1] - valid_edges.shape[1],
+            num_graph_edges=graph_edges.shape[1],
+            num_non_graph_edges=all_edges.shape[1] - graph_edges.shape[1],
             temperature=policy.temperature,
         )
-        prior, edge_is_powerline_edge_mask = get_prior_tensor(
-            graph_edges=valid_edges,
+        prior, mask = get_prior_tensor(
+            graph_edges=graph_edges,
             all_edges=all_edges,
             prior_for_graph_edges=g_prior,
             prior_for_non_graph_edges=ng_prior,
             num_edge_types=policy.num_edge_types,
             return_mask=True,
         )
-        batched_priors.append(prior.to(device=policy.device, dtype=torch.float32))
-        batched_graph_masks.append(edge_is_powerline_edge_mask.to(device=policy.device))
+        policy._cached_prior = prior.to(device=policy.device, dtype=torch.float32)
+        policy._cached_graph_mask = mask.to(device=policy.device)
 
-    return torch.stack(batched_priors), torch.stack(batched_graph_masks)
+    B = all_graph_edges.shape[0]
+    return (
+        policy._cached_prior.unsqueeze(0).expand(B, -1, -1),
+        policy._cached_graph_mask.unsqueeze(0).expand(B, -1),
+    )
 
 
 def _tower_mean(towers: list, key: str) -> float:
@@ -196,7 +260,7 @@ def _tower_mean(towers: list, key: str) -> float:
     if not all(key in t.tower_stats for t in towers):
         return None
     return torch.mean(
-        torch.stack([t.tower_stats[key].detach() for t in towers])
+        torch.stack([t.tower_stats[key].detach().cpu() for t in towers])
     ).item()
 
 
@@ -205,7 +269,7 @@ def _tower_stack_mean(towers: list, key: str, dim: int = 0) -> Tensor:
     if not all(key in t.tower_stats for t in towers):
         return None
     return torch.mean(
-        torch.stack([t.tower_stats[key].detach() for t in towers]),
+        torch.stack([t.tower_stats[key].detach().cpu() for t in towers]),
         dim=dim,
     )
 
@@ -214,7 +278,7 @@ def _tower_cat_stat(towers: list, key: str, dim: int = 0) -> Tensor:
     """Concatenate a tensor tower stat across towers along *dim*, or None if key is missing."""
     if not all(key in t.tower_stats for t in towers):
         return None
-    return torch.cat([t.tower_stats[key].detach() for t in towers], dim=dim)
+    return torch.cat([t.tower_stats[key].detach().cpu() for t in towers], dim=dim)
 
 
 def assert_graph_obs_space_and_get_x_dim(obs_space: spaces.Dict) -> int:

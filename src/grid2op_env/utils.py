@@ -7,6 +7,7 @@ from typing import Any
 
 import grid2op
 import numpy as np
+from grid2op.Chronics import MultifolderWithCache
 from grid2op.Environment import BaseEnv
 from lightsim2grid import LightSimBackend
 
@@ -49,12 +50,25 @@ def make_g2op_env(env_config: dict[str, Any]) -> BaseEnv:
     """
     Function that makes a grid2op environment.
     """
+    chronics_dir = env_config.get("chronics_dir", None)
+    use_chronics_cache = env_config.get("use_chronics_cache", False)
+    extra_kwargs = {"chronics_class": MultifolderWithCache} if use_chronics_cache else {}
+
+    # Pass full path directly to avoid grid2op.change_local_dir(), which writes to
+    # ~/.grid2opconfig.json on shared NFS and causes race conditions between concurrent jobs.
+    env_name = os.path.join(chronics_dir, env_config["env_name"]) if chronics_dir else env_config["env_name"]
+
     env = grid2op.make(
-        env_config["env_name"],
+        env_name,
         **env_config["grid2op_kwargs"],
+        **extra_kwargs,
         backend=LightSimBackend(),
     )
-    env.chronics_handler.set_chunk_size(100)
+    if use_chronics_cache:
+        env.chronics_handler.set_filter(lambda x: True)
+        env.chronics_handler.reset()
+    else:
+        env.chronics_handler.set_chunk_size(100)
 
     if "seed" in env_config:
         env.seed(int(env_config["seed"]))

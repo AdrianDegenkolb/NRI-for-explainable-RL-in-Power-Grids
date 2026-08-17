@@ -18,3 +18,10 @@ loss:
 
 latent_space:
   num_edge_types: 2
+
+sparsification: {}
+
+pretraining:
+  num_epochs: 0          # set to 0 to disable pretraining
+  num_observations: 0    # environment steps sampled to build the pretraining dataset
+  lr: 1.0e-3

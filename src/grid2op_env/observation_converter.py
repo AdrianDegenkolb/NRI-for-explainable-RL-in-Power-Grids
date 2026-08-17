@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, TypeVar, Generic
@@ -148,6 +149,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         # Normalize per feature, pooling across all nodes and timesteps.
         self._normalizer = RunningMeanStd(shape=(x_dim,))
+        self._timings: dict[str, float] = {}
 
         # Precompute static grid topology (node ordering: [line_or | line_ex | gen | load | storage])
         sub_ids = np.concatenate([
@@ -203,8 +205,14 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         Args:
             g2op_obs: The grid2op observation to convert.
         """
+        t_total = time.perf_counter()
+
         node_features = self._get_node_features(g2op_obs)
+
+        t0 = time.perf_counter()
         edge_index = self._get_edge_index(g2op_obs)
+        self._timings["edge_index_ms"] = (time.perf_counter() - t0) * 1000
+
         global_features = self._get_global_features(g2op_obs)
 
         num_edges = edge_index.shape[1]
@@ -213,12 +221,14 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         edge_mask = np.zeros(self._max_num_edges, dtype=bool)
         edge_mask[:num_edges] = True
 
-        return self.normalize({
+        result = self.normalize({
             NODES: node_features,
             EDGE_INDEX: edge_index_padded,
             EDGE_MASK: edge_mask,
             GLOBAL: global_features,
         })
+        self._timings["obs_conversion_ms"] = (time.perf_counter() - t_total) * 1000
+        return result
 
     def normalize(self, gym_obs: dict) -> dict:
         """
@@ -253,13 +263,16 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         zeros_storage = np.zeros(dims.n_storage, dtype=np.float32)
 
         if not g2op_obs._is_done:
+            t0 = time.perf_counter()
             load_p, load_q, prod_p, prod_q, _ = g2op_obs.get_forecast_arrays()
+            self._timings["forecast_ms"] = (time.perf_counter() - t0) * 1000
             # Index 1 = next timestep forecast; sign convention: gen positive, load negative
             gen_p_forecast = prod_p[1].astype(np.float32)
             gen_q_forecast = prod_q[1].astype(np.float32)
             load_p_forecast = -load_p[1].astype(np.float32)
             load_q_forecast = -load_q[1].astype(np.float32)
         else:
+            self._timings["forecast_ms"] = 0.0
             gen_p_forecast = zeros_gen
             gen_q_forecast = zeros_gen
             load_p_forecast = zeros_load
