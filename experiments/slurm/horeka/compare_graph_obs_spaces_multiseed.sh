@@ -41,11 +41,11 @@ for seed in 0 1 2 3 4; do
 #!/bin/bash
 #SBATCH --job-name=${obs_space}_${seed}
 #SBATCH --output=${OUT_DIR}/${obs_space}_${seed}.%j.log
-#SBATCH --error=${OUT_DIR}/${obs_space}_${seed}.%j.log
+#SBATCH --error=${OUT_DIR}/${obs_space}_${seed}.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:1
-#SBATCH --time=3:00:00
+#SBATCH --time=4:00:00
 #SBATCH --mem=100G
 #SBATCH --partition=accelerated,accelerated-h100
 #SBATCH --account=hk-project-pai00074

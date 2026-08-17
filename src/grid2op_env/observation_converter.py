@@ -2082,6 +2082,7 @@ def _compute_zbus_admittance(
     Ybus = grid.get_Ybus()
     Zbus = scipy.linalg.pinv(Ybus.toarray())
     D = 1.0 / (np.abs(Zbus) + eps)
+    D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0)
     return D, topo_vect.copy()
 
 
