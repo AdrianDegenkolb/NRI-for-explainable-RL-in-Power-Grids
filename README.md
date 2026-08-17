@@ -42,16 +42,21 @@ Similarly, the other scripts can be run.
 To adapt parameters explore the `configs`-folder
 # Project
 This project contains the following folders:
-- **data**: output data
-- **configs**: contains hyperparameters for reproducibility
-- **slurm_scripts**: scripts to run the code on Uc3
-- **src**: Code
-- **training scripts**: entry points in the code
+- **configs**: hydra configs containing hyperparameters
+- **data**: necessary data to instantiate action spaces and observation converters 
+- **experiments**: entry points in the code
+- **results**: folder to which results are written
+- **slurm**: scripts to run the code on UC3 / HoreKa
+- **src**: main source-code
 
 The `src`-package contains the following packages:
-- **common**: Code that is needed by various packages
-- **nri**: Implements the latent edge discovery inspired by Kipf et al.
-- **ra_agents**: Combines NRI encoder with downstream RL-agent and use their training signal to learn
+- **agents**: Several agent wrappers for the G2OP ecosystem
+- **algorithms**: Custom DQN, SAC, PPO and optuna extensions
+- **analysis**: Code to analyze agents/models once they are trained
+- **core**: Common code shared across several packages
+- **grid2o_env**: RLlib environment implementation
+- **rarl**: general relation awareness implementation
+- **rarl_rllib**: wrapper for RA compatibility with RLlib
 - **test**: Unittests
 - **visualization**: Notebooks to create figures
 
