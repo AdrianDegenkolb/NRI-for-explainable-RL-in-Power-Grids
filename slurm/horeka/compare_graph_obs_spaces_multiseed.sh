@@ -5,7 +5,7 @@
 experiment_name="$(date +%Y_%m_%d)_compare_graph_obs_spaces_IEEE14"
 export experiment_name
 
-REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../../..")"
+REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 
 mkdir -p "results/${experiment_name}"
