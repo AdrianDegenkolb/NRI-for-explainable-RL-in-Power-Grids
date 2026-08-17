@@ -744,11 +744,10 @@ def visualize_posterior(latent_edge_posterior: npt.NDArray, latent_edge_prior: n
                         skip_last: bool = True) -> Figure:
     assert latent_edge_posterior.shape == latent_edge_prior.shape
     assert latent_edge_posterior.ndim == 2
-    assert latent_edge_posterior.shape[1] == 2
 
     if skip_last:
-        latent_edge_prior = latent_edge_prior[:, :1]
-        latent_edge_posterior = latent_edge_posterior[:, :1]
+        latent_edge_prior = latent_edge_prior[:, :-1].sum(axis=-1, keepdims=True)
+        latent_edge_posterior = latent_edge_posterior[:, :-1].sum(axis=-1, keepdims=True)
 
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.2)
     fig = plt.figure(figsize=(12, 7))

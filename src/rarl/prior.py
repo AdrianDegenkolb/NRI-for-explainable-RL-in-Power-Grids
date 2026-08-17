@@ -7,8 +7,10 @@ dependencies). Graph edges receive a high prior existence probability; the
 prior for latent edges is derived so that the *average* existence probability
 across all edges equals ``(1 + temperature) * num_graph_edges / num_total_edges``.
 
-This construction is limited to K=2 edge types ("exists" / "doesn't exist").
-Extension to K>2 types would require a different prior parametrization.
+``get_priors`` returns a 2-element (exists, no-edge) vector. ``get_prior_tensor``
+then expands this to K types: the "exists" probability is split equally across
+the first K-1 interaction types, and the last slot holds the "no-edge" probability.
+This works for any K >= 2.
 """
 
 from typing import Tuple
