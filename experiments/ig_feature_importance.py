@@ -90,7 +90,7 @@ def collect_observations(
         done, reward = False, 0.0
 
         while not done:
-            action = agent.act(g2op_obs, reward, done)
+            action = agent.activation_function(g2op_obs, reward, done)
             g2op_obs, reward, done, _ = g2op_env.step(action)
             if float(g2op_obs.rho.max()) > rho_thresh:
                 gym_wrapper.update_obs(g2op_obs)
