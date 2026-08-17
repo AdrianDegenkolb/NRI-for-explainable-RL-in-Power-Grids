@@ -13,4 +13,5 @@ gnn:
   out_dim: 64
   num_layers: 3
   residual: true
+  dropout_prob: 0.0
   edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy

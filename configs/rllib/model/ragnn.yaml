@@ -12,6 +12,8 @@ encoder:
   use_graphormer: true
   hidden_dim: 64
   num_layers: 2
+  num_attention_heads: 2
+  dropout_prob: 0.0
 
 gnn:
   hidden_dim: 256
@@ -19,6 +21,7 @@ gnn:
   num_layers: 3
   residual: true
   conv_type: gcn
+  dropout_prob: 0.0
   edge_probs_path: ${hydra:runtime.cwd}/results/edge_probabilities/rappo_essence_graph.npy
   sparsify_threshold: 0.0  # sum of interaction-type probs below this → edge dropped. 0.0 = disabled
   diagnose_every: 0        # run self-loop diagnostic every N eval calls. 0 = disabled

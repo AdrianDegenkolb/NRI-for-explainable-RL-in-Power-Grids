@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _prof_calls: int = 0
 _prof_total_prior: float = 0.0
 _prof_total_kl: float = 0.0
-_PROF_LOG_EVERY: int = 10  # log once every N gradient steps
+_PROF_LOG_EVERY: int = 1000  # log once every N gradient steps
 
 
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES

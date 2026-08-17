@@ -28,13 +28,12 @@ Designed to be composed with other RLlib callbacks::
 """
 import logging
 import time
-import torch
-from typing import Dict, Optional, List, Any, Tuple
+from typing import Dict, Optional, List, Any
 
 import grid2op
 import numpy as np
+import torch
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from numpy._typing import NDArray
 from ray._private.dict import unflattened_lookup
 from ray.rllib import RolloutWorker, BaseEnv, Policy
 from ray.rllib.algorithms.algorithm import Algorithm
@@ -48,12 +47,11 @@ from ray.tune.experimental.output import (
     _current_best_trial,
 )
 from tabulate import tabulate
-from torch.utils.data import Dataset
 
 from core.constants import RL_POLICY, HIGH_LEVEL_AGENT
 from core.pretraining import Pretrainer
+from core.utils import getl
 from grid2op_env.observation_converter import GraphObservationConverter
-from rarl import GraphormerNRIEncoder
 from rarl.annealing import AnnealingState
 from visualization import PlottingArgs, visualize_graph, get_node_styles
 
@@ -98,15 +96,15 @@ class AnnealingCallback(DefaultCallbacks):
             logger.warning(f"Total duration cannot be determined from the config. Using default of {total}.")
 
         self._state = AnnealingState(
-            beta_start=loss_cfg.get("beta_graph_edges_start", 0.0),
-            beta_end=loss_cfg.get("beta_graph_edges_end", loss_cfg.get("beta", 1.0)),
-            beta_non_graph_start=loss_cfg.get("beta_non_graph_edges_start", 0.0),
-            beta_non_graph_end=loss_cfg.get("beta_non_graph_edges_end", loss_cfg.get("beta", 1.0)),
-            tau_start=sampling_cfg.get("tau_start", 2.0),
-            tau_end=sampling_cfg.get("tau_end", sampling_cfg.get("temperature", 1.0)),
+            beta_start=getl(loss_cfg, "beta_graph_edges_start", 0.0),
+            beta_end=getl(loss_cfg, "beta_graph_edges_end", 1.0),
+            beta_non_graph_start=getl(loss_cfg, "beta_non_graph_edges_start", 0.0),
+            beta_non_graph_end=getl(loss_cfg, "beta_non_graph_edges_end", 1.0),
+            tau_start=getl(sampling_cfg, "tau_start", 2.0),
+            tau_end=getl(sampling_cfg, "tau_end", 1.0),
             total_steps=total,
-            beta_anneal_steps=loss_cfg.get("beta_anneal_timesteps", total),
-            tau_anneal_steps=sampling_cfg.get("tau_anneal_timesteps", total),
+            beta_anneal_steps=getl(loss_cfg, "beta_anneal_timesteps", None) or total,
+            tau_anneal_steps=getl(sampling_cfg, "tau_anneal_timesteps", None) or total,
         )
 
         # Set initial values on all workers
@@ -187,13 +185,12 @@ class PretrainingCallback(DefaultCallbacks):
 
         ra_cfg = policy.config.get("relation_awareness", {})
         pretrain_cfg = ra_cfg.get("pretraining", {})
-        num_epochs = pretrain_cfg.get("num_epochs", 0)
+        num_epochs = getl(pretrain_cfg, "num_epochs", 0)
         if num_epochs == 0:
             logger.info("PretrainingCallback: num_epochs=0, skipping.")
             return
 
-        num_observations = pretrain_cfg.get("num_observations", 100)
-        lr = pretrain_cfg.get("lr", 1e-3)
+        num_observations = getl(pretrain_cfg, "num_observations", 100)
         prior_cfg = ra_cfg.get("prior", {})
         loss_cfg = ra_cfg.get("loss", {})
         latent_cfg = ra_cfg.get("latent_space", {})
@@ -201,12 +198,12 @@ class PretrainingCallback(DefaultCallbacks):
 
         pretrainer = Pretrainer(
             env_config=algorithm.config.env_config,
-            prior_prob_for_graph_edge=prior_cfg.get("prior_prob_for_graph_edge", 0.9),
-            temperature=prior_cfg.get("temperature", 0.5),
-            num_edge_types=latent_cfg.get("num_edge_types", 2),
-            beta=loss_cfg.get("beta_graph_edges_end", loss_cfg.get("beta_graph_edges", 1.0)),
-            beta_non_graph=loss_cfg.get("beta_non_graph_edges_end", loss_cfg.get("beta_non_graph_edges", 1.0)),
-            lr=lr,
+            prior_prob_for_graph_edge=getl(prior_cfg, "prior_prob_for_graph_edge", 0.9),
+            temperature=getl(prior_cfg, "temperature", 0.5),
+            num_edge_types=getl(latent_cfg, "num_edge_types", 2),
+            beta=getl(loss_cfg, "beta_graph_edges_end", 1.0),
+            beta_non_graph=getl(loss_cfg, "beta_non_graph_edges_end", 1.0),
+            lr=getl(pretrain_cfg, "lr", 1e-3),
             device=device,
             verbose=True,
         )

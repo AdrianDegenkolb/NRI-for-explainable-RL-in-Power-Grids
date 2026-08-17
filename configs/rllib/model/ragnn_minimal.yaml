@@ -12,6 +12,8 @@ encoder:
   use_graphormer: true
   hidden_dim: 32
   num_layers: 2
+  num_attention_heads: 2
+  dropout_prob: 0.0
 
 gnn:
   hidden_dim: 64

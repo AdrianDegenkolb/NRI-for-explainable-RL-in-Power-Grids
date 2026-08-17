@@ -1,3 +1,28 @@
+import logging
+from typing import TypeVar
+
+_logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def getl(d: dict, key: str, default: T) -> T:
+    """Return d[key] if present, otherwise return default and log a warning.
+
+    Args:
+        d:       The dict to look up.
+        key:     The key to retrieve.
+        default: Fallback value returned (and logged) when the key is absent.
+
+    Returns:
+        d[key] if key in d, else default.
+    """
+    if key not in d:
+        _logger.warning("Key '%s' not found in config, using fallback value: %r", key, default)
+        return default
+    return d[key]
+
+
 def delete_nested_key(d: dict, path: str) -> None:
     """Delete a value from a nested dict using a '/'-separated key path.
 
