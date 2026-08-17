@@ -2059,10 +2059,14 @@ def _compute_zbus_admittance(
     topo_vect: np.ndarray,
     cached_topo_vect: Optional[np.ndarray],
     cached_D: Optional[np.ndarray],
-    eps: float = 1e-6,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Return (D, topo_vect_copy) where D[i,j] = 1 / (|Zbus[i,j]| + eps).
+    Return (D, topo_vect_copy) where D[i,j] = 1 / (1 + |Zbus[i,j]|).
+
+    Values lie in (0, 1]: 1 for electrically identical buses (|Zbus|=0),
+    approaching 0 for electrically isolated pairs (|Zbus|→∞).  The bounded
+    range prevents gradient explosion when bus-split actions create near-zero
+    Zbus entries, which the old 1/(|Zbus|+eps) formula mapped to 1/eps = 1e6.
 
     Recomputes only when topo_vect differs from cached_topo_vect.
     No DC PF is required — get_Ybus() reads directly from network parameters.
@@ -2072,16 +2076,15 @@ def _compute_zbus_admittance(
         topo_vect: Integer array [dim_topo] encoding current busbar assignments.
         cached_topo_vect: Previously cached topo_vect (or None).
         cached_D: Previously cached admittance matrix (or None).
-        eps: Denominator guard to avoid division by zero (default 1e-6).
     Returns:
-        (D, topo_vect_copy) — D is [2*n_sub, 2*n_sub] float, non-negative.
+        (D, topo_vect_copy) — D is [2*n_sub, 2*n_sub] float in (0, 1].
     """
     if cached_topo_vect is not None and np.array_equal(topo_vect, cached_topo_vect):
         return cached_D, cached_topo_vect
     import scipy.linalg
     Ybus = grid.get_Ybus()
     Zbus = scipy.linalg.pinv(Ybus.toarray())
-    D = 1.0 / (np.abs(Zbus) + eps)
+    D = 1.0 / (1.0 + np.abs(Zbus))
     D = np.nan_to_num(D, nan=0.0, posinf=0.0, neginf=0.0)
     return D, topo_vect.copy()
 
@@ -2108,9 +2111,6 @@ class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
     depends on both line connectivity (line_status) and busbar assignments
     (topo_vect), so the cache key is obs.topo_vect (which encodes both).
     """
-
-    # Denominator guard: prevents division by zero for isolated/disconnected buses.
-    _ZBUS_EPS = 1e-6
 
     def __init__(
         self,
@@ -2151,7 +2151,7 @@ class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
         """
         self._cached_D, self._cached_topo_vect = _compute_zbus_admittance(
             self._grid, topo_vect,
-            self._cached_topo_vect, self._cached_D, self._ZBUS_EPS,
+            self._cached_topo_vect, self._cached_D,
         )
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
@@ -2468,7 +2468,6 @@ class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverte
     :param verbose: log converter dimensions on construction.
     """
 
-    _ZBUS_EPS: float = 1e-6
 
     def __init__(
         self,
@@ -2543,7 +2542,7 @@ class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverte
         prev_D = self._cached_D
         D_ptdf, self._cached_topo_vect = _compute_zbus_admittance(
             self._grid, topo_vect,
-            self._cached_topo_vect, self._cached_D, self._ZBUS_EPS,
+            self._cached_topo_vect, self._cached_D,
         )
         if D_ptdf is not prev_D:
             self._cached_D = D_ptdf[np.ix_(self._sub_to_ptdf, self._sub_to_ptdf)]
