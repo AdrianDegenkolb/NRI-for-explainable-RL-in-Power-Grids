@@ -47,6 +47,7 @@ from ray.rllib.policy.policy import PolicySpec
 from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
     DQN_GNN_POLICY, DQN_MLP_POLICY, set_seed
 from core.train import run_training
+from core.utils import getl
 from grid2op_env import policy_mapping_fn
 from grid2op_env.env import CustomizedGrid2OpEnvironment
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
@@ -158,8 +159,7 @@ def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
     # sparsification: always pass to custom_model_config; temperature is bridged from prior.
     # n_powerlines_directed is only derivable when top_k_multiplier > 0.
     sparse_cfg = OmegaConf.to_container(cfg.relation_awareness.sparsification, resolve=True)
-    sparse_cfg["temperature"] = float(cfg.relation_awareness.prior.temperature)
-    if sparse_cfg["top_k_multiplier"] > 0:
+    if getl(sparse_cfg, "top_k_multiplier", 0) > 0:
         env_tmp = grid2op.make(cfg.env.env_name + "_train")
         sparse_cfg["n_powerlines_directed"] = 2 * env_tmp.n_line
         env_tmp.close()
