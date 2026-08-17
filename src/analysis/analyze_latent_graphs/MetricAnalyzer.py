@@ -388,7 +388,7 @@ class PosteriorMetrics(PosteriorAnalyzer):
         sampled_graphs = []
         E, K = posterior.shape
         for _ in range(n):
-            edge_exists = np.random.random(E) < posterior[:, 0]
+            edge_exists = np.random.random(E) < posterior[:, :-1].sum(axis=-1)
             sampled_edges = self.fully_connected_edge_index[:, edge_exists]
             sampled_graphs.append(sampled_edges)
 

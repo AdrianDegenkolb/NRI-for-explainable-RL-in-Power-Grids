@@ -265,8 +265,8 @@ class Hypothesis3verifier(PosteriorAnalyzer):
 
         PTDF = get_ptdf_from_env(environment)
         r_t = compute_node_risk_vector(observation, PTDF).astype(np.float64)  # [N]
-        posterior_t = posterior[:, 0].astype(np.float64)                       # [E]
-        prior_t     = prior[:, 0].astype(np.float64)                           # [E]
+        posterior_t = posterior[:, :-1].sum(axis=-1).astype(np.float64)  # [E]
+        prior_t     = prior[:, :-1].sum(axis=-1).astype(np.float64)    # [E]
 
         # --- Use the previous step's state to compute Δr and C^{effect} ---
         if (

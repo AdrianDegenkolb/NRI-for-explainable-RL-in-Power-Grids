@@ -12,6 +12,7 @@ from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
 from rarl import BaselineGNN
+from core.utils import getl
 from rarl_rllib.common import assert_graph_obs_space_and_get_x_dim
 
 
@@ -54,8 +55,8 @@ class GNNBaselineSACModel(SACTorchModel):
             **kwargs,
     ):
         cfg = kwargs  # encoder, gnn, sampling from custom_model_config
-        gnn_cfg = cfg["gnn"]
-        gnn_out_dim = gnn_cfg["out_dim"]
+        gnn_cfg = cfg.get("gnn", {})
+        gnn_out_dim = getl(gnn_cfg, "out_dim", 64)
 
         # Build SAC actor/Q heads sized for the GNN embedding, not the raw graph obs.
         embedding_space = Box(-np.inf, np.inf, shape=(gnn_out_dim,), dtype=np.float32)
@@ -72,11 +73,11 @@ class GNNBaselineSACModel(SACTorchModel):
 
         self.gnn = BaselineGNN(
             x_dim=assert_graph_obs_space_and_get_x_dim(obs_space),
-            hidden_dim=gnn_cfg["hidden_dim"],
+            hidden_dim=getl(gnn_cfg, "hidden_dim", 64),
             x_out_dim=gnn_out_dim,
-            num_layers=gnn_cfg["num_layers"],
-            dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
-            residual=gnn_cfg.get("residual", True),
+            num_layers=getl(gnn_cfg, "num_layers", 3),
+            dropout_prob=getl(gnn_cfg, "dropout_prob", 0.0),
+            residual=getl(gnn_cfg, "residual", True),
         )
 
     def forward(

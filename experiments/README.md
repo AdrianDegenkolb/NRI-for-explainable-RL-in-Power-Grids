@@ -75,7 +75,7 @@ See `configs/README.md` for the full list of config groups and override options.
 
 ---
 
-## `compare_models.py` — Compare agent behaviour
+## `compare_methods.py` — Compare agent behaviour
 
 Cross-validates trained models to characterise how they differ behaviourally. For each pair
 of models (A as primary, B as backup), it runs episodes where A acts until it fails, then
@@ -90,13 +90,6 @@ PYTHONPATH=$(pwd)/src:$(pwd) python experiments/compare_models.py
 ```
 
 Results (SVG/PNG figures + a JSON data file) are saved to `results/cross_validation/`.
-
-#### Output figures
-
-**`agent_failure_states.png`** — Cross-validation heatmaps: how well each backup model
-recovers the failure states of each primary model.
-
-![Agent failure states](.images/agent_failure_states.png)
 
 **`agent_behavior_comparison.png`** — Per-model visualisations on the IEEE 14-bus grid:
 mean connectivity in failure states (left), mean line congestion profile in failure states

@@ -11,6 +11,7 @@ from ray.rllib.policy.view_requirement import ViewRequirement
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 from torch import Tensor
 
+from core.utils import getl
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
 from rarl import RAFeatureExtractor
 from rarl_rllib.model import RARLModel
@@ -55,11 +56,12 @@ class RASACTorchModel(SACTorchModel, RARLModel):
         target_entropy: Optional[float] = None,
         **kwargs,
     ):
-        cfg = kwargs  # encoder, gnn, sampling from custom_model_config
-        enc_cfg = cfg["encoder"]
-        gnn_cfg = cfg["gnn"]
+        cfg = kwargs  # encoder, gnn, sampling, latent_space from custom_model_config
+        enc_cfg = cfg.get("encoder", {})
+        gnn_cfg = cfg.get("gnn", {})
         samp_cfg = cfg.get("sampling", {})
-        gnn_out_dim = gnn_cfg["out_dim"]
+        latent_space_cfg = cfg.get("latent_space", {})
+        gnn_out_dim = getl(gnn_cfg, "out_dim", 64)
 
         # Build SAC actor/Q heads sized for the GNN embedding, not the raw graph obs.
         embedding_space = Box(-np.inf, np.inf, shape=(gnn_out_dim,), dtype=np.float32)
@@ -83,17 +85,17 @@ class RASACTorchModel(SACTorchModel, RARLModel):
             x_dim=x_dim,
             graph_max_degree=enc_cfg["max_degree"],
             graph_max_path_distance=enc_cfg["max_path_distance"],
-            hidden_dim_enc=enc_cfg["hidden_dim"],
-            num_layers_enc=enc_cfg["num_layers"],
-            num_attention_heads_enc=enc_cfg.get("num_attention_heads", 2),
-            num_edge_types=enc_cfg.get("num_edge_types", 2),
-            hidden_dim_gnn=gnn_cfg["hidden_dim"],
-            num_layers_gnn=gnn_cfg["num_layers"],
+            hidden_dim_enc=getl(enc_cfg, "hidden_dim", 64),
+            num_layers_enc=getl(enc_cfg, "num_layers", 3),
+            num_attention_heads_enc=getl(enc_cfg, "num_attention_heads", 2),
+            num_edge_types=getl(latent_space_cfg, "num_edge_types", 2),
+            hidden_dim_gnn=getl(gnn_cfg, "hidden_dim", 64),
+            num_layers_gnn=getl(gnn_cfg, "num_layers", 3),
             x_out_dim=gnn_out_dim,
-            dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
-            residual=gnn_cfg.get("residual", True),
-            tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
-            conv_type=gnn_cfg.get("conv_type", "gcn"),
+            dropout_prob=getl(gnn_cfg, "dropout_prob", 0.0),
+            residual=getl(gnn_cfg, "residual", True),
+            tau=getl(samp_cfg, "tau", 1.0),
+            conv_type=getl(gnn_cfg, "conv_type", "gcn"),
         )
         self.batched_p_z_given_x: Optional[Tensor] = None
 

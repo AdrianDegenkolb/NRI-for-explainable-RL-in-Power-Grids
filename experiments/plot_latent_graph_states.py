@@ -54,7 +54,7 @@ def collect_states(agent, g2op_env, n_states: int, skip_steps: int = 30):
 
     while not done and len(collected) < n_states:
         is_rl = agent.activate_agent(obs)
-        action = agent.act(obs, reward, done)
+        action = agent.activation_function(obs, reward, done)
         if is_rl:
             if rl_step % skip_steps == 0:
                 posterior = extract_posterior(agent)  # [E, K]

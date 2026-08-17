@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _prof_calls: int = 0
 _prof_total_prior: float = 0.0
 _prof_total_kl: float = 0.0
-_PROF_LOG_EVERY: int = 10  # log once every N gradient steps
+_PROF_LOG_EVERY: int = 1000  # log once every N gradient steps
 
 
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, NODES
@@ -131,10 +131,10 @@ def build_ra_stats_dict(towers: list) -> Dict[str, TensorType]:
         "relation_awareness/current_beta_non_graph":_tower_mean(towers, "ra_current_beta_non_graph"),
         "relation_awareness/current_tau":           _tower_mean(towers, "ra_current_tau"),
         "relation_awareness/prior_existence_probs": (
-            prior[:, 0].cpu().tolist() if prior is not None else None
+            prior[:, :-1].sum(dim=-1).cpu().tolist() if prior is not None else None
         ),
         "relation_awareness/posterior_existence_probs": (
-            posterior[:, 0].cpu().tolist() if posterior is not None else None
+            posterior[:, :-1].sum(dim=-1).cpu().tolist() if posterior is not None else None
         ),
         "relation_awareness/posterior_mean": (
             posteriors.mean(dim=0).cpu().tolist() if posteriors is not None else None

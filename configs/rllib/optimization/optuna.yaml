@@ -2,11 +2,57 @@ defaults:
   - disabled  # inherits score_metric, mode, load_from, etc.
 
 enable: true
-num_trials: 50
+num_trials: 180
 
-# Search space consumed by MyOptunaSearch in run_training().
-# Keys are dot-paths into the assembled RLLib config dict.
+# Search space consumed by _inject_search_space() in src/core/train.py.
+# Keys are '/'-separated paths into the assembled RLLib config dict.
+# Supported types: float (uniform or log-uniform), int (randint), categorical.
 search_space:
+
+  # --- Encoder ---
+  model/custom_model_config/encoder/hidden_dim:
+    type: categorical
+    choices: [64, 128, 256]
+  model/custom_model_config/encoder/num_layers:
+    type: categorical
+    choices: [2, 3, 4]
+
+  # --- GNN (RAGNN) ---
+  model/custom_model_config/gnn/hidden_dim:
+    type: categorical
+    choices: [64, 128, 256]
+  model/custom_model_config/gnn/out_dim:
+    type: categorical
+    choices: [64, 128, 256]
+  model/custom_model_config/gnn/num_layers:
+    type: categorical
+    choices: [2, 3, 4]
+  model/custom_model_config/gnn/conv_type:
+    type: categorical
+    choices: [gcn, ginconv]
+  model/custom_model_config/gnn/residual:
+    type: categorical
+    choices: [true, false]
+
+  # --- KL loss weights ---
+  relation_awareness/loss/beta_graph_edges_start:
+    type: float
+    low: 0.0
+    high: 0.5
+  relation_awareness/loss/beta_graph_edges_end:
+    type: float
+    low: 0.0
+    high: 2.0
+  relation_awareness/loss/beta_non_graph_edges_start:
+    type: float
+    low: 0.0
+    high: 0.5
+  relation_awareness/loss/beta_non_graph_edges_end:
+    type: float
+    low: 0.0
+    high: 2.0
+
+  # --- Prior ---
   relation_awareness/prior/prior_prob_for_graph_edge:
     type: float
     low: 0.0
@@ -15,16 +61,28 @@ search_space:
     type: float
     low: 0.0
     high: 1.0
+
+  # --- Gumbel-Softmax temperature schedule ---
+  relation_awareness/sampling/tau_start:
+    type: float
+    low: 1.0
+    high: 2.0
   relation_awareness/sampling/tau_end:
     type: float
-    low: 0.5
+    low: 0.1
     high: 1.0
-  model/custom_model_config/encoder/hidden_dim:
-    type: categorical
-    choices: [32, 64, 128, 256]
-  model/custom_model_config/encoder/num_layers:
-    type: categorical
-    choices: [2, 3, 4]
+
+  # --- Latent space ---
   relation_awareness/latent_space/num_edge_types:
     type: categorical
-    choices: [2, 3, 4]
+    choices: [2, 3]
+
+  # --- Sparsification ---
+  relation_awareness/sparsification/top_k_multiplier:
+    type: categorical
+    choices: [0, 2, 4, 6]
+
+  # --- Encoder pretraining ---
+  relation_awareness/pretraining/num_epochs:
+    type: categorical
+    choices: [0, 3, 6, 9, 12]

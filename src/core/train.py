@@ -27,7 +27,7 @@ from algorithms.custom_sac import CustomSAC
 from algorithms.optuna_search import MyOptunaSearch
 from core.constants import RL_POLICY, Style
 from core.loading import load_config, preprocess_config, load_rllib_agent
-from core.utils import delete_nested_key
+from core.utils import delete_nested_key, set_nested_key
 from rarl_rllib.callback import TuneCallback
 
 # Configure logging
@@ -155,6 +155,37 @@ def _run_post_training_analysis(
     logger.info("Analysis complete. Results in: %s", out_dir)
 
 
+def _inject_search_space(rllib_cfg: dict[str, Any], search_space: dict) -> None:
+    """Inject Optuna search space entries into the RLLib config as Ray Tune samplers.
+
+    Reads the declarative search space from the optimization config and writes
+    tune.uniform / tune.loguniform / tune.randint / tune.choice samplers into
+    the corresponding nested positions of rllib_cfg.  Keys use '/' as a path
+    separator (e.g. 'model/custom_model_config/encoder/hidden_dim').
+
+    Args:
+        rllib_cfg:    The assembled RLLib config dict (mutated in-place).
+        search_space: Dict mapping '/'-separated key paths to spec dicts with
+                      keys 'type' ('float'|'int'|'categorical'), and either
+                      'low'+'high' (+ optional 'log': true) or 'choices'.
+    """
+    from ray import tune as ray_tune
+
+    _TYPE_BUILDERS = {
+        "float": lambda s: ray_tune.loguniform(s["low"], s["high"]) if s.get("log") else ray_tune.uniform(s["low"], s["high"]),
+        "int": lambda s: ray_tune.randint(s["low"], s["high"]),
+        "categorical": lambda s: ray_tune.choice(list(s["choices"])),
+    }
+
+    for path, spec in search_space.items():
+        kind = spec.get("type")
+        builder = _TYPE_BUILDERS.get(kind)
+        if builder is None:
+            raise ValueError(f"Unknown search space type '{kind}' for key '{path}'. Use float, int, or categorical.")
+        set_nested_key(rllib_cfg, path, builder(spec))
+        logger.info(f"HPO search space: {path} = {spec}")
+
+
 def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
     """Run RLLib PPO training driven by the Hydra config.
 
@@ -171,6 +202,9 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
     algo = None
     asha = None
     if opt.enable:
+        search_space = OmegaConf.to_container(opt.search_space, resolve=True)
+        _inject_search_space(rllib_cfg, search_space)
+
         algo = MyOptunaSearch(
             metric=opt.score_metric,
             mode=opt.mode,

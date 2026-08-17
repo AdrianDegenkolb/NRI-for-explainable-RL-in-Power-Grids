@@ -147,21 +147,23 @@ def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
     if model.gnn is not None:
         custom_model_config["gnn"] = OmegaConf.to_container(model.gnn, resolve=True)
 
-    # sampling tau lives in relation_awareness but is also needed by the model
+    # sampling and latent_space live in relation_awareness but are also needed by the model
     custom_model_config["sampling"] = OmegaConf.to_container(
         cfg.relation_awareness.sampling, resolve=True
     )
-
-    # sparsification config: merge RA sparsification params with env-derived powerline count
-    sparse_cfg = OmegaConf.to_container(
-        cfg.relation_awareness.get("sparsification", {}), resolve=True
+    custom_model_config["latent_space"] = OmegaConf.to_container(
+        cfg.relation_awareness.latent_space, resolve=True
     )
-    if sparse_cfg.get("top_k_multiplier", 0) > 0:
+
+    # sparsification: always pass to custom_model_config; temperature is bridged from prior.
+    # n_powerlines_directed is only derivable when top_k_multiplier > 0.
+    sparse_cfg = OmegaConf.to_container(cfg.relation_awareness.sparsification, resolve=True)
+    sparse_cfg["temperature"] = float(cfg.relation_awareness.prior.temperature)
+    if sparse_cfg["top_k_multiplier"] > 0:
         env_tmp = grid2op.make(cfg.env.env_name + "_train")
         sparse_cfg["n_powerlines_directed"] = 2 * env_tmp.n_line
         env_tmp.close()
-        sparse_cfg["temperature"] = float(cfg.relation_awareness.prior.temperature)
-        custom_model_config["sparsification"] = sparse_cfg
+    custom_model_config["sparsification"] = sparse_cfg
 
     return {
         "fcnet_hiddens": list(model.fcnet_hiddens),

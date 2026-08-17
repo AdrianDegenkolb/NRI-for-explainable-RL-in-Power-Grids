@@ -201,8 +201,8 @@ class Hypothesis1verifier(PosteriorAnalyzer):
         else:
             coupling = get_PTDF_based_coupling_index(environment).astype(np.float64)  # [E]
 
-        posterior_existence = posterior[:, 0].astype(np.float64)       # [E]
-        prior_existence = prior[:, 0].astype(np.float64)  # [E]
+        posterior_existence = posterior[:, :-1].sum(axis=-1).astype(np.float64)  # [E]
+        prior_existence = prior[:, :-1].sum(axis=-1).astype(np.float64)        # [E]
         assert coupling.shape == posterior_existence.shape == prior_existence.shape, f"Shape mismatch: coupling {coupling.shape}, posterior {posterior_existence.shape}, prior {prior_existence.shape}"
 
         valid = np.isfinite(coupling) & np.isfinite(posterior_existence)

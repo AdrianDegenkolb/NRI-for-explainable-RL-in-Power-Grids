@@ -101,7 +101,7 @@ def run_episode(agent, g2op_env, chronic_idx: int) -> list[StepRecord]:
 
     while not done:
         # agent.act() calls gym_wrapper.update_obs() internally → cur_gym_obs is fresh
-        action = agent.act(obs, total_reward, done)
+        action = agent.activation_function(obs, total_reward, done)
         # activate_agent reads self.rho_max set inside act() → always consistent
         is_rl = agent.activate_agent(obs)
 

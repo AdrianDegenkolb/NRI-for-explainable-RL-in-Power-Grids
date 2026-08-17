@@ -124,7 +124,7 @@ def run_episodes(agent, g2op_env, chronic_ids: list[int], max_iter: int | None =
         max_steps = None
 
         while not done:
-            action = agent.act(obs, reward, done)
+            action = agent.activation_function(obs, reward, done)
             obs, reward, done, info = g2op_env.step(action)
             total_reward += reward
             steps += 1

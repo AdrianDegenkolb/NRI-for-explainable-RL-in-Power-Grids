@@ -50,9 +50,7 @@ def compute_ra_kl_loss(
         prior_tensor = prior_tensor.unsqueeze(0).expand_as(posteriors)
 
     # KL divergence per edge: [B, E]
-    kl_per_edge = (
-        posteriors * (torch.log(posteriors + eps) - torch.log(prior_tensor + eps))
-    ).sum(dim=-1)
+    kl_per_edge = (posteriors * (torch.log(posteriors + eps) - torch.log(prior_tensor + eps))).sum(dim=-1)
 
     # Split graph / latent edges
     has_graph = graph_edge_masks.any()

@@ -11,6 +11,7 @@ from torch import nn, Tensor
 
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, EDGE_WEIGHTS, EDGES
 from rarl import BaselineGNN
+from core.utils import getl
 from rarl_rllib.common import assert_graph_obs_space_and_get_x_dim
 
 
@@ -24,20 +25,21 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
                  **kwargs):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
+        gnn_cfg = kwargs.get('gnn', {})
         self.gnn: BaselineGNN = BaselineGNN(
             x_dim=assert_graph_obs_space_and_get_x_dim(obs_space),
-            hidden_dim=kwargs['gnn']['hidden_dim'],
-            x_out_dim=kwargs['gnn']['out_dim'],
-            num_layers=kwargs['gnn']['num_layers'],
+            hidden_dim=getl(gnn_cfg, 'hidden_dim', 64),
+            x_out_dim=getl(gnn_cfg, 'out_dim', 64),
+            num_layers=getl(gnn_cfg, 'num_layers', 3),
+            dropout_prob=getl(gnn_cfg, 'dropout_prob', 0.0),
+            residual=getl(gnn_cfg, 'residual', True),
             num_edge_types=int(obs_space[EDGE_TYPE].high.flat[0]) + 1 if EDGE_TYPE in obs_space.spaces else 1,
             edge_dim=obs_space[EDGES].shape[-1] if EDGES in obs_space.spaces else None,
-            dropout_prob=kwargs['gnn'].get('dropout_prob', 0.0),
-            residual=kwargs['gnn'].get('residual', True),
         )
         gnn_output_space = Box(
             low=-float('inf'),
             high=float('inf'),
-            shape=(kwargs['gnn']['out_dim'],),
+            shape=(getl(gnn_cfg, 'out_dim', 64),),
             dtype=np.float32
         )
         self.mlp = FullyConnectedNetwork(

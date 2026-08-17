@@ -175,8 +175,8 @@ class Hypothesis2verifier(PosteriorAnalyzer):
         self._risk_vectors.append(r)
 
         # Accumulate posterior and prior edge-existence probability: shape [E]
-        self._posterior_over_time.append(posterior[:, 0].astype(np.float64))
-        self._prior_over_time.append(prior[:, 0].astype(np.float64))
+        self._posterior_over_time.append(posterior[:, :-1].sum(axis=-1).astype(np.float64))
+        self._prior_over_time.append(prior[:, :-1].sum(axis=-1).astype(np.float64))
 
         self._t_global += 1
 

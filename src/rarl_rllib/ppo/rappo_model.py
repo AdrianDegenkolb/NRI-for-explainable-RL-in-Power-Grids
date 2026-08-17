@@ -14,6 +14,7 @@ from torch import nn, Tensor
 
 logger = logging.getLogger(__name__)
 
+from core.utils import getl
 from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
 from rarl import RAFeatureExtractor
 from rarl_rllib.model import RARLModel
@@ -88,54 +89,45 @@ class RAActorCriticModel(TorchModelV2, RARLModel):
 
         cfg = kwargs  # custom_model_config is unpacked into kwargs by RLlib
 
-        enc_cfg = cfg["encoder"]
-        gnn_cfg = cfg["gnn"]
+        enc_cfg = cfg.get("encoder", {})
+        gnn_cfg = cfg.get("gnn", {})
         samp_cfg = cfg.get("sampling", {})
+        latent_space_cfg = cfg.get("latent_space", {})
 
         x_dim = assert_graph_obs_space_and_get_x_dim(obs_space)
 
         # Compute top-K budget (0 = disabled)
         sparse_cfg = cfg.get("sparsification", {})
-        top_k_mult = sparse_cfg.get("top_k_multiplier", 0)
+        top_k_mult = getl(sparse_cfg, "top_k_multiplier", 0)
         top_k_budget = 0
         if top_k_mult > 0:
-            n_powerlines = sparse_cfg.get("n_powerlines_directed", 0)
+            n_powerlines = getl(sparse_cfg, "n_powerlines_directed", 0)  # injected by _build_model_config when enabled
             if n_powerlines > 0:
-                temperature = sparse_cfg.get("temperature", 0.5)
-                top_k_budget = int(top_k_mult * (1 + temperature) * n_powerlines)
-                logger.info(
-                    "Top-K sparsification enabled: multiplier=%s temperature=%s "
-                    "n_powerlines_directed=%s → K_budget=%d",
-                    top_k_mult, temperature, n_powerlines, top_k_budget,
-                )
+                top_k_budget = int(top_k_mult * n_powerlines)
             else:
-                logger.warning(
-                    "top_k_multiplier=%s but n_powerlines_directed not set; "
-                    "sparsification disabled. Add n_lines to env config.",
-                    top_k_mult,
-                )
+                logger.warning("Unknown number of powerlines (n_powerlines_directed). Sparsification is skipped")
 
         self.ragnn = RAFeatureExtractor(
             x_dim=x_dim,
             graph_max_degree=enc_cfg["max_degree"],
             graph_max_path_distance=enc_cfg["max_path_distance"],
-            hidden_dim_enc=enc_cfg["hidden_dim"],
-            num_layers_enc=enc_cfg["num_layers"],
-            num_attention_heads_enc=enc_cfg.get("num_attention_heads", 2),
-            num_edge_types=enc_cfg.get("num_edge_types", 2),
-            hidden_dim_gnn=gnn_cfg["hidden_dim"],
-            num_layers_gnn=gnn_cfg["num_layers"],
-            x_out_dim=gnn_cfg["out_dim"],
-            dropout_prob=gnn_cfg.get("dropout_prob", 0.0),
-            residual=gnn_cfg.get("residual", True),
-            tau=samp_cfg.get("tau_end", samp_cfg.get("tau", 1.0)),
+            hidden_dim_enc=getl(enc_cfg, "hidden_dim", 64),
+            num_layers_enc=getl(enc_cfg, "num_layers", 3),
+            num_attention_heads_enc=getl(enc_cfg, "num_attention_heads", 2),
+            num_edge_types=getl(latent_space_cfg, "num_edge_types", 2),
+            hidden_dim_gnn=getl(gnn_cfg, "hidden_dim", 64),
+            num_layers_gnn=getl(gnn_cfg, "num_layers", 3),
+            x_out_dim=getl(gnn_cfg, "out_dim", 64),
+            dropout_prob=getl(gnn_cfg, "dropout_prob", 0.0),
+            residual=getl(gnn_cfg, "residual", True),
+            tau=getl(samp_cfg, "tau", 1.0),
             top_k_budget=top_k_budget,
-            conv_type=gnn_cfg.get("conv_type", "gcn"),
-            sparsify_threshold=gnn_cfg.get("sparsify_threshold", 0.0),
-            diagnose_every=gnn_cfg.get("diagnose_every", 0),
+            conv_type=getl(gnn_cfg, "conv_type", "gcn"),
+            sparsify_threshold=getl(gnn_cfg, "sparsify_threshold", 0.0),
+            diagnose_every=getl(gnn_cfg, "diagnose_every", 0),
         )
 
-        gnn_out_space = Box(-np.inf, np.inf, shape=(gnn_cfg["out_dim"],), dtype=np.float32)
+        gnn_out_space = Box(-np.inf, np.inf, shape=(getl(gnn_cfg, "out_dim", 64),), dtype=np.float32)
         self.mlp = FullyConnectedNetwork(
             obs_space=gnn_out_space,
             action_space=action_space,
