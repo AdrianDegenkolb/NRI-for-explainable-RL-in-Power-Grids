@@ -84,7 +84,7 @@ class AnnealingCallback(DefaultCallbacks):
         super().on_algorithm_init(algorithm=algorithm, **kwargs)
         policy = _get_policy(algorithm)
         if policy is None or not hasattr(policy, "current_beta_graph"):
-            logger.warning("Algorithm does not support annealing (Policy unknown or no annealable parameters found")
+            logger.info("Algorithm does not support annealing (Policy unknown or no annealable parameters found")
             return
 
         ra_cfg = policy.config.get("relation_awareness", {})
