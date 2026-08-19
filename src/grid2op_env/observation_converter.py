@@ -1779,6 +1779,11 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         normalized_edges = (edge_weights - self._edge_normalizer.mean) / np.sqrt(self._edge_normalizer.var + 1e-8)
         normalized_edges[~edge_mask] = 0.0
 
+        if np.any(np.isnan(normalized_nodes)) or np.any(np.isnan(normalized_edges)):
+            logger.warning("NaN detected in PTDFGraphObservationConverter.normalize(); replacing with 0.")
+            normalized_nodes = np.nan_to_num(normalized_nodes, nan=0.0, posinf=0.0, neginf=0.0)
+            normalized_edges = np.nan_to_num(normalized_edges, nan=0.0, posinf=0.0, neginf=0.0)
+
         return {
             NODES: normalized_nodes.astype(np.float32),
             EDGE_INDEX: gym_obs[EDGE_INDEX],
@@ -2423,6 +2428,10 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
                 / np.sqrt(self._edge_normalizer.var + 1e-8)
             )
 
+        if np.any(np.isnan(normalized_edges)):
+            logger.warning("NaN detected in SubstationPTDFGraphObservationConverter.normalize(); replacing with 0.")
+            normalized_edges = np.nan_to_num(normalized_edges, nan=0.0, posinf=0.0, neginf=0.0)
+
         return {
             **base,
             EDGES: normalized_edges.astype(np.float32),
@@ -2630,6 +2639,10 @@ class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverte
                 (active_vals - self._edge_normalizer.mean)
                 / np.sqrt(self._edge_normalizer.var + 1e-8)
             )
+
+        if np.any(np.isnan(normalized_edges)):
+            logger.warning("NaN detected in SubstationZbusGraphObservationConverter.normalize(); replacing with 0.")
+            normalized_edges = np.nan_to_num(normalized_edges, nan=0.0, posinf=0.0, neginf=0.0)
 
         return {
             **base,
