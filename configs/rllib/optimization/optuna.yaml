@@ -16,6 +16,10 @@ search_space:
   model/custom_model_config/encoder/num_layers:
     type: categorical
     choices: [2, 3, 4]
+  model/custom_model_config/encoder/num_attention_heads:
+    type: int
+    low: 2
+    high: 32
 
   # --- GNN (RAGNN) ---
   model/custom_model_config/gnn/hidden_dim:
@@ -80,9 +84,9 @@ search_space:
   # --- Sparsification ---
   relation_awareness/sparsification/top_k_multiplier:
     type: categorical
-    choices: [0, 2, 4, 6]
+    choices: [0, 2, 6]
 
   # --- Encoder pretraining ---
   relation_awareness/pretraining/num_epochs:
     type: categorical
-    choices: [0, 3, 6, 9, 12]
+    choices: [0, 3, 6, 12]
