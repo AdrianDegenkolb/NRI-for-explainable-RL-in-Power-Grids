@@ -16,9 +16,9 @@ sbatch <<EOF
 #SBATCH --output=${OUT_DIR}/graph_ablation.%j.log
 #SBATCH --error=${OUT_DIR}/graph_ablation.%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --time=4:00:00
-#SBATCH --mem=60G
+#SBATCH --cpus-per-task=10
+#SBATCH --time=1:30:00
+#SBATCH --mem=80G
 #SBATCH --partition=cpuonly
 #SBATCH --account=hk-project-pai00074
 
@@ -30,5 +30,5 @@ echo "Job ID:   \$SLURM_JOB_ID"
 echo "Node:     \$(hostname)"
 echo "========================================"
 
-PYTHONPATH="\$(pwd)/src" python experiments/graph_ablation.py
+PYTHONPATH="\$(pwd)/src" python experiments/graph_ablation.py --workers 10
 EOF

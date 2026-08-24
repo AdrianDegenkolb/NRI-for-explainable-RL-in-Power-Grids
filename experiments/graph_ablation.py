@@ -8,8 +8,10 @@ on the graph structure vs. node features alone.
 Results are saved to experiments/survival/obs_spaces/ablation/.
 """
 
+import argparse
 import json
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import grid2op
@@ -180,9 +182,23 @@ def evaluate_method(method: str, cfg: dict) -> None:
 
 
 def main() -> None:
-    for method, cfg in tqdm(METHODS.items(), desc="Methods"):
-        print(f"\n--- {method} ---")
-        evaluate_method(method, cfg)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--workers", type=int, default=len(METHODS),
+        help="Number of parallel worker processes (default: one per method)",
+    )
+    args = parser.parse_args()
+
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        futures = {
+            pool.submit(evaluate_method, method, cfg): method
+            for method, cfg in METHODS.items()
+        }
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Methods"):
+            method = futures[future]
+            exc = future.exception()
+            if exc:
+                print(f"Error in {method}: {exc}")
 
 
 if __name__ == "__main__":
