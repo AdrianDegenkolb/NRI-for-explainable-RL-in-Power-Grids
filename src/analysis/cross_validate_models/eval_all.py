@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from core.evaluate import evaluate_rllib_checkpoint
-from experiments.utils import AgentSpec
+from core.loading import AgentSpec
 from core.constants import RL_POLICY
 
 

@@ -10,7 +10,7 @@ from grid2op.Agent import BaseAgent
 from grid2op.Environment import Environment
 from tqdm import tqdm
 
-from experiments.utils import AgentSpec, load_agent_from_spec
+from core.loading import AgentSpec, load_agent_from_spec
 from grid2op_env.observation_converter import GraphObservationConverter, EDGE_INDEX
 from visualization import GridPlottingArgs, visualize_grid
 

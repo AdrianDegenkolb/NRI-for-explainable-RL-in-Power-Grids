@@ -119,6 +119,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         if attr_to_observe is None:
             attr_to_observe = _DEFAULT_NODE_FEATURES
 
+        self.g2op_obs_space = g2op_obs_space
         self.attr_to_observe = attr_to_observe
         self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
         self._num_nodes = (

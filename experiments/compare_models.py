@@ -5,7 +5,7 @@ from typing import List
 from analysis.cross_validate_models.cross_validate import CrossValidateResult, cross_validate, \
     save_cross_validate_results, compute_cross_validation_data, \
     compute_failing_edges_data, repaint_failing_edges, repaint_cross_validation_results
-from experiments.utils import AgentSpec
+from core.loading import AgentSpec
 
 
 def main():

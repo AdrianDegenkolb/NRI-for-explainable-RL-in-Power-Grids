@@ -7,11 +7,15 @@ import logging
 import os
 import pickle
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+
+from grid2op.Agent import BaseAgent
+from grid2op.Environment import Environment
 
 from ray.rllib.models import ModelCatalog
 
 from agents import RllibAgent
+from core.constants import RL_POLICY
 from grid2op_env import CustomizedGrid2OpEnvironment
 
 logger = logging.getLogger(__name__)
@@ -222,3 +226,24 @@ def load_rllib_agent(
 
     # Return gym_wrapper to keep it alive and prevent premature cleanup
     return agent, g2op_env, gym_wrapper
+
+
+class AgentSpec:
+    def __init__(self, name: str, load_path: Path, checkpoint_name: str, policy_name: str = RL_POLICY):
+        self.name = name
+        self.checkpoint_name = checkpoint_name
+        self.policy_name = policy_name
+        self.load_path = load_path
+
+
+def load_agent_from_spec(agent_spec: AgentSpec, env_name: str = "l2rpn_case14_sandbox_val") -> Tuple[BaseAgent, Environment, CustomizedGrid2OpEnvironment]:
+    params = load_config(agent_spec.load_path)
+    params = preprocess_config(params)
+    env_config = params["evaluation_config"]["env_config"]
+    return load_rllib_agent(
+        checkpoint_path=agent_spec.load_path,
+        policy_name=agent_spec.policy_name,
+        checkpoint_name=agent_spec.checkpoint_name,
+        env_name=env_name,
+        env_config=env_config
+    )

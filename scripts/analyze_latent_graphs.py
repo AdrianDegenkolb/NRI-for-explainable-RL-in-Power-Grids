@@ -5,7 +5,7 @@ from analysis.analyze_latent_graphs.agent_analysis_framework import LatentGraphA
 from analysis.analyze_latent_graphs.hypo1_electrical_coupling import Hypothesis1verifier
 from analysis.analyze_latent_graphs.hypo2_risk_coupling import Hypothesis2verifier
 from analysis.analyze_latent_graphs.hypo3_action_effect_coupling import Hypothesis3verifier
-from experiments.utils import load_agent_from_spec, AgentSpec
+from core.loading import AgentSpec, load_agent_from_spec
 
 logger = logging.getLogger(__name__)
 

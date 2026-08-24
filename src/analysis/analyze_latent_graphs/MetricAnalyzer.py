@@ -19,7 +19,7 @@ from grid2op.Environment import Environment
 from grid2op.Observation import BaseObservation
 from tabulate import tabulate
 
-from experiments.utils import AgentSpec, load_agent_from_spec
+from core.loading import AgentSpec, load_agent_from_spec
 from analysis.analyze_latent_graphs.Metrics import DegreeDistributionVisualizer, ClusteringCoefficientVisualizer, \
     PosteriorDistributionVisualizer, KLDivergenceVisualizer, SymmetryMetricVisualizer, BetweennessVisualizer, \
     MetricVisualizer
