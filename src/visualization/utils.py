@@ -80,6 +80,8 @@ class PlottingArgs:
     skip_last_edge_type: bool = True
     visualize_edge_prob_threshold: float = 0.5
     node_labels: Optional[dict[int, str]] = None  # Dict mapping node_id to label text
+    enumerate_nodes: bool = False  # Draw node index as a label inside each node
+    enumerate_nodes_exclude_labels: Optional[set[str]] = None  # NodeStyle.label values to skip when enumerating
     node_sizes_override: Optional[dict[int, float]] = None  # Dict mapping node_id to size multiplier
     powerline_edge_colors: Optional[List[str]] = None  # Custom colors for powerline edges
     powerline_edge_widths: Optional[List[float]] = None  # Custom widths for powerline edges
@@ -440,40 +442,29 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
             )
             node_collection.set_zorder(10)  # Highest z-order to be on top
 
-        # Draw node labels if provided
-        if args.node_labels is not None:
+        # Draw node labels if provided or if enumerate_nodes is set
+        node_labels = args.node_labels
+        if node_labels is None and args.enumerate_nodes:
+            exclude_labels = args.enumerate_nodes_exclude_labels or set()
+            node_labels = {i: str(i) for i in range(args.num_nodes) if args.node_styles[i].label not in exclude_labels}
+
+        if node_labels is not None:
             # Create label dict filtered to existing labels
-            labels_to_draw = {node_id: label for node_id, label in args.node_labels.items()
+            labels_to_draw = {node_id: label for node_id, label in node_labels.items()
                             if node_id < len(args.node_styles)}
 
-            # Calculate font sizes based on node sizes
-            if args.node_sizes_override is not None:
-                # Font size scales with node size, but keep readable
-                font_sizes = {}
-                for node_id in labels_to_draw.keys():
-                    size_multiplier = args.node_sizes_override.get(node_id, 1.0)
-                    # Base font size of 6, scales up to 10 for largest nodes
-                    font_size = max(4, min(10, 4 + 2 * (size_multiplier - 0.3) / 0.7))
-                    font_sizes[node_id] = font_size
-            else:
-                # Default font size
-                font_sizes = {node_id: 7 for node_id in labels_to_draw.keys()}
-
-            # Draw labels on top of nodes (higher z-order)
-            for node_id, label in labels_to_draw.items():
-                label_artists = nx.draw_networkx_labels(
-                    G,
-                    pos,
-                    labels={node_id: label},
-                    font_size=font_sizes[node_id],
-                    font_color='black',
-                    font_weight='bold',
-                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white', edgecolor='none', alpha=0.8),
-                    ax=ax
-                )
-                # Set z-order higher than nodes (nodes are at 10)
-                for text in label_artists.values():
-                    text.set_zorder(15)
+            # Draw labels inside nodes — no bbox so text sits directly on the node fill
+            label_artists = nx.draw_networkx_labels(
+                G,
+                pos,
+                labels=labels_to_draw,
+                font_size=6,
+                font_color='white',
+                font_weight='bold',
+                ax=ax,
+            )
+            for text in label_artists.values():
+                text.set_zorder(15)
 
         # Create legend (pass ax if provided)
         if args.show_legend:
@@ -745,17 +736,15 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
     if observation_space in (GraphObservationConverter, HeterogeneousGraphObservationConverter):
         plot_helper = PlotMatplot(env.observation_space)
 
-        r = 20.0
+        r = 40.0
         layout = plot_helper._grid_layout
 
-        def pos(sub_id: int, src_position: npt.NDArray) -> npt.NDArray:
-            """Compute node offset position from source location toward target substation."""
-            target_pos = np.array(layout[f"sub_{sub_id}"])
-            vec = target_pos - src_position
+        def _natural_angle(sub_id: int, src_position: npt.NDArray) -> float:
+            """Angle (radians) from substation center toward src_position."""
+            center = np.array(layout[f"sub_{sub_id}"], dtype=float)
+            vec = src_position - center
             norm = np.linalg.norm(vec)
-            if norm == 0:
-                return target_pos
-            return target_pos - (vec / norm) * r
+            return float(np.arctan2(vec[1], vec[0])) if norm > 0 else 0.0
 
         # assemble substation IDs
         sub_ids = np.concatenate([
@@ -777,14 +766,53 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         # filter out empty lists
         pointing_towards_locs = np.vstack([sub for sub in pointing_towards_locs if len(sub) > 0])
 
-        # compute final node positions as well as other properties
-        positions = [pos(sid, np.array(src)) for sid, src in zip(sub_ids, pointing_towards_locs)]
+        # Seed positions: each element node starts on the circle of radius r at its natural angle
+        n_elem = len(sub_ids)
+        n_sub = env.n_sub
+        init_pos: dict[int, npt.NDArray] = {}
+        for node_idx, sid in enumerate(sub_ids):
+            angle = _natural_angle(int(sid), np.array(pointing_towards_locs[node_idx]))
+            center = np.array(layout[f"sub_{int(sid)}"], dtype=float)
+            init_pos[node_idx] = center + r * np.array([np.cos(angle), np.sin(angle)])
+
+        # Anchor nodes (one per substation) are fixed at substation centers.
+        # Element nodes are attracted to their anchor (keeps them near their substation)
+        # and to their powerline partner (line_or ↔ line_ex pairs), while repelling
+        # every other element node — producing an organic, overlap-free layout.
+        for sub_id in range(n_sub):
+            init_pos[n_elem + sub_id] = np.array(layout[f"sub_{sub_id}"], dtype=float)
+
+        G_layout = nx.Graph()
+        G_layout.add_nodes_from(range(n_elem + n_sub))
+
+        # Element → anchor edges: high weight keeps nodes close to substation center.
+        # Powerline edges: low weight gives a gentle cross-substation pull.
+        # Tune anchor_weight up (stiffer) to stay closer to initial positions.
+        anchor_weight = 5.0
+        powerline_weight = 0.1
+        for node_idx, sub_id in enumerate(sub_ids):
+            G_layout.add_edge(node_idx, n_elem + int(sub_id), weight=anchor_weight)
+
+        for line_id in range(env.n_line):
+            G_layout.add_edge(line_id, env.n_line + line_id, weight=powerline_weight)
+
+        spring_pos = nx.spring_layout(
+            G_layout,
+            pos=init_pos,
+            fixed=list(range(n_elem, n_elem + n_sub)),
+            k=r,
+            iterations=50,
+            seed=0,
+            weight="weight",
+        )
+
+        positions = [spring_pos[i] for i in range(n_elem)]
         colors = ["gray"] * 2 * env.n_line + ["green"] * env.n_gen + ["orange"] * env.n_load + [
             "purple"] * env.n_storage
         shapes = ["o"] * 2 * env.n_line + ["p"] * env.n_gen + ["^"] * env.n_load + ["D"] * env.n_storage
         labels = (["Powerline-Bus-Connection"] * 2 * env.n_line + ["Generator-Bus-Connection"] * env.n_gen +
                   ["Load-Bus-Connection"] * env.n_load + ["Storage-Bus-Connection"] * env.n_storage)
-        sizes = [30] * 2 * env.n_line + [120] * (env.n_load + env.n_storage + env.n_gen)
+        sizes = [200] * 2 * env.n_line + [300] * (env.n_load + env.n_storage + env.n_gen)
 
         node_styles = [
             NodeStyle(position=positions[i], color=colors[i], shape=shapes[i], label=labels[i], size=sizes[i])
@@ -809,14 +837,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
                 shape="o",
-                size=200,
+                size=300,
                 label="Busbar 1",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
                 shape="o",
-                size=200,
+                size=300,
                 label="Busbar 2",
             ))
 
@@ -847,7 +875,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="green",
                 shape="p",
-                size=120,
+                size=300,
                 label="Generator",
             ))
 
@@ -858,7 +886,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="orange",
                 shape="^",
-                size=120,
+                size=400,
                 label="Load",
             ))
 
@@ -870,7 +898,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=(or_pos + ex_pos) / 2.0,
                 color="gray",
                 shape="o",
-                size=80,
+                size=200,
                 label="Powerline",
             ))
 
@@ -881,7 +909,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="purple",
                 shape="D",
-                size=120,
+                size=300,
                 label="Storage",
             ))
 
@@ -893,21 +921,21 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([0.0, -bus_v]),
                 color="black",
                 shape="x",
-                size=80,
+                size=200,
                 label="Ground",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([-bus_h, +bus_v]),
                 color="steelblue",
                 shape="s",
-                size=100,
+                size=260,
                 label="Busbar 1",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([+bus_h, +bus_v]),
                 color="tomato",
                 shape="s",
-                size=100,
+                size=260,
                 label="Busbar 2",
             ))
 
@@ -927,14 +955,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
                 shape="o",
-                size=200,
+                size=300,
                 label="Busbar 1",
             )
             node_styles[n_sub + sub_id] = NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
                 shape="o",
-                size=200,
+                size=300,
                 label="Busbar 2",
             )
         return node_styles
@@ -952,7 +980,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=(or_pos + ex_pos) / 2.0,
                 color="steelblue",
                 shape="o",
-                size=100,
+                size=300,
                 label="Powerline",
             ))
         return node_styles
