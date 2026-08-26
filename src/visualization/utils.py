@@ -59,9 +59,9 @@ class EdgeStyle:
 
 
 _HETERO_EDGE_TYPE_STYLES: List[EdgeStyle] = [
-    EdgeStyle(color="darkorange",  width=2.0, label="Powerline (type 0)", alpha=1.0, linestyle="--"),
-    EdgeStyle(color="forestgreen", width=1.5, label="Same-bus (type 1)",  alpha=0.9, linestyle="-"),
-    EdgeStyle(color="crimson",     width=1.5, label="Diff-bus (type 2)",  alpha=0.9, linestyle=":"),
+    EdgeStyle(color="darkorange",  width=2.0, label="Powerline", alpha=1.0, linestyle="--"),
+    EdgeStyle(color="forestgreen", width=1.5, label="Same-bus",  alpha=0.9, linestyle="-"),
+    EdgeStyle(color="crimson",     width=1.5, label="Disconnected",  alpha=0.9, linestyle=":"),
 ]
 
 _ELEM_EDGE_STYLES: List[EdgeStyle] = [
@@ -89,7 +89,10 @@ class PlottingArgs:
     edge_styles: Optional[List[EdgeStyle]] = None  # Per-edge style (parallel to powerline_edge_index columns)
     show_legend: bool = True
     edge_labels: Optional[dict[tuple[int, int], str]] = None  # (min_u, max_u) -> label drawn at edge midpoint
-    edge_label_font_size: int = 8
+    edge_label_font_size: int = 15
+    substation_node_groups: Optional[dict[int, list[int]]] = None  # sub_id -> [node_idx, ...] for enclosing circles
+    substation_circle_padding: float = 10.0  # extra radius beyond the outermost node (data units)
+    curved_edges: Optional[dict[tuple[int, int], float]] = None  # (min_u, max_u) -> arc rad (positive = left-hand curve)
 
 
 @dataclass
@@ -101,12 +104,12 @@ class GridPlottingArgs:
     line_widths: Optional[List[float]] = None  # e.g. [2.0, 1.0, ...]
     line_styles: Optional[List[str]] = None    # e.g. ["-", "--", ":", "-."]
     node_size: int = 600           # matplotlib scatter size for substation circles
-    node_color: str = "white"      # fill colour of substation circles (used when node_colors is None)
-    node_colors: Optional[List] = None  # per-substation fill colours (overrides node_color when set)
-    font_size: int = 10            # font size for substation index labels
+    node_color: str = "white"      # fill color of substation circles (used when node_colors is None)
+    node_colors: Optional[List] = None  # per-substation fill colors (overrides node_color when set)
+    font_size: int = 15            # font size for substation index labels
     font_color: str = "black"      # label colour inside circles
     show_legend: bool = False      # whether to draw a legend
-    legend_font_size: int = 10     # font size for legend text
+    legend_font_size: int = 15     # font size for legend text
 
 
 @dataclass
@@ -334,6 +337,46 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
     G = nx.MultiDiGraph()
     G.add_nodes_from(range(args.num_nodes))
 
+    # draw substation enclosing circles (lowest z-order — behind all edges and nodes)
+    if args.substation_node_groups is not None and args.node_styles is not None:
+        from matplotlib.patches import Circle
+        ax.set_aspect('equal', adjustable='datalim')
+
+        # Compute per-group centroids and the global max radius for uniform sizing
+        group_centroids: dict[int, npt.NDArray] = {}
+        max_content_radius = 0.0
+        for sub_id, node_indices in args.substation_node_groups.items():
+            valid = [i for i in node_indices if i < len(args.node_styles)]
+            if not valid:
+                continue
+            positions = np.array([args.node_styles[i].position for i in valid])
+            cx, cy = positions.mean(axis=0)
+            group_centroids[sub_id] = np.array([cx, cy])
+            r = np.linalg.norm(positions - np.array([cx, cy]), axis=1).max()
+            max_content_radius = max(max_content_radius, r)
+
+        uniform_radius = 65 + args.substation_circle_padding
+
+        for sub_id, center in group_centroids.items():
+            cx, cy = center
+            circle = Circle(
+                (cx, cy), uniform_radius,
+                facecolor='slategray',
+                edgecolor='black',
+                alpha=0.10,
+                zorder=0,
+            )
+            ax.add_patch(circle)
+            ax.text(
+                cx, cy + uniform_radius - 15,
+                str(sub_id),
+                fontsize=15,
+                ha='center', va='center',
+                color='slategray',
+                fontweight='bold',
+                zorder=1,
+            )
+
     # base edges - convert to undirected by filtering out duplicate directed edges
     if args.powerline_edge_index is not None:
         seen_edges = set()
@@ -401,8 +444,20 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
 
     # draw base edges ON TOP, grouped by (linestyle, alpha) so each group gets one draw call
     if conn_edges:
-        style_groups: dict = {}
+        # Split out edges that should be drawn curved
+        curved_set = set(args.curved_edges.keys()) if args.curved_edges else set()
+        straight_edges = []
+        curved_edge_data = []
         for u, v, d in conn_edges:
+            key = (min(u, v), max(u, v))
+            if key in curved_set:
+                curved_edge_data.append((u, v, d, args.curved_edges[key]))
+            else:
+                straight_edges.append((u, v, d))
+
+        # Straight edges — batched by style
+        style_groups: dict = {}
+        for u, v, d in straight_edges:
             key = (d.get("style", "--"), d.get("alpha", 1.0))
             style_groups.setdefault(key, []).append((u, v, d))
 
@@ -420,6 +475,21 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
             )
             if lc is not None:
                 lc.set_zorder(3)
+
+        # Curved edges — drawn individually with arc3 connectionstyle
+        for u, v, d, rad in curved_edge_data:
+            ax.annotate(
+                '', xy=pos[v], xytext=pos[u],
+                arrowprops=dict(
+                    arrowstyle='-',
+                    connectionstyle=f'arc3,rad={rad}',
+                    color=d['color'],
+                    lw=d['weight'],
+                    linestyle=d.get('style', '-'),
+                    alpha=d.get('alpha', 1.0),
+                ),
+                zorder=3,
+            )
 
     # draw edge labels at midpoints (above edges, below nodes)
     if args.edge_labels:
@@ -482,7 +552,7 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
                 G,
                 label_pos,
                 labels=labels_to_draw,
-                font_size=6,
+                font_size=15,
                 font_color='white',
                 font_weight='bold',
                 ax=ax,
@@ -511,7 +581,7 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
     unique_labels = {}
     for ns in args.node_styles:
         if ns.label not in unique_labels:
-            unique_labels[ns.label] = (ns.color, ns.shape)
+            unique_labels[ns.label] = (ns.color, ns.shape, ns.size)
 
     node_legend = [
         Line2D(
@@ -519,11 +589,12 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
             marker=shape,
             color='w',
             markerfacecolor=color,
-            markersize=10,
+            markeredgecolor=color,  # required for edge-only markers like "x" and "+"
+            markersize=20,
             linestyle='None',
             label=label,
         )
-        for label, (color, shape) in unique_labels.items()
+        for label, (color, shape, size) in unique_labels.items()
     ]
 
     # --- Edge legend (optional, for latent edge types) ---
@@ -552,18 +623,32 @@ def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
             label=lbl,
         ))
 
-    # Combine and draw - use provided ax or current axes
+    # Place legend just outside the right edge of the axes so it never overlaps content.
+    # tight_layout / constrained_layout will automatically expand the margin to fit it.
     if ax is not None:
-        ax.legend(handles=node_legend + edge_legend, loc="best", frameon=False, fontsize=14)
+        ax.legend(
+            handles=node_legend + edge_legend,
+            loc="upper left",
+            bbox_to_anchor=(0.83, 0.9),
+            bbox_transform=ax.transAxes,
+            frameon=False,
+            fontsize=20,
+        )
     else:
-        plt.legend(handles=node_legend + edge_legend, loc="best", frameon=False, fontsize=14)
+        plt.legend(
+            handles=node_legend + edge_legend,
+            loc="upper left",
+            bbox_to_anchor=(0.83, 0.9),
+            frameon=False,
+            fontsize=20,
+        )
 
 
 def visualize_grid(args: GridPlottingArgs, ax=None) -> Optional[Figure]:
     """
     Visualize the power grid at the substation level.
 
-    Each substation is drawn as a labelled circle (one node per substation).
+    Each substation is drawn as a labeled circle (one node per substation).
     Transmission lines are drawn as edges between the substations they connect.
     No intra-substation structure is shown — this is purely the physical grid topology.
 
@@ -834,12 +919,13 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         colors = ["gray"] * 2 * env.n_line + ["green"] * env.n_gen + ["orange"] * env.n_load + [
             "purple"] * env.n_storage
         shapes = ["o"] * 2 * env.n_line + ["p"] * env.n_gen + ["^"] * env.n_load + ["D"] * env.n_storage
-        labels = (["Powerline-Bus-Connection"] * 2 * env.n_line + ["Generator-Bus-Connection"] * env.n_gen +
-                  ["Load-Bus-Connection"] * env.n_load + ["Storage-Bus-Connection"] * env.n_storage)
-        sizes = [200] * 2 * env.n_line + [300] * (env.n_load + env.n_storage + env.n_gen)
+        labels = (["Powerline endpoint"] * 2 * env.n_line + ["Generator"] * env.n_gen +
+                  ["Load"] * env.n_load + ["Storage"] * env.n_storage)
+        sizes = [520] * 2 * env.n_line + [780] * (env.n_load + env.n_storage + env.n_gen)
+        offsets = [(0.0, 0.0)] * 2 * env.n_line + [(0.0, 0.0)] * env.n_gen + [(0.0, -6.0)] * env.n_load + [(0.0, 0.0)] * env.n_storage
 
         node_styles = [
-            NodeStyle(position=positions[i], color=colors[i], shape=shapes[i], label=labels[i], size=sizes[i])
+            NodeStyle(position=positions[i], color=colors[i], shape=shapes[i], label=labels[i], size=sizes[i], label_offset=offsets[i])
             for i in range(len(positions))
         ]
 
@@ -851,7 +937,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         layout = plot_helper._grid_layout
 
         # Small horizontal offset to separate bus 1 and bus 2 nodes at each substation.
-        offset = 10.0
+        offset = 30.0
 
         # Slot ordering: 2 * sub_id + (bus - 1), so bus 1 at even slots, bus 2 at odd slots.
         node_styles = []
@@ -861,14 +947,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
                 shape="s",
-                size=300,
+                size=800,
                 label="Busbar 1",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
                 shape="s",
-                size=300,
+                size=800,
                 label="Busbar 2",
             ))
 
@@ -877,9 +963,9 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         plot_helper = PlotMatplot(env.observation_space)
         layout = plot_helper._grid_layout
 
-        r = 40.0           # distance from substation center for element nodes
-        bus_h = 16.0       # horizontal half-spread for bus1/bus2
-        bus_v = 10.0       # vertical half-spread: buses above, ground below
+        r = 80.0           # distance from substation center for element nodes
+        bus_h = 32.0       # horizontal half-spread for bus1/bus2
+        bus_v = 27.0       # vertical half-spread: buses above, ground below
 
         def _pos_elem(sub_id: int, src_pos: npt.NDArray) -> npt.NDArray:
             """Offset element node toward its substation center by distance r."""
@@ -899,7 +985,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="green",
                 shape="p",
-                size=300,
+                size=780,
                 label="Generator",
             ))
 
@@ -910,7 +996,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="orange",
                 shape="^",
-                size=400,
+                size=800,
                 label="Load",
                 label_offset=(0.0, -6.0),
             ))
@@ -923,7 +1009,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=(or_pos + ex_pos) / 2.0,
                 color="gray",
                 shape="o",
-                size=200,
+                size=520,
                 label="Powerline",
             ))
 
@@ -934,7 +1020,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=_pos_elem(int(sid), src),
                 color="purple",
                 shape="D",
-                size=300,
+                size=780,
                 label="Storage",
             ))
 
@@ -946,21 +1032,21 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([0.0, -bus_v]),
                 color="black",
                 shape="x",
-                size=200,
+                size=520,
                 label="Ground",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([-bus_h, +bus_v]),
                 color="steelblue",
                 shape="s",
-                size=260,
+                size=800,
                 label="Busbar 1",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([+bus_h, +bus_v]),
                 color="tomato",
                 shape="s",
-                size=260,
+                size=800,
                 label="Busbar 2",
             ))
 
@@ -980,14 +1066,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
                 shape="s",
-                size=300,
+                size=780,
                 label="Busbar 1",
             )
             node_styles[n_sub + sub_id] = NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
                 shape="s",
-                size=300,
+                size=780,
                 label="Busbar 2",
             )
         return node_styles
@@ -1005,7 +1091,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=(or_pos + ex_pos) / 2.0,
                 color="steelblue",
                 shape="o",
-                size=300,
+                size=780,
                 label="Powerline",
             ))
         return node_styles
@@ -1093,7 +1179,7 @@ def get_edge_styles(
         edge_types = gym_obs[EDGE_TYPE][mask]   # [total_E]
         edge_attrs = gym_obs[EDGES][:, 0][mask]  # [total_E]
 
-        # Normalise physics-edge weights (type 1) for colour mapping.
+        # Normalize physics-edge weights (type 1) for color mapping.
         type1_sel = edge_types == 1
         phys_weights = np.nan_to_num(edge_attrs[type1_sel], nan=0.0, posinf=0.0, neginf=0.0)
         if phys_weights.size > 0:
@@ -1168,12 +1254,7 @@ def get_node_labels(
     if observation_space in (SubstationGraphObservationConverter,
                              SubstationPTDFGraphObservationConverter,
                              SubstationZbusGraphObservationConverter):
-        # Node slot: 2 * sub_id + (bus - 1)
-        labels = {}
-        for sub_id in range(env.n_sub):
-            labels[2 * sub_id]     = f"{sub_id}:1"
-            labels[2 * sub_id + 1] = f"{sub_id}:2"
-        return labels
+        return {}
 
     if observation_space in (ElementGraphObservationConverter, ElementLODFGraphObservationConverter):
         # Node order: [gen | load | line | storage | (ground, bus1, bus2)×n_sub]
@@ -1182,7 +1263,6 @@ def get_node_labels(
         load_offset = env.n_gen
         line_offset = env.n_gen + env.n_load
         storage_offset = line_offset + env.n_line
-        bus_offset = storage_offset + env.n_storage
 
         for gid in range(env.n_gen):
             labels[gen_offset + gid] = str(gid)
@@ -1192,26 +1272,128 @@ def get_node_labels(
             labels[line_offset + lid] = str(lid)
         for sid in range(env.n_storage):
             labels[storage_offset + sid] = str(sid)
-        # Bus nodes: 3 per substation (ground=0, bus1=1, bus2=2); ground gets no label
-        for sub_id in range(env.n_sub):
-            labels[bus_offset + 3 * sub_id + 1] = f"{sub_id}:1"
-            labels[bus_offset + 3 * sub_id + 2] = f"{sub_id}:2"
+
         return labels
 
     if observation_space in (PTDFGraphObservationConverter, ZbusGraphObservationConverter):
-        # Node slot: (bus - 1) * n_sub + sub_id
-        n_sub = env.n_sub
-        labels = {}
-        for sub_id in range(n_sub):
-            labels[sub_id]          = f"{sub_id}:1"
-            labels[n_sub + sub_id]  = f"{sub_id}:2"
-        return labels
+        return {}
 
     if observation_space == LODFGraphObservationConverter:
         # One node per powerline
         return {lid: str(lid) for lid in range(env.n_line)}
 
     raise NotImplementedError(f"get_node_labels not implemented for {observation_space}")
+
+
+def get_curved_powerline_edges(
+    env: Environment,
+    g2op_obs,
+    observation_space: type[ObservationConverter],
+    line_ids: list[int],
+    rad: float = 0.3,
+) -> Optional[dict[tuple[int, int], float]]:
+    """
+    For substation-level converters return a curved_edges dict suitable for PlottingArgs,
+    mapping the canonical node-pair of each requested powerline to the given arc radius.
+
+    Only applies to SubstationGraphObservationConverter and its PTDF/Zbus variants.
+    Returns None for all other converters.
+
+    :param env: grid2op Environment
+    :param g2op_obs: raw grid2op BaseObservation (provides bus assignments)
+    :param observation_space: converter class
+    :param line_ids: grid2op powerline indices to curve
+    :param rad: arc3 radius — positive curves upward for left-to-right edges
+    :return: dict (min_u, max_u) → rad, or None
+    """
+    if observation_space not in (SubstationGraphObservationConverter,
+                                  SubstationPTDFGraphObservationConverter,
+                                  SubstationZbusGraphObservationConverter):
+        return None
+
+    result: dict[tuple[int, int], float] = {}
+    line_or_bus = g2op_obs.line_or_bus
+    line_ex_bus = g2op_obs.line_ex_bus
+    for lid in line_ids:
+        if line_or_bus[lid] > 0 and line_ex_bus[lid] > 0:
+            or_slot = int(2 * env.line_or_to_subid[lid] + (line_or_bus[lid] - 1))
+            ex_slot = int(2 * env.line_ex_to_subid[lid] + (line_ex_bus[lid] - 1))
+            result[(min(or_slot, ex_slot), max(or_slot, ex_slot))] = rad
+    return result or None
+
+
+def get_substation_node_groups(
+    env: Environment,
+    observation_space: type[ObservationConverter],
+) -> Optional[dict[int, list[int]]]:
+    """
+    Return a mapping from substation ID to the list of node indices belonging to it.
+
+    Used by visualize_graph to draw an enclosing circle around each substation cluster.
+    Returns None for LODFGraphObservationConverter, where powerline nodes span two substations.
+
+    :param env: grid2op Environment
+    :param observation_space: converter class
+    :return: dict sub_id → [node_idx, ...], or None
+    """
+    groups: dict[int, list[int]] = {s: [] for s in range(env.n_sub)}
+
+    if observation_space in (GraphObservationConverter, HeterogeneousGraphObservationConverter):
+        # Node order: [line_or×n | line_ex×n | gen | load | storage]
+        n_line = env.n_line
+        for lid in range(n_line):
+            groups[int(env.line_or_to_subid[lid])].append(lid)
+            groups[int(env.line_ex_to_subid[lid])].append(n_line + lid)
+        gen_offset = 2 * n_line
+        for gid in range(env.n_gen):
+            groups[int(env.gen_to_subid[gid])].append(gen_offset + gid)
+        load_offset = gen_offset + env.n_gen
+        for lid in range(env.n_load):
+            groups[int(env.load_to_subid[lid])].append(load_offset + lid)
+        storage_offset = load_offset + env.n_load
+        for sid in range(env.n_storage):
+            groups[int(env.storage_to_subid[sid])].append(storage_offset + sid)
+        return {s: idxs for s, idxs in groups.items() if idxs}
+
+    if observation_space in (SubstationGraphObservationConverter,
+                             SubstationPTDFGraphObservationConverter,
+                             SubstationZbusGraphObservationConverter):
+        # Two bus nodes per substation: slot = 2*sub_id + (bus-1)
+        for sub_id in range(env.n_sub):
+            groups[sub_id] = [2 * sub_id, 2 * sub_id + 1]
+        return groups
+
+    if observation_space in (ElementGraphObservationConverter, ElementLODFGraphObservationConverter):
+        # Node order: [gen | load | line | storage | (ground, bus1, bus2)×n_sub]
+        # Line nodes sit at the midpoint between two substations — excluded from grouping.
+        gen_offset = 0
+        load_offset = env.n_gen
+        line_offset = env.n_gen + env.n_load
+        storage_offset = line_offset + env.n_line
+        bus_offset = storage_offset + env.n_storage
+        for gid in range(env.n_gen):
+            groups[int(env.gen_to_subid[gid])].append(gen_offset + gid)
+        for lid in range(env.n_load):
+            groups[int(env.load_to_subid[lid])].append(load_offset + lid)
+        for sid in range(env.n_storage):
+            groups[int(env.storage_to_subid[sid])].append(storage_offset + sid)
+        for sub_id in range(env.n_sub):
+            groups[sub_id].extend([
+                bus_offset + 3 * sub_id,      # ground
+                bus_offset + 3 * sub_id + 1,  # bus 1
+                bus_offset + 3 * sub_id + 2,  # bus 2
+            ])
+        return {s: idxs for s, idxs in groups.items() if idxs}
+
+    if observation_space in (PTDFGraphObservationConverter, ZbusGraphObservationConverter):
+        # Slot = (bus-1)*n_sub + sub_id  →  bus1: sub_id, bus2: n_sub+sub_id
+        n_sub = env.n_sub
+        for sub_id in range(n_sub):
+            groups[sub_id] = [sub_id, n_sub + sub_id]
+        return groups
+
+    # LODFGraphObservationConverter: powerlines span two substations — no grouping
+    return None
 
 
 def get_edge_labels(
