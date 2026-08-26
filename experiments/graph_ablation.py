@@ -5,7 +5,7 @@ Evaluates trained agents with shuffled edge indices (same node features,
 same degree, different connectivity) to measure how much the policy relies
 on the graph structure vs. node features alone.
 
-Results are saved to experiments/survival/obs_spaces/ablation/.
+Results are saved to experiments/survival/observation_spaces/ablation_fixed/.
 """
 
 import argparse
@@ -29,10 +29,10 @@ from core.evaluate import evaluate_agent
 from core.loading import AgentSpec, load_agent_from_spec
 from grid2op_env.observation_converter import (
     ObservationConverter, T,
-    EDGE_INDEX, EDGE_MASK, EDGES, EDGE_TYPE, EDGE_WEIGHTS,
+    EDGE_INDEX, EDGE_MASK,
 )
 
-RESULTS = ROOT / "experiments" / "survival" / "obs_spaces" / "ablation"
+RESULTS = ROOT / "experiments" / "survival" / "observation_spaces" / "ablation_fixed"
 RESULTS.mkdir(exist_ok=True, parents=True)
 
 METHODS = {
@@ -99,6 +99,11 @@ class GraphAblationWrapper(ObservationConverter):
     def to_gym(self, g2op_obs: BaseObservation) -> T:
         """Convert observation and apply a fixed per-episode edge permutation.
 
+        Only the connectivity (EDGE_INDEX, EDGE_MASK) is permuted; edge features
+        (EDGES, EDGE_TYPE, EDGE_WEIGHTS) are left in their original order.  This
+        misassigns features to wrong node pairs, genuinely breaking the graph
+        signal while keeping the feature distribution intact.
+
         The same permutation is held for the entire episode (drawn in reset_obs)
         so the rewired topology is consistent across timesteps.
 
@@ -106,14 +111,11 @@ class GraphAblationWrapper(ObservationConverter):
             g2op_obs: raw Grid2Op observation
 
         Returns:
-            gym observation with permuted edge connectivity
+            gym observation with permuted edge connectivity and original edge features
         """
         obs = self.converter.to_gym(g2op_obs)
         obs[EDGE_INDEX] = obs[EDGE_INDEX][:, self._perm]
         obs[EDGE_MASK] = obs[EDGE_MASK][self._perm]
-        for key in (EDGES, EDGE_TYPE, EDGE_WEIGHTS):
-            if key in obs:
-                obs[key] = obs[key][self._perm]
         return obs
 
     def normalize(self, gym_obs: T) -> T:

@@ -7,7 +7,7 @@
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 
-OUT_DIR="experiments/survival/obs_spaces/ablation/out"
+OUT_DIR="experiments/survival/observation_spaces/ablation_fixed/out"
 mkdir -p "$OUT_DIR"
 
 sbatch <<EOF
