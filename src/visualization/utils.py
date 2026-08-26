@@ -46,6 +46,7 @@ class NodeStyle:
     size: int
     label: str
     label_offset: tuple[float, float] = (0.0, 0.0)
+    alpha: float = 1.0  # set to 0.0 for phantom nodes (expand axes bounds without being visible)
 
 
 @dataclass
@@ -337,10 +338,13 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
     G = nx.MultiDiGraph()
     G.add_nodes_from(range(args.num_nodes))
 
+    # Equal aspect ensures node positions use the same scale in x and y,
+    # matching the physical grid layout for all converter types.
+    ax.set_aspect('equal', adjustable='datalim')
+
     # draw substation enclosing circles (lowest z-order — behind all edges and nodes)
     if args.substation_node_groups is not None and args.node_styles is not None:
         from matplotlib.patches import Circle
-        ax.set_aspect('equal', adjustable='datalim')
 
         # Compute per-group centroids and the global max radius for uniform sizing
         group_centroids: dict[int, npt.NDArray] = {}
@@ -508,10 +512,13 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
 
     # draw nodes (with highest z-order to be on top of all edges)
     if args.node_styles is not None:
-        shapes = set(ns.shape for ns in args.node_styles)
-        for shape in shapes:
-            idx = [i for i, ns in enumerate(args.node_styles) if ns.shape == shape]
-            # Apply size overrides if provided
+        # Group by (shape, alpha) so phantom nodes (alpha=0) get a separate draw
+        # call — they still register positions for matplotlib autoscaling.
+        node_style_groups: dict[tuple[str, float], list[int]] = {}
+        for i, ns in enumerate(args.node_styles):
+            node_style_groups.setdefault((ns.shape, ns.alpha), []).append(i)
+
+        for (shape, alpha), idx in node_style_groups.items():
             node_sizes = []
             for i in idx:
                 base_size = args.node_styles[i].size * scale
@@ -526,6 +533,7 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
                 node_color=[args.node_styles[i].color for i in idx],
                 node_shape=shape,
                 node_size=node_sizes,
+                alpha=alpha,
                 ax=ax,
             )
             node_collection.set_zorder(10)  # Highest z-order to be on top
@@ -563,6 +571,12 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
         # Create legend (pass ax if provided)
         if args.show_legend:
             _create_legend(args, G, ax)
+
+        # Explicitly register all node positions (including alpha=0 phantom nodes)
+        # so autoscaling uses the full bounding box, not just visible nodes.
+        all_positions = np.array([ns.position for ns in args.node_styles])
+        ax.update_datalim(all_positions)
+        ax.autoscale_view()
     else:
         node_collection = nx.draw_networkx_nodes(G, pos, node_color="grey", ax=ax)
         node_collection.set_zorder(10)
@@ -577,10 +591,10 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
 
 
 def _create_legend(args: PlottingArgs, G: nx.Graph, ax=None) -> None:
-    # --- Node legend ---
+    # --- Node legend (skip phantom/invisible nodes) ---
     unique_labels = {}
     for ns in args.node_styles:
-        if ns.label not in unique_labels:
+        if ns.alpha > 0 and ns.label not in unique_labels:
             unique_labels[ns.label] = (ns.color, ns.shape, ns.size)
 
     node_legend = [
@@ -834,6 +848,51 @@ def latent_edge_hist(accumulated_edge_probabilities: npt.NDArray, skip_last_edge
     return fig
 
 
+def _make_phantom_element_nodes(env, layout: dict) -> List[NodeStyle]:
+    """
+    Return invisible NodeStyle objects that match the Element+LODF bounding box.
+
+    These phantom nodes have alpha=0 so they are not rendered, but their
+    positions force matplotlib's autoscaling to use the same axes extent as
+    ElementLODFGraphObservationConverter, giving the LODF graph the same scale.
+
+    :param env: grid2op Environment
+    :param layout: grid layout dict from PlotMatplot._grid_layout
+    :return: list of phantom NodeStyle objects with alpha=0
+    """
+    r = 80.0
+    bus_h = 32.0
+    bus_v = 27.0
+
+    def _pos_elem(sub_id: int, src_pos: npt.NDArray) -> npt.NDArray:
+        target = np.array(layout[f"sub_{sub_id}"], dtype=float)
+        vec = target - src_pos
+        norm = np.linalg.norm(vec)
+        return target if norm == 0 else target - (vec / norm) * r
+
+    phantom: List[NodeStyle] = []
+
+    for gid, sid in enumerate(env.gen_to_subid):
+        src = np.array(layout.get(f"gen_{sid}_{gid}", layout[f"sub_{sid}"]), dtype=float)
+        phantom.append(NodeStyle(position=_pos_elem(int(sid), src), color="green",   shape="p", size=780, label="Generator", alpha=0.0))
+
+    for lid, sid in enumerate(env.load_to_subid):
+        src = np.array(layout.get(f"load_{sid}_{lid}", layout[f"sub_{sid}"]), dtype=float)
+        phantom.append(NodeStyle(position=_pos_elem(int(sid), src), color="orange",  shape="^", size=800, label="Load",      alpha=0.0))
+
+    for stor_id, sid in enumerate(env.storage_to_subid):
+        src = np.array(layout.get(f"storage_{sid}_{stor_id}", layout[f"sub_{sid}"]), dtype=float)
+        phantom.append(NodeStyle(position=_pos_elem(int(sid), src), color="purple",  shape="D", size=780, label="Storage",   alpha=0.0))
+
+    for sub_id in range(env.n_sub):
+        base = np.array(layout[f"sub_{sub_id}"], dtype=float)
+        phantom.append(NodeStyle(position=base + np.array([0.0,    -bus_v]), color="black",     shape="x", size=520, label="Ground",   alpha=0.0))
+        phantom.append(NodeStyle(position=base + np.array([-bus_h, +bus_v]), color="steelblue", shape="s", size=800, label="Busbar 1", alpha=0.0))
+        phantom.append(NodeStyle(position=base + np.array([+bus_h, +bus_v]), color="tomato",    shape="s", size=800, label="Busbar 2", alpha=0.0))
+
+    return phantom
+
+
 def get_node_styles(env: Environment, observation_space: type[ObservationConverter]) -> List[NodeStyle]:
     """
     For a given environment and observation space class, return a list of node style objects. Each node style object
@@ -937,7 +996,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         layout = plot_helper._grid_layout
 
         # Small horizontal offset to separate bus 1 and bus 2 nodes at each substation.
-        offset = 30.0
+        offset = 32.0
 
         # Slot ordering: 2 * sub_id + (bus - 1), so bus 1 at even slots, bus 2 at odd slots.
         node_styles = []
@@ -1054,7 +1113,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
     elif observation_space in (PTDFGraphObservationConverter, ZbusGraphObservationConverter):
         plot_helper = PlotMatplot(env.observation_space)
         layout = plot_helper._grid_layout
-        offset = 10.0
+        offset = 32.0
         n_sub = env.n_sub
 
         # Bus slot ordering: slot = (busbar - 1) * n_sub + sub_id
@@ -1066,14 +1125,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
                 shape="s",
-                size=780,
+                size=800,
                 label="Busbar 1",
             )
             node_styles[n_sub + sub_id] = NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
                 shape="s",
-                size=780,
+                size=800,
                 label="Busbar 2",
             )
         return node_styles
@@ -1081,19 +1140,21 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
         plot_helper = PlotMatplot(env.observation_space)
         layout = plot_helper._grid_layout
 
-        # One node per powerline, positioned at the midpoint between its
-        # origin and extremity substation.
+        # One visible node per powerline at the midpoint between its substations.
         node_styles = []
         for lid in range(env.n_line):
             or_pos = np.array(layout[f"sub_{int(env.line_or_to_subid[lid])}"], dtype=float)
             ex_pos = np.array(layout[f"sub_{int(env.line_ex_to_subid[lid])}"], dtype=float)
             node_styles.append(NodeStyle(
                 position=(or_pos + ex_pos) / 2.0,
-                color="steelblue",
+                color="gray",
                 shape="o",
-                size=780,
+                size=520,
                 label="Powerline",
             ))
+        # Phantom nodes (alpha=0) matching the Element+LODF bounding box so that
+        # matplotlib autoscales to the same extent as the Element+LODF graph.
+        node_styles += _make_phantom_element_nodes(env, layout)
         return node_styles
     else:
         raise NotImplementedError()
@@ -1149,7 +1210,7 @@ def get_edge_styles(
                     color=mcolors.to_hex(cmap(w)),
                     width=0.1 + 2.0 * w,
                     alpha=0.1 + 0.7 * w,
-                    label="LODF coupling (type 1)",
+                    label="LODF",
                 ))
         return styles
 
@@ -1164,12 +1225,18 @@ def get_edge_styles(
         w_min, w_max = weights.min(), weights.max()
         norm_w = np.clip((weights - w_min) / (w_max - w_min + 1e-9), 0.0, 1.0)
         cmap = plt.get_cmap("YlOrRd")
+        if observation_space is PTDFGraphObservationConverter:
+            label = "PTDF coupling"
+        elif observation_space is LODFGraphObservationConverter:
+            label = "LODF"
+        elif observation_space is ZbusGraphObservationConverter:
+            label = "Zbus admittance"
         return [
             EdgeStyle(
                 color=mcolors.to_hex(cmap(float(w))),
                 width=0.1 + 3 * float(w),
                 alpha=0.1 + 0.9 * float(w),
-                label="Coupling strength",
+                label=label,
             )
             for w in norm_w
         ]
@@ -1197,15 +1264,15 @@ def get_edge_styles(
                     color="steelblue",
                     width=1.0,
                     alpha=0.7,
-                    label="Topology (type 0)",
+                    label="Topology",
                     linestyle="dashed",
                 ))
             else:
                 w = float(norm_phys[phys_idx])
                 phys_idx += 1
-                label = ("PTDF distance (type 1)"
+                label = ("PTDF coupling"
                          if observation_space == SubstationPTDFGraphObservationConverter
-                         else "Zbus admittance (type 1)")
+                         else "Zbus admittance")
                 styles.append(EdgeStyle(
                     color=mcolors.to_hex(cmap(w)),
                     width=0.1 + 2.5 * w,
