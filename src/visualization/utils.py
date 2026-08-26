@@ -31,7 +31,7 @@ from grid2op_env.observation_converter import (
     ObservationConverter,
     EDGES,
     EDGE_MASK,
-    EDGE_TYPE,
+    EDGE_TYPE, EDGE_INDEX,
 )
 from rarl import fully_connected_edge_index
 
@@ -45,6 +45,7 @@ class NodeStyle:
     shape: str
     size: int
     label: str
+    label_offset: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass
@@ -87,6 +88,8 @@ class PlottingArgs:
     powerline_edge_widths: Optional[List[float]] = None  # Custom widths for powerline edges
     edge_styles: Optional[List[EdgeStyle]] = None  # Per-edge style (parallel to powerline_edge_index columns)
     show_legend: bool = True
+    edge_labels: Optional[dict[tuple[int, int], str]] = None  # (min_u, max_u) -> label drawn at edge midpoint
+    edge_label_font_size: int = 8
 
 
 @dataclass
@@ -418,6 +421,21 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
             if lc is not None:
                 lc.set_zorder(3)
 
+    # draw edge labels at midpoints (above edges, below nodes)
+    if args.edge_labels:
+        for (u, v), text in args.edge_labels.items():
+            if u in pos and v in pos:
+                mx = (pos[u][0] + pos[v][0]) / 2
+                my = (pos[u][1] + pos[v][1]) / 2
+                ax.text(
+                    mx, my, text,
+                    fontsize=args.edge_label_font_size,
+                    ha='center', va='center',
+                    color='black', fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=1.0),
+                    zorder=12,
+                )
+
     # draw nodes (with highest z-order to be on top of all edges)
     if args.node_styles is not None:
         shapes = set(ns.shape for ns in args.node_styles)
@@ -453,10 +471,16 @@ def visualize_graph(args: PlottingArgs, ax=None) -> Figure:
             labels_to_draw = {node_id: label for node_id, label in node_labels.items()
                             if node_id < len(args.node_styles)}
 
+            # Build per-node label positions, applying label_offset from NodeStyle
+            label_pos = {
+                node_id: args.node_styles[node_id].position + np.array(args.node_styles[node_id].label_offset)
+                for node_id in labels_to_draw
+            }
+
             # Draw labels inside nodes — no bbox so text sits directly on the node fill
             label_artists = nx.draw_networkx_labels(
                 G,
-                pos,
+                label_pos,
                 labels=labels_to_draw,
                 font_size=6,
                 font_color='white',
@@ -836,14 +860,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
             node_styles.append(NodeStyle(
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
-                shape="o",
+                shape="s",
                 size=300,
                 label="Busbar 1",
             ))
             node_styles.append(NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
-                shape="o",
+                shape="s",
                 size=300,
                 label="Busbar 2",
             ))
@@ -879,7 +903,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 label="Generator",
             ))
 
-        # Loads
+        # Loads — label_offset shifts text down toward the triangle base
         for lid, sid in enumerate(env.load_to_subid):
             src = np.array(layout.get(f"load_{sid}_{lid}", layout[f"sub_{sid}"]), dtype=float)
             node_styles.append(NodeStyle(
@@ -888,6 +912,7 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
                 shape="^",
                 size=400,
                 label="Load",
+                label_offset=(0.0, -6.0),
             ))
 
         # Lines: single node at midpoint between origin and extremity substation
@@ -954,14 +979,14 @@ def get_node_styles(env: Environment, observation_space: type[ObservationConvert
             node_styles[sub_id] = NodeStyle(
                 position=base + np.array([-offset, 0.0]),
                 color="steelblue",
-                shape="o",
+                shape="s",
                 size=300,
                 label="Busbar 1",
             )
             node_styles[n_sub + sub_id] = NodeStyle(
                 position=base + np.array([+offset, 0.0]),
                 color="tomato",
-                shape="o",
+                shape="s",
                 size=300,
                 label="Busbar 2",
             )
@@ -1102,6 +1127,179 @@ def get_edge_styles(
                     label=label,
                 ))
         return styles
+
+    return None
+
+
+def get_node_labels(
+    env: Environment,
+    observation_space: type[ObservationConverter],
+) -> dict[int, str]:
+    """
+    Return a node_labels dict suitable for PlottingArgs.node_labels.
+
+    Labels follow per-type enumeration aligned with grid2op IDs:
+    - Loads, generators, storages, powerlines: grid2op element index.
+    - Busbars: "{sub_id}:{bus_id}" (bus_id ∈ {1, 2}).
+    - Powerline-bus-connection nodes (Graph/HeterogeneousGraph): no label
+      (the edge carries the powerline ID instead).
+    - Ground nodes: no label.
+
+    :param env: grid2op Environment
+    :param observation_space: converter class
+    :return: dict mapping node index → label string
+    """
+    if observation_space in (GraphObservationConverter, HeterogeneousGraphObservationConverter):
+        # Node order: [line_or×n | line_ex×n | gen | load | storage]
+        # Powerline-bus-connection nodes get no label (edge carries the ID).
+        n_line = env.n_line
+        labels: dict[int, str] = {}
+        gen_offset = 2 * n_line
+        for gid in range(env.n_gen):
+            labels[gen_offset + gid] = str(gid)
+        load_offset = gen_offset + env.n_gen
+        for lid in range(env.n_load):
+            labels[load_offset + lid] = str(lid)
+        storage_offset = load_offset + env.n_load
+        for sid in range(env.n_storage):
+            labels[storage_offset + sid] = str(sid)
+        return labels
+
+    if observation_space in (SubstationGraphObservationConverter,
+                             SubstationPTDFGraphObservationConverter,
+                             SubstationZbusGraphObservationConverter):
+        # Node slot: 2 * sub_id + (bus - 1)
+        labels = {}
+        for sub_id in range(env.n_sub):
+            labels[2 * sub_id]     = f"{sub_id}:1"
+            labels[2 * sub_id + 1] = f"{sub_id}:2"
+        return labels
+
+    if observation_space in (ElementGraphObservationConverter, ElementLODFGraphObservationConverter):
+        # Node order: [gen | load | line | storage | (ground, bus1, bus2)×n_sub]
+        labels = {}
+        gen_offset = 0
+        load_offset = env.n_gen
+        line_offset = env.n_gen + env.n_load
+        storage_offset = line_offset + env.n_line
+        bus_offset = storage_offset + env.n_storage
+
+        for gid in range(env.n_gen):
+            labels[gen_offset + gid] = str(gid)
+        for lid in range(env.n_load):
+            labels[load_offset + lid] = str(lid)
+        for lid in range(env.n_line):
+            labels[line_offset + lid] = str(lid)
+        for sid in range(env.n_storage):
+            labels[storage_offset + sid] = str(sid)
+        # Bus nodes: 3 per substation (ground=0, bus1=1, bus2=2); ground gets no label
+        for sub_id in range(env.n_sub):
+            labels[bus_offset + 3 * sub_id + 1] = f"{sub_id}:1"
+            labels[bus_offset + 3 * sub_id + 2] = f"{sub_id}:2"
+        return labels
+
+    if observation_space in (PTDFGraphObservationConverter, ZbusGraphObservationConverter):
+        # Node slot: (bus - 1) * n_sub + sub_id
+        n_sub = env.n_sub
+        labels = {}
+        for sub_id in range(n_sub):
+            labels[sub_id]          = f"{sub_id}:1"
+            labels[n_sub + sub_id]  = f"{sub_id}:2"
+        return labels
+
+    if observation_space == LODFGraphObservationConverter:
+        # One node per powerline
+        return {lid: str(lid) for lid in range(env.n_line)}
+
+    raise NotImplementedError(f"get_node_labels not implemented for {observation_space}")
+
+
+def get_edge_labels(
+    env: Environment,
+    g2op_obs,
+    gym_obs: dict,
+    observation_space: type[ObservationConverter],
+    display_mask: npt.NDArray,
+) -> Optional[dict[tuple[int, int], str]]:
+    """
+    Return edge labels mapping canonical (min_u, max_u) → powerline ID string,
+    for active edges in the masked edge index that represent powerlines.
+
+    Physics-only and element-level converters return None (no edge labels).
+
+    :param env: grid2op Environment
+    :param g2op_obs: raw grid2op BaseObservation (provides bus assignments)
+    :param gym_obs: gym observation dict from converter.to_gym(g2op_obs)
+    :param observation_space: converter class
+    :param display_mask: boolean mask selecting which edges to consider
+    :return: dict (min_u, max_u) → str label, or None
+    """
+    # Converters where edges are not individual powerlines — no labels
+    if observation_space in (ElementGraphObservationConverter,
+                             ElementLODFGraphObservationConverter,
+                             PTDFGraphObservationConverter,
+                             LODFGraphObservationConverter,
+                             ZbusGraphObservationConverter):
+        return None
+
+    edge_index = gym_obs[EDGE_INDEX][:, display_mask]  # [2, E_active]
+    labels: dict[tuple[int, int], str] = {}
+
+    if observation_space == GraphObservationConverter:
+        # Powerline edges connect node lid (or) ↔ n_line + lid (ex)
+        n_line = env.n_line
+        line_edge_set = {(lid, n_line + lid) for lid in range(n_line)}
+        for lid in range(n_line):
+            key = (lid, n_line + lid)
+            if key in {(int(min(u, v)), int(max(u, v))) for u, v in edge_index.T}:
+                labels[key] = str(lid)
+        return labels or None
+
+    if observation_space == HeterogeneousGraphObservationConverter:
+        # Type-0 edges are powerlines; same node mapping as GraphObservationConverter
+        n_line = env.n_line
+        edge_types = gym_obs[EDGE_TYPE][display_mask]
+        for i, (u, v) in enumerate(edge_index.T):
+            if int(edge_types[i]) == 0:
+                key = (int(min(u, v)), int(max(u, v)))
+                lid = int(min(u, v))  # line_or node index == line id
+                labels[key] = str(lid)
+        return labels or None
+
+    if observation_space == SubstationGraphObservationConverter:
+        # Reconstruct (or_slot, ex_slot) → line_id from bus assignments
+        line_or_bus = g2op_obs.line_or_bus
+        line_ex_bus = g2op_obs.line_ex_bus
+        slot_to_lid: dict[tuple[int, int], int] = {}
+        for lid in range(env.n_line):
+            if line_or_bus[lid] > 0 and line_ex_bus[lid] > 0:
+                or_slot = int(2 * env.line_or_to_subid[lid] + (line_or_bus[lid] - 1))
+                ex_slot = int(2 * env.line_ex_to_subid[lid] + (line_ex_bus[lid] - 1))
+                slot_to_lid[(min(or_slot, ex_slot), max(or_slot, ex_slot))] = lid
+        for u, v in edge_index.T:
+            key = (int(min(u, v)), int(max(u, v)))
+            if key in slot_to_lid:
+                labels[key] = str(slot_to_lid[key])
+        return labels or None
+
+    if observation_space in (SubstationPTDFGraphObservationConverter,
+                             SubstationZbusGraphObservationConverter):
+        # Only type-0 topology edges get labels; same slot→lid logic as SubstationGraph
+        line_or_bus = g2op_obs.line_or_bus
+        line_ex_bus = g2op_obs.line_ex_bus
+        slot_to_lid = {}
+        for lid in range(env.n_line):
+            if line_or_bus[lid] > 0 and line_ex_bus[lid] > 0:
+                or_slot = int(2 * env.line_or_to_subid[lid] + (line_or_bus[lid] - 1))
+                ex_slot = int(2 * env.line_ex_to_subid[lid] + (line_ex_bus[lid] - 1))
+                slot_to_lid[(min(or_slot, ex_slot), max(or_slot, ex_slot))] = lid
+        edge_types = gym_obs[EDGE_TYPE][display_mask]
+        for i, (u, v) in enumerate(edge_index.T):
+            if int(edge_types[i]) == 0:
+                key = (int(min(u, v)), int(max(u, v)))
+                if key in slot_to_lid:
+                    labels[key] = str(slot_to_lid[key])
+        return labels or None
 
     return None
 
