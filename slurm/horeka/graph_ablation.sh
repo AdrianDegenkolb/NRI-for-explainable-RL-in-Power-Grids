@@ -18,7 +18,7 @@ sbatch <<EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --time=1:30:00
-#SBATCH --mem=80G
+#SBATCH --mem=250G
 #SBATCH --partition=cpuonly
 #SBATCH --account=hk-project-pai00074
 
