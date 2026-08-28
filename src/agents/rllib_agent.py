@@ -57,6 +57,10 @@ class RllibAgent(HeuristicsAgent):
         self.obs_keys_order = [key for key in self._rllib_agent.observation_space.spaces.keys()]
         self.gym_wrapper = gym_wrapper
 
+    def reset(self, observation: BaseObservation) -> None:
+        """Reset per-episode state, including the observation converter (e.g. ablation permutations)."""
+        self.gym_wrapper.reset_metrics()
+
     def act(
         self, observation: BaseObservation, reward: float, done: bool = False
     ) -> BaseAction:

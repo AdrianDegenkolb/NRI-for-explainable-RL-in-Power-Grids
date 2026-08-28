@@ -95,6 +95,7 @@ class GraphAblationWrapper(ObservationConverter):
         self.converter.reset_obs()
         num_edges = len(self._perm)
         self._perm = self.rng.permutation(num_edges)
+        print(f"[GraphAblation] new permutation: {self._perm}")
 
     def to_gym(self, g2op_obs: BaseObservation) -> T:
         """Convert observation and apply a fixed per-episode edge permutation.
