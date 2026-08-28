@@ -1,13 +1,18 @@
 #!/bin/bash
 
-# Graph ablation evaluation.
-# Runs evaluate_agent on each method with shuffled edge indices (GraphAblationWrapper).
-# Results → experiments/survival/obs_spaces/ablation/
+# Graph ablation evaluation — forced RL mode.
+#
+# Each method is evaluated twice (baseline + ablated) with activation
+# threshold=0.0 so the RL agent acts at every step.  This makes the GNN's
+# structural dependence visible in survival statistics.
+#
+# 10 methods × 2 conditions × 50 episodes, 20 parallel workers (one per condition).
+# Results → experiments/survival/observation_spaces/ablation_rl_only/
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 
-OUT_DIR="experiments/survival/observation_spaces/ablation_fixed/out"
+OUT_DIR="experiments/survival/observation_spaces/ablation_rl_only/out"
 mkdir -p "$OUT_DIR"
 
 sbatch <<EOF
@@ -16,9 +21,9 @@ sbatch <<EOF
 #SBATCH --output=${OUT_DIR}/graph_ablation.%j.log
 #SBATCH --error=${OUT_DIR}/graph_ablation.%j.err
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=10
-#SBATCH --time=1:30:00
-#SBATCH --mem=250G
+#SBATCH --cpus-per-task=20
+#SBATCH --time=02:00:00
+#SBATCH --mem=300G
 #SBATCH --partition=cpuonly
 #SBATCH --account=hk-project-pai00074
 
@@ -30,5 +35,8 @@ echo "Job ID:   \$SLURM_JOB_ID"
 echo "Node:     \$(hostname)"
 echo "========================================"
 
-PYTHONPATH="\$(pwd)/src" python experiments/graph_ablation.py --workers 10
+PYTHONPATH="\$(pwd)/src" python experiments/graph_ablation.py \
+    --workers 20 \
+    --episodes 50 \
+    --threshold 0.0
 EOF
