@@ -8,6 +8,14 @@
 #
 # 10 methods × 2 conditions × 50 episodes, 20 parallel workers (one per condition).
 # Results → experiments/survival/observation_spaces/ablation_rl_only/
+#
+# Usage:
+#   slurm/horeka/graph_ablation.sh <experiment_name>
+#
+# Example:
+#   slurm/horeka/graph_ablation.sh 2026_08_30_compare_graph_obs_spaces_IEEE14
+
+EXPERIMENT="${1:?Usage: graph_ablation.sh <experiment_name>}"
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
@@ -31,11 +39,13 @@ source /hkfs/home/project/hk-project-tacos/hw6998/miniforge3/etc/profile.d/conda
 conda activate L2RPN
 
 echo "========================================"
-echo "Job ID:   \$SLURM_JOB_ID"
-echo "Node:     \$(hostname)"
+echo "Job ID:       \$SLURM_JOB_ID"
+echo "Node:         \$(hostname)"
+echo "Experiment:   ${EXPERIMENT}"
 echo "========================================"
 
 PYTHONPATH="\$(pwd)/src" python experiments/graph_ablation.py \
+    --experiment "${EXPERIMENT}" \
     --workers 20 \
     --episodes 50 \
     --threshold 0.0

@@ -43,41 +43,35 @@ from grid2op_env.observation_converter import (
     EDGE_INDEX, EDGE_MASK, NODES,
 )
 
-RESULTS = ROOT / "experiments" / "survival" / "observation_spaces" / "ablation_rl_only"
+RESULTS = ROOT / "experiments" / "survival" / "observation_spaces" / "ablation_gat_conv"
 RESULTS.mkdir(exist_ok=True, parents=True)
 
-METHODS = {
-    "Default": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/default/CustomPPO*/",
-    },
-    "Elements": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/elements/CustomPPO*/",
-    },
-    "Elements + LODF": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/elements_lodf/CustomPPO*/",
-    },
-    "Heterogeneous": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/heterogenous/CustomPPO*/",
-    },
-    "LODF": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/lodf/CustomPPO*/",
-    },
-    "PTDF": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/ptdf/CustomPPO*/",
-    },
-    "Substation": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/substation/CustomPPO*/",
-    },
-    "Substation + PTDF": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/substation_ptdf/CustomPPO*/",
-    },
-    "Substation + Zbus": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/substation_zbus/CustomPPO*/",
-    },
-    "Zbus": {
-        "glob": "results/2026_08_17_compare_graph_obs_spaces_IEEE14/zbus/CustomPPO*/",
-    },
+# Canonical mapping: display name → obs-space directory name (as used in training).
+_OBS_SPACE_DIRS = {
+    "Default":          "default",
+    "Elements":         "elements",
+    "Elements + LODF":  "elements_lodf",
+    "Heterogeneous":    "heterogenous",
+    "LODF":             "lodf",
+    "PTDF":             "ptdf",
+    "Substation":       "substation",
+    "Substation + PTDF":"substation_ptdf",
+    "Substation + Zbus":"substation_zbus",
+    "Zbus":             "zbus",
 }
+
+
+def _build_methods(experiment: str) -> dict:
+    """Build the METHODS dict for a given experiment folder name.
+
+    :param experiment: Name of the results sub-directory, e.g.
+        ``"2026_08_17_compare_graph_obs_spaces_IEEE14"``.
+    :return: Dict mapping display name → config dict with a ``"glob"`` key.
+    """
+    return {
+        name: {"glob": f"results/{experiment}/{obs_dir}/CustomPPO*/"}
+        for name, obs_dir in _OBS_SPACE_DIRS.items()
+    }
 
 
 class GraphAblationWrapper(ObservationConverter):
@@ -223,7 +217,15 @@ def evaluate_condition(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--workers", type=int, default=len(METHODS) * 2,
+        "--experiment", type=str, required=True,
+        help=(
+            "Results sub-directory name, e.g. "
+            "'2026_08_17_compare_graph_obs_spaces_IEEE14'. "
+            "Checkpoints are expected at results/<experiment>/<obs_space>/CustomPPO*/"
+        ),
+    )
+    parser.add_argument(
+        "--workers", type=int, default=len(_OBS_SPACE_DIRS) * 2,
         help="Number of parallel worker processes (default: one per condition)",
     )
     parser.add_argument(
@@ -239,6 +241,8 @@ def main() -> None:
         help="RNG seed for GraphAblationWrapper (default: 42)",
     )
     args = parser.parse_args()
+
+    METHODS = _build_methods(args.experiment)
 
     tasks = [
         (method, cfg, condition)

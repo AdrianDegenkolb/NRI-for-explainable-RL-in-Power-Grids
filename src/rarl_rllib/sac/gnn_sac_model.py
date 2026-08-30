@@ -10,7 +10,7 @@ from ray.rllib.algorithms.sac.sac_torch_model import SACTorchModel
 from ray.rllib.policy.view_requirement import ViewRequirement
 from ray.rllib.utils.typing import ModelConfigDict, TensorType
 
-from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK
+from grid2op_env.observation_converter import NODES, EDGE_INDEX, EDGE_MASK, EDGE_TYPE, EDGES
 from rarl import BaselineGNN
 from core.utils import getl
 from rarl_rllib.common import assert_graph_obs_space_and_get_x_dim
@@ -78,6 +78,10 @@ class GNNBaselineSACModel(SACTorchModel):
             num_layers=getl(gnn_cfg, "num_layers", 3),
             dropout_prob=getl(gnn_cfg, "dropout_prob", 0.0),
             residual=getl(gnn_cfg, "residual", True),
+            num_edge_types=int(obs_space[EDGE_TYPE].high.flat[0]) + 1 if EDGE_TYPE in obs_space.spaces else 1,
+            edge_dim=obs_space[EDGES].shape[-1] if EDGES in obs_space.spaces else None,
+            conv_type=getl(gnn_cfg, "conv_type", "gcn"),
+            num_heads=getl(gnn_cfg, "num_heads", 4),
         )
 
     def forward(
@@ -90,6 +94,8 @@ class GNNBaselineSACModel(SACTorchModel):
         node_features_batch = obs[NODES]
         edge_index_batch = obs[EDGE_INDEX]
         edge_mask = obs[EDGE_MASK]
+        edge_attr = obs.get(EDGES)       # [B, E_max, edge_dim] or None
+        edge_types = obs.get(EDGE_TYPE)  # [B, E_max] or None
 
         B, N, _ = node_features_batch.shape
         device = node_features_batch.device
@@ -104,5 +110,16 @@ class GNNBaselineSACModel(SACTorchModel):
         offsets = (torch.arange(B, device=device) * N).repeat_interleave(valid_edges.sum(1))
         edge_index_batch += offsets.unsqueeze(0)
 
-        embedding = self.gnn(x=x, batch=batch, edge_index=edge_index_batch.to(dtype=torch.long))
+        if edge_attr is not None:
+            edge_attr = edge_attr[valid_edges]   # [total_E, edge_dim]
+        if edge_types is not None:
+            edge_types = edge_types[valid_edges]  # [total_E]
+
+        embedding = self.gnn(
+            x=x,
+            batch=batch,
+            edge_index=edge_index_batch.to(dtype=torch.long),
+            edge_attr=edge_attr,
+            edge_types=edge_types,
+        )
         return embedding, state

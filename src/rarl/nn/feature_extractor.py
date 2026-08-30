@@ -88,7 +88,6 @@ class RAFeatureExtractor(nn.Module):
             dropout_prob=dropout_prob,
             residual=residual,
             skip_last=True,
-            conv_type=conv_type,
             sparsify_threshold=sparsify_threshold,
             diagnose_every=diagnose_every,
         )

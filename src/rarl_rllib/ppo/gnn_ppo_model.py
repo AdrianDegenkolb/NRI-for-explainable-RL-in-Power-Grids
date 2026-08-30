@@ -35,6 +35,8 @@ class GNNBaselineModel(TorchModelV2, nn.Module):
             residual=getl(gnn_cfg, 'residual', True),
             num_edge_types=int(obs_space[EDGE_TYPE].high.flat[0]) + 1 if EDGE_TYPE in obs_space.spaces else 1,
             edge_dim=obs_space[EDGES].shape[-1] if EDGES in obs_space.spaces else None,
+            conv_type=getl(gnn_cfg, 'conv_type', 'gcn'),
+            num_heads=getl(gnn_cfg, 'num_heads', 4),
         )
         gnn_output_space = Box(
             low=-float('inf'),

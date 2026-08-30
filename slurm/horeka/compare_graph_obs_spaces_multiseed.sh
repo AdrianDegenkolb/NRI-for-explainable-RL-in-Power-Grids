@@ -28,6 +28,8 @@ OBS_SPACES=(
     zbus
 )
 
+JOB_IDS=()
+
 for seed in 0 1 2 3 4; do
     for obs_space in "${OBS_SPACES[@]}"; do
 
@@ -37,7 +39,7 @@ for seed in 0 1 2 3 4; do
 
         echo "Submitting: seed=${seed}, obs_space=${obs_space}"
 
-        sbatch <<EOF
+        JOB_ID=$(sbatch --parsable <<EOF
 #!/bin/bash
 #SBATCH --job-name=${obs_space}_${seed}
 #SBATCH --output=${OUT_DIR}/${obs_space}_${seed}.%j.log
@@ -77,6 +79,19 @@ PYTHONPATH="\$(pwd)/src" python experiments/train.py \
     obs_space="${obs_space}" \
     experiment.seed=${seed}
 EOF
+)
+        JOB_IDS+=("$JOB_ID")
+        echo "  → Job ID: ${JOB_ID}"
 
     done
 done
+
+# ── Submit ablation with dependency on ALL training jobs ───────────────────────
+DEPS=$(IFS=':'; echo "${JOB_IDS[*]}")
+echo ""
+echo "All training jobs submitted: ${JOB_IDS[*]}"
+echo "Submitting ablation with dependency afterok:${DEPS}"
+
+ABLATION_JOB=$(sbatch --parsable --dependency=afterok:"${DEPS}" \
+    slurm/horeka/graph_ablation.sh "${experiment_name}")
+echo "Ablation job ID: ${ABLATION_JOB}"
