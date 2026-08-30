@@ -92,6 +92,5 @@ echo ""
 echo "All training jobs submitted: ${JOB_IDS[*]}"
 echo "Submitting ablation with dependency afterok:${DEPS}"
 
-ABLATION_JOB=$(sbatch --parsable --dependency=afterok:"${DEPS}" \
-    slurm/horeka/graph_ablation.sh "${experiment_name}")
+ABLATION_JOB=$(bash slurm/horeka/graph_ablation.sh "${experiment_name}" "afterok:${DEPS}" | grep -oP '\d+')
 echo "Ablation job ID: ${ABLATION_JOB}"

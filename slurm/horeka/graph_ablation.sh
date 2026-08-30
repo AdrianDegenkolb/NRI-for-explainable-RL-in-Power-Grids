@@ -7,23 +7,36 @@
 # structural dependence visible in survival statistics.
 #
 # 10 methods × 2 conditions × 50 episodes, 20 parallel workers (one per condition).
-# Results → experiments/survival/observation_spaces/ablation_rl_only/
+# Results → experiments/survival/observation_spaces/ablation_gat_conv/
 #
 # Usage:
-#   slurm/horeka/graph_ablation.sh <experiment_name>
+#   slurm/horeka/graph_ablation.sh <experiment_name> [dependency]
 #
-# Example:
+# Arguments:
+#   experiment_name  Results sub-directory, e.g. 2026_08_30_compare_graph_obs_spaces_IEEE14
+#   dependency       Optional sbatch --dependency string, e.g. afterok:123:456
+#
+# Example (standalone):
 #   slurm/horeka/graph_ablation.sh 2026_08_30_compare_graph_obs_spaces_IEEE14
+#
+# Example (chained, called from another script):
+#   slurm/horeka/graph_ablation.sh 2026_08_30_compare_graph_obs_spaces_IEEE14 afterok:101:102
 
-EXPERIMENT="${1:?Usage: graph_ablation.sh <experiment_name>}"
+EXPERIMENT="${1:?Usage: graph_ablation.sh <experiment_name> [dependency]}"
+DEPENDENCY="${2:-}"
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 
-OUT_DIR="experiments/survival/observation_spaces/ablation_rl_only/out"
+OUT_DIR="experiments/survival/observation_spaces/ablation_gat_conv/out"
 mkdir -p "$OUT_DIR"
 
-sbatch <<EOF
+DEPENDENCY_FLAG=""
+if [[ -n "$DEPENDENCY" ]]; then
+    DEPENDENCY_FLAG="--dependency=${DEPENDENCY}"
+fi
+
+sbatch ${DEPENDENCY_FLAG} <<EOF
 #!/bin/bash
 #SBATCH --job-name=graph_ablation
 #SBATCH --output=${OUT_DIR}/graph_ablation.%j.log
