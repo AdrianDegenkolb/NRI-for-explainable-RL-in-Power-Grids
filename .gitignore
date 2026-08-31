@@ -5,6 +5,8 @@ __pycache__/
 
 .idea/
 .vscode/
+.claude/
+.pytest_cache/
 
 # C extensions
 *.so
