@@ -48,7 +48,7 @@ lives here.
 | `nn/encoder/` | `GraphormerNRIEncoder` — global self-attention over nodes, predicts K edge-type logits for every pair in the fully-connected graph |
 | `nn/ragnn.py` | Relation-Aware GNN — K−1 separate GCNConv passes per layer, weighted by the encoder's posterior; residual connections, batch norm, ELU |
 | `nn/feature_extractor.py` | `RAFeatureExtractor` — wires encoder → sampler → RAGNN → MLP into a single `forward` call |
-| `nn/sampling.py` | Gumbel-Softmax with annealed temperature τ; supports `hard=True` (straight-through) for DQN |
+| `nn/sampling.py` | Gumbel-Softmax with annealed temperature τ; supports `hard=True` (straight-through) |
 | `nn/mlp.py` | Plain MLP used as the policy head |
 | `loss.py` | KL divergence loss between posterior and prior, with separate β weights for graph and non-graph edges |
 | `prior.py` | Constructs the prior distribution tensor over all edges given the known powerline graph |
@@ -65,12 +65,7 @@ and training callbacks.
 | Module | Description |
 |---|---|
 | `ppo/rappo_model.py` + `rappo_policy.py` | RAPPO — PPO policy with KL loss added to the PPO surrogate |
-| `sac/rasac_model.py` + `rasac_policy.py` | RASAC — SAC with a dedicated encoder optimiser (separate from actor/critic) |
-| `dqn/radqn_model.py` + `radqn_policy.py` | RADQN — Rainbow DQN (dueling, double-Q, C51, PER, n-step) with KL loss |
 | `ppo/gnn_ppo_model.py` | GNN-PPO baseline — fixed precomputed edge probs, no encoder |
-| `sac/gnn_sac_model.py` | GNN-SAC baseline |
-| `dqn/gnn_dqn_model.py` + `gnn_dqn_policy.py` | GNN-DQN baseline |
-| `dqn/mlp_dqn_policy.py` | MLP-DQN baseline (flat observation) |
 | `callback.py` | `AnnealingCallback` (decays β and τ on schedule) and `TuneCallback` (logs custom metrics for Ray Tune) |
 | `model.py` | Shared base model utilities |
 | `common.py` | Shared helpers across RA policy variants |
@@ -94,19 +89,16 @@ Bridges Grid2Op and RLlib's `MultiAgentEnv` interface.
 
 ### `algorithms/` — Custom RLlib algorithm classes
 
-Thin subclasses of RLlib's `PPO`, `SAC`, and `DQN`. The KL loss is **not** added here —
-it lives inside the custom policies in `rarl_rllib/`. These subclasses exist for three
-reasons: (1) fix an RLlib bug where `load_checkpoint` ignores `policy_ids` and crashes
-when only a subset of policies were checkpointed; (2) store `my_log_level` and curriculum
-training state from the config; (3) `CustomPPO` additionally overrides
-`training_step` with a corrected `custom_synchronous_parallel_sample` that counts steps
-per trainable policy only, giving an accurate `train_batch_size` in the multi-agent setup.
+A thin subclass of RLlib's `PPO`. The KL loss is **not** added here — it lives inside the
+custom policies in `rarl_rllib/`. `CustomPPO` exists for two reasons: (1) fix an RLlib bug
+where `load_checkpoint` ignores `policy_ids` and crashes when only a subset of policies
+were checkpointed; (2) override `training_step` with a corrected
+`custom_synchronous_parallel_sample` that counts steps per trainable policy only, giving
+an accurate `train_batch_size` in the multi-agent setup.
 
 | Module | Description |
 |---|---|
 | `custom_ppo.py` | `CustomPPO` — accurate batch sizing + checkpoint bugfix |
-| `custom_sac.py` | `CustomSAC` — checkpoint bugfix |
-| `custom_dqn.py` | `CustomDQN` — checkpoint bugfix |
 | `optuna_search.py` | Optuna integration for hyperparameter search via Ray Tune |
 
 ---

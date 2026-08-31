@@ -21,7 +21,7 @@ PYTHONPATH=$(pwd) python experiments/train.py
 
 # Key config group overrides
 python experiments/train.py training=ppo model=ragnn obs_space=graph
-python experiments/train.py training=sac model=mlp relation_awareness=disabled
+python experiments/train.py training=ppo model=mlp relation_awareness=disabled
 python experiments/train.py experiment=test_minimal  # Quick smoke test
 
 # CLI overrides
@@ -40,7 +40,7 @@ The training pipeline is configured entirely via **Hydra** (configs/rllib/) and 
 
 ### Config Groups (configs/rllib/)
 - **experiment/**: trial-level settings (timesteps, seed, checkpoint freq)
-- **training/**: algorithm params — `ppo.yaml`, `sac.yaml`, `ppo_test.yaml`, `sac_test.yaml`
+- **training/**: algorithm params — `ppo.yaml`, `ppo_test.yaml`
 - **model/**: network architecture — `ragnn.yaml` (full model), `gnn.yaml` (no encoder), `mlp.yaml` (baseline)
 - **obs_space/**: `graph.yaml` (nodes/edge_index/edge_mask) or `flat.yaml`
 - **env/**: Grid2Op case definition (case14)
@@ -67,7 +67,7 @@ Hydra Config
 - **src/rarl_rllib/**: RLlib integration — `RARLModel` (TorchModelV2 wrapper), annealing callbacks (`callback.py`), policy registration
 - **src/grid2op_env/**: Grid2Op wrappers — multi-agent env, observation/action converters, multi-agent policy implementations
 - **src/core/**: `constants.py` (global paths/names), `train.py` (training setup helpers), `loading.py` (checkpoint loading), `evaluate.py`
-- **src/algorithms/**: `CustomPPO`, `CustomSAC`, Optuna integration
+- **src/algorithms/**: `CustomPPO`, Optuna integration
 - **src/analysis/**: Post-training analysis — latent graph visualization, MetricAnalyzer
 
 ### Constants (src/core/constants.py)

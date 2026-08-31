@@ -21,9 +21,7 @@ from ray.tune.logger import TBXLoggerCallback
 from ray.tune.stopper.stopper import Stopper
 from tabulate import tabulate
 
-from algorithms.custom_dqn import CustomDQN
 from algorithms.custom_ppo import CustomPPO
-from algorithms.custom_sac import CustomSAC
 from algorithms.optuna_search import MyOptunaSearch
 from core.constants import RL_POLICY, Style
 from core.loading import load_config, preprocess_config, load_rllib_agent
@@ -35,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 _TRAINABLE_MAP = {
     "ppo": CustomPPO,
-    "sac": CustomSAC,
-    "dqn": CustomDQN,
 }
 
 

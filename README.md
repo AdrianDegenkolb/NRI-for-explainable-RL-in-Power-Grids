@@ -51,7 +51,7 @@ This project contains the following folders:
 
 The `src`-package contains the following packages:
 - **agents**: Several agent wrappers for the G2OP ecosystem
-- **algorithms**: Custom DQN, SAC, PPO and optuna extensions
+- **algorithms**: Custom PPO and optuna extensions
 - **analysis**: Code to analyze agents/models once they are trained
 - **core**: Common code shared across several packages
 - **grid2o_env**: RLlib environment implementation

@@ -47,17 +47,13 @@ Trial-level settings: total training timesteps, max episode length, checkpoint f
 ---
 
 ### `training/`
-Algorithm hyperparameters for the RLlib trainer. Pick one algorithm; shared settings live in `base.yaml`.
+Algorithm hyperparameters for the RLlib trainer (PPO only); shared settings live in `base.yaml`.
 
 | File | Purpose |
 |---|---|
 | `base.yaml` | Shared settings (batch mode, step counting, policy mapping) |
 | `ppo.yaml` | PPO (lr=1e-4, clip=0.3, 5 SGD iterations per batch) |
-| `sac.yaml` | SAC (entropy regularisation, twin Q-networks, 1M replay buffer) |
-| `dqn.yaml` | Rainbow DQN (dueling, double-Q, n-step=3, C51, noisy nets, PER) |
 | `ppo_test.yaml` | PPO with reduced batch sizes for quick testing |
-| `sac_test.yaml` | SAC with reduced batch sizes for quick testing |
-| `dqn_test.yaml` | DQN with reduced batch sizes for quick testing |
 
 ---
 

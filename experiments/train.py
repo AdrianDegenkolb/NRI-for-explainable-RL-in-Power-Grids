@@ -1,18 +1,10 @@
 """
 Trains an RL agent using Hydra for config composition.
 
-Algorithm is selected via the training config group:
-  training=ppo   (default) — CustomPPO, on-policy
-  training=sac             — CustomSAC, off-policy
-  training=dqn             — CustomDQN, off-policy, discrete actions
-
 Usage examples
 --------------
 # Default RAGNN/PPO run:
   python train.py
-
-# SAC with MLP model:
-  python train.py training=sac model=mlp relation_awareness=disabled
 
 # Quick test run (minimal timesteps, local Ray mode):
   python train.py experiment=test_minimal training=ppo_test
@@ -35,51 +27,34 @@ import grid2op
 import hydra
 from hydra.utils import get_class
 from omegaconf import DictConfig, OmegaConf
-from ray.rllib.algorithms import ppo, sac, dqn
+from ray.rllib.algorithms import ppo
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from ray.rllib.algorithms.callbacks import make_multi_callbacks
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.registry import POLICIES
-from ray.rllib.algorithms.sac import SACTorchPolicy
 from ray.rllib.models import ModelCatalog
 from ray.rllib.policy.policy import PolicySpec
 
-from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
-    DQN_GNN_POLICY, DQN_MLP_POLICY, set_seed
+from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, set_seed
 from core.train import run_training
 from grid2op_env import policy_mapping_fn
 from grid2op_env.env import CustomizedGrid2OpEnvironment
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
-from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
-from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
-from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
-from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
-from rarl_rllib.dqn.mlp_dqn_policy import DictObsDQNTorchPolicy
+from rarl_rllib import RAActorCriticModel, RAPPOTorchPolicy
 from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
-from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
 
 logger = logging.getLogger(__name__)
 
 ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
-ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
-ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
 ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
-ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
 
-POLICIES[DQN_GNN_POLICY] = GNNBaselineDQNPolicy
-POLICIES[DQN_MLP_POLICY] = DictObsDQNTorchPolicy
 POLICIES[RAPPO_POLICY] = RAPPOTorchPolicy
-POLICIES[RASAC_POLICY] = RASACTorchPolicy
-POLICIES[RADQN_POLICY] = RADQNTorchPolicy
 POLICIES[DO_NOTHING_POLICY] = DoNothingPolicy
 POLICIES[HIGH_LEVEL_POLICY] = SelectAgentPolicy
 
 _ALGORITHM_CONFIG_CLS = {
     "ppo": ppo.PPOConfig,
-    "sac": sac.SACConfig,
-    "dqn": dqn.DQNConfig,
 }
 
 
@@ -182,31 +157,12 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     if custom_model == "ragnn_model" and algorithm == "ppo":
         policy_class = RAPPOTorchPolicy
         model_override = {"model": {"custom_model": "ra_actor_critic_model"}}
-    elif custom_model == "ragnn_model" and algorithm == "sac":
-        policy_class = RASACTorchPolicy
-        model_override = {"model": {"custom_model": "rasac_model"}}
-    elif custom_model == "ragnn_model" and algorithm == "dqn":
-        policy_class = RADQNTorchPolicy
-        model_override = {"model": {"custom_model": "radqn_model"}}
     elif custom_model == "gnn_model" and algorithm == "ppo":
         policy_class = PPOTorchPolicy
         model_override = {"model": {"custom_model": "gnn_model"}}
-    elif custom_model == "gnn_model" and algorithm == "sac":
-        policy_class = SACTorchPolicy
-        model_override = {"model": {"custom_model": "gnn_sac_model"}}
-    elif custom_model == "gnn_model" and algorithm == "dqn":
-        policy_class = GNNBaselineDQNPolicy
-        model_override = {"model": {"custom_model": "gnn_dqn_model"}}
-    elif custom_model is None or custom_model == "mlp_model":
+    elif (custom_model is None or custom_model == "mlp_model") and algorithm == "ppo":
+        policy_class = PPOTorchPolicy
         model_override = {}
-        if algorithm == "ppo":
-            policy_class = PPOTorchPolicy
-        elif algorithm == "sac":
-            policy_class = SACTorchPolicy
-        elif algorithm == "dqn":
-            policy_class = DictObsDQNTorchPolicy
-        else:
-            raise ValueError(f"Unsupported algorithm-model combination '{algorithm}'+'{custom_model}")
     else:
         raise ValueError(f"Unsupported algorithm-model combination '{algorithm}'+'{custom_model}")
 
@@ -282,7 +238,6 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
         logger.warning("Val chronics path not found (%s); defaulting evaluation_duration=50", chronics_path)
 
     # --- Rollouts / resources ---
-    # The training config may override count_steps_by (e.g. SAC uses env_steps).
     rollouts = cfg.rollouts
     rllib_cfg["num_rollout_workers"] = rollouts.num_rollout_workers
     rllib_cfg["num_learner_workers"] = rollouts.num_learner_workers

@@ -32,20 +32,11 @@ Used for IEEE 14-bus and IEEE 36-bus training. Jobs run on the `cpu_il` / `cpu` 
 | Script | Model | Grid | Seeds | Walltime |
 |---|---|---|---|---|
 | `rappo.sh` | RAPPO (encoder + RAGNN + PPO) | IEEE 14 | 0–4 | 20 h |
-| `radqn.sh` | RADQN (encoder + RAGNN + Rainbow DQN) | IEEE 14 | 0 | 72 h |
-| `rasac.sh` | RASAC (encoder + RAGNN + SAC) | IEEE 14 | 0 | 20 h |
 | `ppo_mlp.sh` | PPO + MLP baseline | IEEE 14 | 0–4 | 20 h |
 | `ppo_gnn.sh` | PPO + GNN baseline | IEEE 14 | 0–4 | 20 h |
-| `dqn_mlp.sh` | Rainbow DQN + MLP baseline | IEEE 14 | 0 | 72 h |
-| `dqn_gnn.sh` | Rainbow DQN + GNN baseline | IEEE 14 | 0 | 72 h |
-| `sac_mlp.sh` | SAC + MLP baseline | IEEE 14 | 0 | 20 h |
-| `sac_gnn.sh` | SAC + GNN baseline | IEEE 14 | 0 | 20 h |
 | `rappo36.sh` | RAPPO | IEEE 36 | 0 | 72 h |
-| `radqn36.sh` | RADQN | IEEE 36 | 0 | 72 h |
 | `ppo_mlp36.sh` | PPO + MLP baseline | IEEE 36 | 0 | 72 h |
 | `ppo_gnn36.sh` | PPO + GNN baseline | IEEE 36 | 0 | 72 h |
-| `dqn_mlp36.sh` | Rainbow DQN + MLP baseline | IEEE 36 | 0 | 72 h |
-| `dqn_gnn36.sh` | Rainbow DQN + GNN baseline | IEEE 36 | 0 | 72 h |
 
 ### Logs and outputs
 

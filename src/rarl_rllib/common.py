@@ -1,7 +1,6 @@
 """Shared helpers for Relation-Aware (RA) RLlib policies.
 
-This module provides the building blocks that both RAPPOTorchPolicy and
-RASACTorchPolicy rely on:
+This module provides the building blocks that RAPPOTorchPolicy relies on:
 
 - **init_ra_config**: reads the ``relation_awareness`` config block and stores
   annealing attributes (beta, tau) on the policy instance.
@@ -106,10 +105,6 @@ def apply_ra_kl_loss(
 
     store_ra_tower_stats(model, kl_loss, kl_stats, prior_tensor, posteriors, policy)
 
-    if isinstance(base_loss, tuple):
-        # SAC returns (actor_loss, *critic_losses, alpha_loss).
-        # KL regularizes the encoder, so it is added to the actor loss only.
-        return (base_loss[0] + kl_loss,) + base_loss[1:]
     return base_loss + kl_loss
 
 

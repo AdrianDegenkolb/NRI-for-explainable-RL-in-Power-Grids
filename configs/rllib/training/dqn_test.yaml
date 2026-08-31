@@ -1,6 +1,0 @@
-defaults:
-  - dqn
-
-num_steps_sampled_before_learning_starts: 64
-train_batch_size: 32
-rollout_fragment_length: 20
