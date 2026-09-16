@@ -11,8 +11,13 @@ This project implements Neural Relational Inference (NRI) adapted for power grid
 ### Environment Setup
 ```bash
 conda env create -f environment.yaml && conda activate L2RPN
-python setup_envs.py  # Download and split Grid2Op scenario data
+python setup_envs.py  # Download and split Grid2Op scenario data (14/36/118-bus)
 ```
+
+Action-space generation for the 36/118-bus grids (`src/action_space_generation/`) requires a
+**separate** `curriculum` environment (`environment_curriculum.yaml`) — its pinned
+`curriculumagent` dependency conflicts with `L2RPN`'s `ray`/`numpy` versions. Never install
+`curriculumagent` into `L2RPN`.
 
 ### Training
 ```bash
@@ -69,6 +74,10 @@ Hydra Config
 - **src/core/**: `constants.py` (global paths/names), `train.py` (training setup helpers), `loading.py` (checkpoint loading), `evaluate.py`
 - **src/algorithms/**: `CustomPPO`, `CustomSAC`, Optuna integration
 - **src/analysis/**: Post-training analysis — latent graph visualization, MetricAnalyzer
+- **src/action_space_generation/**: Builds reduced topology action spaces for IEEE-36/118 via
+  the Fraunhofer `curriculumagent` N-1 Teacher (`data/action_spaces/l2rpn_wcci_2020|2022/`).
+  Runs only in the `curriculum` conda env — see `experiments/build_action_space.py` and
+  `experiments/benchmark_teacher_cost.py`.
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.

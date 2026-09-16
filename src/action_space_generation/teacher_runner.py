@@ -1,0 +1,140 @@
+"""
+Run the Fraunhofer `curriculumagent` N-1 Teacher on a Grid2Op grid.
+
+This bypasses `curriculumagent.teacher.teacher.n_minus_1_teacher()`, which passes its `jobs`
+argument positionally into `NMinusOneTeacher.collect_n_minus_1_experience`'s `number_of_years`
+parameter (a bug in curriculumagent==1.1.2). `NMinusOneTeacher` is used directly instead, with
+all arguments passed by keyword.
+
+Must run in the `curriculum` conda environment (see `environment_curriculum.yaml`), never in
+the main `L2RPN` training environment.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import grid2op
+from curriculumagent.teacher.teachers.teacher_n_minus_1 import NMinusOneTeacher
+from lightsim2grid import LightSimBackend
+
+# Per-grid config. `lines_to_attack` should be produced by `line_selection.select_lines_to_attack`
+# for each grid before running the teacher — see experiments/build_action_space.py.
+RHO_N0_THRESHOLD = 0.95  # matches this repo's HIGH_LEVEL_AGENT activation threshold (rho_threshold)
+RHO_MAX_THRESHOLD = 1.0
+
+
+@dataclass
+class TeacherConfig:
+    """Per-grid configuration for the N-1 Teacher run.
+
+    Attributes:
+        env_name: Grid2Op environment name or path (e.g. "l2rpn_wcci_2020_train").
+        lines_to_attack: Line ids used as N-1 contingencies, from `select_lines_to_attack`.
+        save_path: Directory (or CSV file) to append teacher_experience rows to.
+        seed: Random seed for the Grid2Op environment.
+        jobs: Number of parallel worker processes. -1 uses all available CPUs.
+    """
+
+    env_name: str
+    lines_to_attack: list[int]
+    save_path: Path
+    seed: int = 42
+    jobs: int = -1
+
+
+def build_teacher(config: TeacherConfig) -> NMinusOneTeacher:
+    """Construct an `NMinusOneTeacher` configured for one grid.
+
+    Args:
+        config: Per-grid teacher configuration.
+
+    Returns:
+        A configured, not-yet-run `NMinusOneTeacher`.
+    """
+    return NMinusOneTeacher(
+        lines_to_attack=config.lines_to_attack,
+        rho_n0_threshold=RHO_N0_THRESHOLD,
+        rho_max_threshold=RHO_MAX_THRESHOLD,
+        seed=config.seed,
+    )
+
+
+def run_teacher(config: TeacherConfig, number_of_years: int | None = None) -> None:
+    """Run the N-1 Teacher over every chronic of `config.env_name`, appending results as it goes.
+
+    A SLURM task can be killed mid-run without losing prior progress: `save_sample_new` appends
+    one row per selected action directly to `config.save_path`, so a partial run still yields a
+    valid (if truncated) teacher_experience file.
+
+    Args:
+        config: Per-grid teacher configuration.
+        number_of_years: Optional cap on the number of chronics processed, keyed by chronic
+            index (see `NMinusOneTeacher.collect_n_minus_1_experience`). Used to shard chronics
+            across SLURM array tasks upstream by pointing `config.env_name` at a
+            pre-partitioned subset of chronics rather than by relying on this cap alone.
+
+    Returns:
+        None. Results are written to `config.save_path`.
+    """
+    config.save_path.parent.mkdir(parents=True, exist_ok=True)
+    teacher = build_teacher(config)
+    teacher.collect_n_minus_1_experience(
+        save_path=config.save_path,
+        env_name_path=config.env_name,
+        number_of_years=number_of_years,
+        jobs=config.jobs,
+        save_greedy=False,
+        active_search=True,
+        disable_opponent=True,
+    )
+
+
+def list_chronic_ids(env_name: str) -> list[str]:
+    """List chronic subpath names for an environment, for sharding across SLURM array tasks.
+
+    Args:
+        env_name: Grid2Op environment name or path.
+
+    Returns:
+        Chronic subpath names, in the order Grid2Op assigns them (stable given a fixed dataset).
+    """
+    env = grid2op.make(env_name, backend=LightSimBackend())
+    try:
+        return list(env.chronics_handler.subpaths)
+    finally:
+        env.close()
+
+
+def run_teacher_single_chronic(config: TeacherConfig, chronics_id: str) -> None:
+    """Run the N-1 Teacher on a single chronic — the sharding unit for a SLURM array task.
+
+    `NMinusOneTeacher.collect_n_minus_1_experience` parallelizes across chronics with a local
+    `multiprocessing.Pool`, which only scales to one node's core count. This calls the same
+    per-chronic worker (`n_minus_one_agent`) directly instead, so a SLURM array can shard
+    chronics across many nodes — one array task per chronic id from `list_chronic_ids`.
+
+    Args:
+        config: Per-grid teacher configuration. `config.save_path` should be unique per task
+            (e.g. suffixed with the chronic id) so concurrent array tasks don't interleave
+            writes to the same CSV.
+        chronics_id: One chronic subpath name, from `list_chronic_ids(config.env_name)`.
+
+    Returns:
+        None. Results are appended to `config.save_path`.
+    """
+    config.save_path.parent.mkdir(parents=True, exist_ok=True)
+    teacher = build_teacher(config)
+
+    env_path = Path(config.env_name).expanduser()
+    chronics_path = str(env_path / "chronics") if env_path.is_dir() else None
+
+    teacher.n_minus_one_agent(
+        env_path=config.env_name,
+        chronics_path=chronics_path,
+        chronics_id=chronics_id,
+        save_path=config.save_path,
+        save_greedy=False,
+        active_search=True,
+        disable_opponent=True,
+    )
