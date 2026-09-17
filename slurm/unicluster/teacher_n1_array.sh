@@ -71,7 +71,7 @@ sbatch <<EOF
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=12:00:00
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 #SBATCH --partition=cpu_il,cpu
 
 module load devel/miniforge

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import sys
 from pathlib import Path
 
@@ -66,13 +67,15 @@ def _env_name(grid: str, split: str) -> str:
 
 
 def cmd_select_lines(args: argparse.Namespace) -> None:
-    """Print the `lines_to_attack` selected for a grid, for pasting into a run-teacher call."""
+    """Print the `lines_to_attack` selected for a grid, space-separated for direct shell reuse."""
     lines = select_lines_to_attack(
         env_name=_env_name(args.grid, args.split),
         n_lines=args.n_lines,
         n_chronics=args.n_chronics,
     )
-    print(f"lines_to_attack for {args.grid}: {lines}")
+    # Space-separated (not a Python list repr) so the line can be pasted straight into
+    # --lines-to-attack / the SLURM launchers' <lines_to_attack...> argument.
+    print(" ".join(str(line_id) for line_id in lines))
 
 
 def cmd_run_teacher(args: argparse.Namespace) -> None:
@@ -179,5 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
+    # curriculumagent logs progress via `logging.info` (e.g. "Looking for N-1 action"); without
+    # this, a multi-hour run-teacher/run-teacher-chronic job would write nothing to its SLURM
+    # log until it finished, making a stalled vs. working job indistinguishable.
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cli_args = build_parser().parse_args()
     cli_args.func(cli_args)
