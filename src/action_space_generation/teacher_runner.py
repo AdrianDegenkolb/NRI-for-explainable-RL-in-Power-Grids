@@ -106,19 +106,25 @@ def list_chronic_ids(env_name: str) -> list[str]:
         env.close()
 
 
-def run_teacher_single_chronic(config: TeacherConfig, chronics_id: str) -> None:
-    """Run the N-1 Teacher on a single chronic — the sharding unit for a SLURM array task.
+def run_teacher_chronics(config: TeacherConfig, chronics_ids: list[str]) -> None:
+    """Run the N-1 Teacher sequentially over one or more chronics, appending all to one shard.
 
     `NMinusOneTeacher.collect_n_minus_1_experience` parallelizes across chronics with a local
     `multiprocessing.Pool`, which only scales to one node's core count. This calls the same
     per-chronic worker (`n_minus_one_agent`) directly instead, so a SLURM array can shard
-    chronics across many nodes — one array task per chronic id from `list_chronic_ids`.
+    chronics across many nodes/tasks. Batching several chronics into one task (rather than one
+    array task per chronic) keeps the array width under a cluster's `MaxArraySize` limit for
+    datasets with thousands of chronics, and amortizes curriculumagent's heavy import cost
+    (tensorflow, ray) across the batch instead of paying it once per chronic.
+
+    All chronics in the batch append to the same `config.save_path`, run sequentially within
+    this one process — safe, unlike `collect_n_minus_1_experience`'s own same-file writes from
+    multiple concurrent processes.
 
     Args:
-        config: Per-grid teacher configuration. `config.save_path` should be unique per task
-            (e.g. suffixed with the chronic id) so concurrent array tasks don't interleave
-            writes to the same CSV.
-        chronics_id: One chronic subpath name, from `list_chronic_ids(config.env_name)`.
+        config: Per-grid teacher configuration. `config.save_path` should be unique per SLURM
+            task (e.g. suffixed with the array task id) so concurrent tasks don't share a file.
+        chronics_ids: Chronic subpath names to process in order, from `list_chronic_ids`.
 
     Returns:
         None. Results are appended to `config.save_path`.
@@ -129,12 +135,26 @@ def run_teacher_single_chronic(config: TeacherConfig, chronics_id: str) -> None:
     env_path = Path(config.env_name).expanduser()
     chronics_path = str(env_path / "chronics") if env_path.is_dir() else None
 
-    teacher.n_minus_one_agent(
-        env_path=config.env_name,
-        chronics_path=chronics_path,
-        chronics_id=chronics_id,
-        save_path=config.save_path,
-        save_greedy=False,
-        active_search=True,
-        disable_opponent=True,
-    )
+    for chronics_id in chronics_ids:
+        teacher.n_minus_one_agent(
+            env_path=config.env_name,
+            chronics_path=chronics_path,
+            chronics_id=chronics_id,
+            save_path=config.save_path,
+            save_greedy=False,
+            active_search=True,
+            disable_opponent=True,
+        )
+
+
+def run_teacher_single_chronic(config: TeacherConfig, chronics_id: str) -> None:
+    """Run the N-1 Teacher on a single chronic. Convenience wrapper for a smoke test.
+
+    Args:
+        config: Per-grid teacher configuration.
+        chronics_id: One chronic subpath name, from `list_chronic_ids(config.env_name)`.
+
+    Returns:
+        None. Results are appended to `config.save_path`.
+    """
+    run_teacher_chronics(config, chronics_ids=[chronics_id])
