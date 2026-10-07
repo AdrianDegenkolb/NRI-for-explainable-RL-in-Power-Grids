@@ -106,6 +106,10 @@ ENV/
 
 *.npy
 
+# Imitation datasets built from Tutor experience (build-tutor-dataset, imitation_data.py build-dataset)
+data/junior/
+data/imitation/
+
 results/**
 !results/README.md
 !results/.gitignore

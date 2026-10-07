@@ -78,6 +78,11 @@ Hydra Config
   the Fraunhofer `curriculumagent` N-1 Teacher (`data/action_spaces/l2rpn_wcci_2020|2022/`).
   Runs only in the `curriculum` conda env — see `experiments/build_action_space.py` and
   `experiments/benchmark_teacher_cost.py`.
+- **src/imitation/**: Greedy Tutor for imitation data in the policy's own action space
+  (do-nothing + action-space JSON), recording the simulated max rho of every candidate per state.
+  `dataset.py` converts any Tutor's raw output into one shared format (`obs`, `policy_target`,
+  `action_mask`, `chronic`, `step`, optional `max_rho`); targets are built there, not in the Tutor.
+  Runs in `L2RPN` — see `experiments/imitation_data.py` and `slurm/unicluster/imitation_tutor_array.sh`.
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.
