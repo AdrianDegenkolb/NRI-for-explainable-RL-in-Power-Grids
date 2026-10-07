@@ -35,7 +35,8 @@ from lightsim2grid import LightSimBackend
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from action_space_generation.teacher_runner import RHO_MAX_THRESHOLD, RHO_N0_THRESHOLD
+from action_space_generation.line_selection import default_lines_to_attack
+from action_space_generation.teacher_runner import TeacherConfig
 
 
 def _summarize(values: list[float]) -> dict:
@@ -70,8 +71,8 @@ def benchmark(env_name: str, lines_to_attack: list[int], n_interactions: int, se
 
     teacher = NMinusOneTeacher(
         lines_to_attack=lines_to_attack,
-        rho_n0_threshold=RHO_N0_THRESHOLD,
-        rho_max_threshold=RHO_MAX_THRESHOLD,
+        rho_n0_threshold=TeacherConfig.rho_n0_threshold,
+        rho_max_threshold=TeacherConfig.rho_max_threshold,
         seed=seed,
     )
 
@@ -124,7 +125,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Construct the CLI argument parser."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env-name", required=True, help="Grid2Op env, e.g. l2rpn_wcci_2020_train")
-    parser.add_argument("--lines-to-attack", type=int, nargs="+", required=True)
+    parser.add_argument(
+        "--lines-to-attack", type=int, nargs="+", default=None,
+        help="Default: the grid's precomputed line_selection.DEFAULT_LINES_TO_ATTACK",
+    )
     parser.add_argument("--n-interactions", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", required=True, help="Output JSON path for the timing results")
@@ -135,7 +139,7 @@ if __name__ == "__main__":
     args = build_parser().parse_args()
     result = benchmark(
         env_name=args.env_name,
-        lines_to_attack=args.lines_to_attack,
+        lines_to_attack=args.lines_to_attack or default_lines_to_attack(args.env_name),
         n_interactions=args.n_interactions,
         seed=args.seed,
     )

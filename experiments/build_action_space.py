@@ -1,18 +1,14 @@
 """
-CLI to build reduced topology action spaces for IEEE-36 / IEEE-118 with the N-1 Teacher.
+CLI to build reduced topology action spaces with the N-1 Teacher.
 
 Must run in the `curriculum` conda environment (see `environment_curriculum.yaml`), never in
 the main `L2RPN` training environment — see `src/action_space_generation/__init__.py`.
 
-Stages (run in order; see the Obsidian note "Teacher Action Space Reduction for IEEE-36 and
-IEEE-118" for the full pipeline):
+Stages:
 
   select-lines         Pick `lines_to_attack` for a grid from a do-nothing rollout.
   list-chronics        List chronic ids, to size a SLURM array.
-  run-teacher          Run the N-1 Teacher over an entire grid, parallelized locally across `jobs`.
-  run-teacher-chronic  Run the N-1 Teacher on a single chronic — for a quick smoke test before
-                       committing to the full array (see run-teacher-chronics below).
-  run-teacher-chronics Run the N-1 Teacher on a batch of chronics, appended to one shard — the
+  run-teacher-chronics Run the N-1 Teacher on a batch of chronics, appended to one shard: the
                        unit of work for one SLURM array task. Chronic counts can run into the
                        thousands (e.g. 2592 for l2rpn_wcci_2020_train), which exceeds a typical
                        cluster's SLURM MaxArraySize if sharded one-chronic-per-task; batching
@@ -32,8 +28,8 @@ IEEE-118" for the full pipeline):
 
 Example:
     python experiments/build_action_space.py select-lines --grid case36
-    python experiments/build_action_space.py run-teacher --grid case36 \\
-        --lines-to-attack 3 12 27 --save-path results/teacher/case36/shard_00.csv
+    python experiments/build_action_space.py run-teacher-chronics --grid case36 \\
+        --lines-to-attack 3 12 27 --chronics 0 1 2 --save-path results/teacher/case36/shard_00.csv
     python experiments/build_action_space.py aggregate --grid case36 \\
         --experience results/teacher/case36/shard_*.csv --top-k 300 \\
         --out data/action_spaces/l2rpn_wcci_2020/teacher_n1_k300.json
@@ -71,14 +67,13 @@ from action_space_generation.n1_conversion_diagnostic import diagnose, write_res
 from action_space_generation.teacher_runner import (
     TeacherConfig,
     list_chronic_ids,
-    run_teacher,
     run_teacher_chronics,
-    run_teacher_single_chronic,
 )
 from action_space_generation.tutor_runner import TutorConfig, build_tutor_dataset, run_tutor_chronics
 
 # Grid alias -> Grid2Op env base name, matching configs/rllib/env/case36.yaml / case118.yaml.
 GRID_ENV_NAMES = {
+    "case14": "l2rpn_case14_sandbox",
     "case36": "l2rpn_wcci_2020",
     "case118": "l2rpn_wcci_2022",
 }
@@ -97,39 +92,17 @@ def cmd_select_lines(args: argparse.Namespace) -> None:
         env_name=_env_name(args.grid, args.split),
         n_lines=args.n_lines,
         n_chronics=args.n_chronics,
+        verbose=True,
     )
     # Space-separated (not a Python list repr) so the line can be pasted straight into
     # --lines-to-attack / the SLURM launchers' <lines_to_attack...> argument.
     print(" ".join(str(line_id) for line_id in lines))
 
 
-def cmd_run_teacher(args: argparse.Namespace) -> None:
-    """Run the N-1 Teacher over one grid/chronic-shard, appending results to a CSV."""
-    config = TeacherConfig(
-        env_name=_env_name(args.grid, args.split),
-        lines_to_attack=args.lines_to_attack,
-        save_path=Path(args.save_path),
-        seed=args.seed,
-        jobs=args.jobs,
-    )
-    run_teacher(config)
-
-
 def cmd_list_chronics(args: argparse.Namespace) -> None:
     """Print chronic ids, one per line — use to size a SLURM array (one task per chronic)."""
     for chronic_id in list_chronic_ids(_env_name(args.grid, args.split)):
         print(chronic_id)
-
-
-def cmd_run_teacher_chronic(args: argparse.Namespace) -> None:
-    """Run the N-1 Teacher on a single chronic — for a smoke test before the full array."""
-    config = TeacherConfig(
-        env_name=_env_name(args.grid, args.split),
-        lines_to_attack=args.lines_to_attack,
-        save_path=Path(args.save_path),
-        seed=args.seed,
-    )
-    run_teacher_single_chronic(config, chronics_id=args.chronic_id)
 
 
 def cmd_run_teacher_chronics(args: argparse.Namespace) -> None:
@@ -235,37 +208,21 @@ def build_parser() -> argparse.ArgumentParser:
     select_lines.add_argument("--n-chronics", type=int, default=20)
     select_lines.set_defaults(func=cmd_select_lines)
 
-    run_teacher_parser = subparsers.add_parser("run-teacher", help="Run the N-1 Teacher on one grid/shard")
-    run_teacher_parser.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
-    run_teacher_parser.add_argument("--split", default="train", choices=["train", "val", "test"])
-    run_teacher_parser.add_argument("--lines-to-attack", type=int, nargs="+", required=True)
-    run_teacher_parser.add_argument("--save-path", required=True)
-    run_teacher_parser.add_argument("--seed", type=int, default=42)
-    run_teacher_parser.add_argument("--jobs", type=int, default=-1)
-    run_teacher_parser.set_defaults(func=cmd_run_teacher)
-
     list_chronics = subparsers.add_parser("list-chronics", help="List chronic ids, for sizing a SLURM array")
     list_chronics.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
     list_chronics.add_argument("--split", default="train", choices=["train", "val", "test"])
     list_chronics.set_defaults(func=cmd_list_chronics)
 
-    run_teacher_chronic = subparsers.add_parser(
-        "run-teacher-chronic", help="Run the N-1 Teacher on a single chronic (smoke test)"
-    )
-    run_teacher_chronic.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
-    run_teacher_chronic.add_argument("--split", default="train", choices=["train", "val", "test"])
-    run_teacher_chronic.add_argument("--lines-to-attack", type=int, nargs="+", required=True)
-    run_teacher_chronic.add_argument("--chronic-id", required=True)
-    run_teacher_chronic.add_argument("--save-path", required=True)
-    run_teacher_chronic.add_argument("--seed", type=int, default=42)
-    run_teacher_chronic.set_defaults(func=cmd_run_teacher_chronic)
 
     run_teacher_chronics_parser = subparsers.add_parser(
         "run-teacher-chronics", help="Run the N-1 Teacher on a batch of chronics (one SLURM array task)"
     )
     run_teacher_chronics_parser.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
     run_teacher_chronics_parser.add_argument("--split", default="train", choices=["train", "val", "test"])
-    run_teacher_chronics_parser.add_argument("--lines-to-attack", type=int, nargs="+", required=True)
+    run_teacher_chronics_parser.add_argument(
+        "--lines-to-attack", type=int, nargs="+", default=None,
+        help="Default: the grid's precomputed line_selection.DEFAULT_LINES_TO_ATTACK",
+    )
     run_teacher_chronics_parser.add_argument("--chronic-ids", nargs="+", required=True)
     run_teacher_chronics_parser.add_argument("--save-path", required=True)
     run_teacher_chronics_parser.add_argument("--seed", type=int, default=42)
@@ -318,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     # curriculumagent logs progress via `logging.info` (e.g. "Looking for N-1 action"); without
-    # this, a multi-hour run-teacher/run-teacher-chronic job would write nothing to its SLURM
+    # this, a multi-hour run-teacher-chronics job would write nothing to its SLURM
     # log until it finished, making a stalled vs. working job indistinguishable.
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cli_args = build_parser().parse_args()

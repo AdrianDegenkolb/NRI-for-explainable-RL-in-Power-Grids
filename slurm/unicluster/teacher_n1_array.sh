@@ -30,7 +30,7 @@
 # Runs in the separate `curriculum` conda environment (environment_curriculum.yaml) — never L2RPN.
 #
 # Usage:
-#   slurm/unicluster/teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>
+#   slurm/unicluster/teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> [lines_to_attack...]
 #
 # Arguments:
 #   grid              case36 | case118
@@ -52,15 +52,15 @@
 # Example:
 #   slurm/unicluster/teacher_n1_array.sh case36 2026_09_20_teacher_n1_case36 40 1000 3 12 27 41 58 60 71 88 95 101
 
-GRID="${1:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
-EXPERIMENT="${2:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
-MAX_CONCURRENT="${3:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
-MAX_ARRAY_SIZE="${4:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
+GRID="${1:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> [lines_to_attack...]}"
+EXPERIMENT="${2:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> [lines_to_attack...]}"
+MAX_CONCURRENT="${3:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> [lines_to_attack...]}"
+MAX_ARRAY_SIZE="${4:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> [lines_to_attack...]}"
 shift 4
 LINES_TO_ATTACK=("$@")
-if [[ ${#LINES_TO_ATTACK[@]} -eq 0 ]]; then
-    echo "Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>" >&2
-    exit 1
+LINES_ARG=""
+if [[ ${#LINES_TO_ATTACK[@]} -gt 0 ]]; then
+    LINES_ARG="--lines-to-attack ${LINES_TO_ATTACK[*]}"
 fi
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
@@ -125,7 +125,7 @@ echo "========================================"
 
 PYTHONPATH="\$(pwd)/src" python experiments/build_action_space.py run-teacher-chronics \
     --grid "${GRID}" \
-    --lines-to-attack ${LINES_TO_ATTACK[*]} \
+    ${LINES_ARG} \
     --chronic-ids "\${CHRONIC_IDS[@]}" \
     --save-path "${OUT_DIR}/shard_\${SLURM_ARRAY_TASK_ID}.csv"
 EOF

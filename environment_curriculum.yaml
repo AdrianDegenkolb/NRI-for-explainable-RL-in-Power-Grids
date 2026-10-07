@@ -17,6 +17,7 @@ channels:
 dependencies:
   - python=3.10
   - pip
+  - pytest
   - pip:
       - curriculumagent==1.1.2
       - lightsim2grid>=0.7.1

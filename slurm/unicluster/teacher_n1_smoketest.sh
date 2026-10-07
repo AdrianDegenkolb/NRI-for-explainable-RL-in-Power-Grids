@@ -15,18 +15,19 @@
 # Runs in the separate `curriculum` conda environment (environment_curriculum.yaml) — never L2RPN.
 #
 # Usage:
-#   slurm/unicluster/teacher_n1_smoketest.sh <grid> <experiment_name> <lines_to_attack...>
+#   slurm/unicluster/teacher_n1_smoketest.sh <grid> <experiment_name> [lines_to_attack...]
 #
 # Example:
 #   slurm/unicluster/teacher_n1_smoketest.sh case36 2026_09_17_smoketest 20 13 39 33 35 32 11 34 23 22
 
-GRID="${1:?Usage: teacher_n1_smoketest.sh <grid> <experiment_name> <lines_to_attack...>}"
-EXPERIMENT="${2:?Usage: teacher_n1_smoketest.sh <grid> <experiment_name> <lines_to_attack...>}"
+GRID="${1:?Usage: teacher_n1_smoketest.sh <grid> <experiment_name> [lines_to_attack...]}"
+EXPERIMENT="${2:?Usage: teacher_n1_smoketest.sh <grid> <experiment_name> [lines_to_attack...]}"
 shift 2
 LINES_TO_ATTACK=("$@")
-if [[ ${#LINES_TO_ATTACK[@]} -eq 0 ]]; then
-    echo "Usage: teacher_n1_smoketest.sh <grid> <experiment_name> <lines_to_attack...>" >&2
-    exit 1
+# Without explicit lines, run-teacher-chronics falls back to line_selection.DEFAULT_LINES_TO_ATTACK.
+LINES_ARG=""
+if [[ ${#LINES_TO_ATTACK[@]} -gt 0 ]]; then
+    LINES_ARG="--lines-to-attack ${LINES_TO_ATTACK[*]}"
 fi
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
@@ -76,10 +77,10 @@ echo "Grid:         ${GRID}"
 echo "Chronic:      ${CHRONIC_ID}"
 echo "========================================"
 
-PYTHONPATH="\$(pwd)/src" python experiments/build_action_space.py run-teacher-chronic \
+PYTHONPATH="\$(pwd)/src" python experiments/build_action_space.py run-teacher-chronics \
     --grid "${GRID}" \
-    --lines-to-attack ${LINES_TO_ATTACK[*]} \
-    --chronic-id "${CHRONIC_ID}" \
+    ${LINES_ARG} \
+    --chronic-ids "${CHRONIC_ID}" \
     --save-path "${OUT_DIR}/shard_smoketest.csv"
 
 echo "========================================"

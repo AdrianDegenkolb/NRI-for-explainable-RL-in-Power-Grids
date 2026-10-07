@@ -17,11 +17,9 @@ from pathlib import Path
 import grid2op
 from curriculumagent.teacher.teachers.teacher_n_minus_1 import NMinusOneTeacher
 from lightsim2grid import LightSimBackend
+from tqdm import tqdm
 
-# Per-grid config. `lines_to_attack` should be produced by `line_selection.select_lines_to_attack`
-# for each grid before running the teacher — see experiments/build_action_space.py.
-RHO_N0_THRESHOLD = 0.95  # matches this repo's HIGH_LEVEL_AGENT activation threshold (rho_threshold)
-RHO_MAX_THRESHOLD = 1.0
+from action_space_generation.line_selection import default_lines_to_attack
 
 
 @dataclass
@@ -30,17 +28,26 @@ class TeacherConfig:
 
     Attributes:
         env_name: Grid2Op environment name or path (e.g. "l2rpn_wcci_2020_train").
-        lines_to_attack: Line ids used as N-1 contingencies, from `select_lines_to_attack`.
         save_path: Directory (or CSV file) to append teacher_experience rows to.
+        lines_to_attack: Line ids used as N-1 contingencies, from `select_lines_to_attack`.
+            If None, the grid's precomputed `line_selection.DEFAULT_LINES_TO_ATTACK` are used.
         seed: Random seed for the Grid2Op environment.
         jobs: Number of parallel worker processes. -1 uses all available CPUs.
+        rho_n0_threshold: Threshold, when the do-nothing agent should stop and start searching for N-1.
+        rho_max_threshold: Threshold, when the N-1 search should stop and only the best greedy.
     """
 
     env_name: str
-    lines_to_attack: list[int]
     save_path: Path
+    lines_to_attack: list[int] | None = None
     seed: int = 42
     jobs: int = -1
+    rho_n0_threshold: float = 0.95  # matches this repo's HIGH_LEVEL_AGENT activation threshold (rho_threshold)
+    rho_max_threshold: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.lines_to_attack is None:
+            self.lines_to_attack = default_lines_to_attack(self.env_name)
 
 
 def build_teacher(config: TeacherConfig) -> NMinusOneTeacher:
@@ -54,39 +61,9 @@ def build_teacher(config: TeacherConfig) -> NMinusOneTeacher:
     """
     return NMinusOneTeacher(
         lines_to_attack=config.lines_to_attack,
-        rho_n0_threshold=RHO_N0_THRESHOLD,
-        rho_max_threshold=RHO_MAX_THRESHOLD,
+        rho_n0_threshold=config.rho_n0_threshold,
+        rho_max_threshold=config.rho_max_threshold,
         seed=config.seed,
-    )
-
-
-def run_teacher(config: TeacherConfig, number_of_years: int | None = None) -> None:
-    """Run the N-1 Teacher over every chronic of `config.env_name`, appending results as it goes.
-
-    A SLURM task can be killed mid-run without losing prior progress: `save_sample_new` appends
-    one row per selected action directly to `config.save_path`, so a partial run still yields a
-    valid (if truncated) teacher_experience file.
-
-    Args:
-        config: Per-grid teacher configuration.
-        number_of_years: Optional cap on the number of chronics processed, keyed by chronic
-            index (see `NMinusOneTeacher.collect_n_minus_1_experience`). Used to shard chronics
-            across SLURM array tasks upstream by pointing `config.env_name` at a
-            pre-partitioned subset of chronics rather than by relying on this cap alone.
-
-    Returns:
-        None. Results are written to `config.save_path`.
-    """
-    config.save_path.parent.mkdir(parents=True, exist_ok=True)
-    teacher = build_teacher(config)
-    teacher.collect_n_minus_1_experience(
-        save_path=config.save_path,
-        env_name_path=config.env_name,
-        number_of_years=number_of_years,
-        jobs=config.jobs,
-        save_greedy=False,
-        active_search=True,
-        disable_opponent=True,
     )
 
 
@@ -135,26 +112,22 @@ def run_teacher_chronics(config: TeacherConfig, chronics_ids: list[str]) -> None
     env_path = Path(config.env_name).expanduser()
     chronics_path = str(env_path / "chronics") if env_path.is_dir() else None
 
-    for chronics_id in chronics_ids:
+    for chronics_id in tqdm(chronics_ids):
         teacher.n_minus_one_agent(
             env_path=config.env_name,
             chronics_path=chronics_path,
             chronics_id=chronics_id,
             save_path=config.save_path,
-            save_greedy=False,
+            save_greedy=True,
             active_search=True,
             disable_opponent=True,
         )
 
-
-def run_teacher_single_chronic(config: TeacherConfig, chronics_id: str) -> None:
-    """Run the N-1 Teacher on a single chronic. Convenience wrapper for a smoke test.
-
-    Args:
-        config: Per-grid teacher configuration.
-        chronics_id: One chronic subpath name, from `list_chronic_ids(config.env_name)`.
-
-    Returns:
-        None. Results are appended to `config.save_path`.
-    """
-    run_teacher_chronics(config, chronics_ids=[chronics_id])
+if __name__ == "__main__":
+    #print(list_chronic_ids("l2rpn_wcci_2020_train"))
+    config = TeacherConfig(
+        env_name="l2rpn_wcci_2020_train",
+        lines_to_attack=[4, 46, 1, 3, 45, 56, 47, 12, 58, 55],
+        save_path=Path("/tmp/teacher_experience.csv"),
+    )
+    run_teacher_chronics(config, chronics_ids=["Scenario_september_238", "Scenario_september_239"])
