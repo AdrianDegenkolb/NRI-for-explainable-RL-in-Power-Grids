@@ -35,6 +35,12 @@ mkdir -p "$OUT_DIR"
 # grid, but is not guaranteed to on 118-bus (see the note's cost model) — use the regular
 # partition below to avoid a dev-queue timeout; drop to dev_cpu_il for a quicker sanity check
 # with --n-interactions reduced in the srun call.
+#
+# 4h fits IEEE-36 with room to spare (measured: 50 min for 25 interactions). IEEE-118 sweeps a
+# comparable unitary action set on a much bigger grid, so override for it, e.g.
+#   SBATCH_TIME=12:00:00 slurm/unicluster/benchmark_teacher_cost.sh l2rpn_wcci_2022_train ...
+SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
+
 sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=benchmark_teacher_cost
@@ -42,7 +48,7 @@ sbatch <<EOF
 #SBATCH --error=${OUT_DIR}/benchmark.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=04:00:00
+#SBATCH --time=${SBATCH_TIME}
 #SBATCH --mem=16G
 #SBATCH --partition=cpu_il,cpu
 

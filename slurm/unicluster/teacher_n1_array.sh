@@ -18,16 +18,14 @@
 #   python experiments/build_action_space.py aggregate --grid <grid> \
 #       --experience "results/teacher/<experiment>/shard_*.csv" --top-k <k> --out <path>
 #
-# IMPORTANT: --time=48h below assumes the worst-case per-chronic cost measured for IEEE-36
-# Phase 0 (~7.3h, p90-per-step — see the Obsidian note "Teacher Action Space Reduction for
-# IEEE-36 and IEEE-118") times a chunk size of 6 (the example's max_array_size=500 on 2592
-# chronics -> chunk_size=6 -> ~44h worst case). This does NOT auto-scale with max_array_size —
-# a smaller max_array_size means a bigger chunk_size and needs a bigger --time; recompute
-# worst_case_hours = chunk_size * per_chronic_p90_hours before changing max_array_size, and
-# budget the tail, not the mean, since a killed task truncates towards the start of its current
-# chronic and biases the resulting action set. BWUniCluster's `cpu_il,cpu` partitions cap
-# walltime at 72h — if worst_case_hours exceeds that, raise max_array_size instead (smaller
-# chunks) rather than requesting more time than the partition allows.
+# IMPORTANT: walltime does NOT auto-scale with max_array_size — a smaller max_array_size means
+# a bigger chunk_size and needs a bigger --time. Recompute
+#   worst_case_hours = chunk_size * per_chronic_p90_hours
+# before changing max_array_size, and pass it via SBATCH_TIME (default 48h). Budget the tail,
+# not the mean, since a killed task truncates towards the start of its current chronic and
+# biases the resulting action set. BWUniCluster's `cpu_il,cpu` partitions cap walltime at 72h —
+# if worst_case_hours exceeds that, raise max_array_size instead (smaller chunks) rather than
+# requesting more time than the partition allows.
 #
 # Runs in the separate `curriculum` conda environment (environment_curriculum.yaml) — never L2RPN.
 #
@@ -40,14 +38,19 @@
 #   max_concurrent    SLURM array throttle (--array=0-N%max_concurrent)
 #   max_array_size    Upper bound on the number of array tasks to create. Chronics are split
 #                     into ceil(n_chronics / max_array_size) chunks per task to stay under this.
-#                     BWUniCluster's actual SLURM MaxArraySize is unconfirmed for this account —
-#                     500 is a conservative guess; raise it (fewer, longer tasks) or lower it
-#                     (more, shorter tasks) if sbatch still rejects the array. Check the real
-#                     limit with: scontrol show config | grep -i MaxArraySize
+#                     BWUniCluster's real limit is MaxArraySize=1001, i.e. a highest array index
+#                     of 1000, so at most 1001 tasks (confirmed 2026-09-17 via
+#                     `scontrol show config | grep -i MaxArraySize`). Note the resulting task
+#                     count is ceil(n_chronics / chunk_size), which can exceed max_array_size
+#                     slightly — keep max_array_size at 1000 or below for headroom.
 #   lines_to_attack   Line ids from: python experiments/build_action_space.py select-lines --grid <grid>
 #
+# Environment:
+#   SBATCH_TIME       Walltime per array task (default 48:00:00). See the walltime note above —
+#                     set it to chunk_size * per_chronic_p90_hours, capped at the partition's 72h.
+#
 # Example:
-#   slurm/unicluster/teacher_n1_array.sh case36 2026_09_20_teacher_n1_case36 50 500 3 12 27 41 58 60 71 88 95 101
+#   slurm/unicluster/teacher_n1_array.sh case36 2026_09_20_teacher_n1_case36 40 1000 3 12 27 41 58 60 71 88 95 101
 
 GRID="${1:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
 EXPERIMENT="${2:?Usage: teacher_n1_array.sh <grid> <experiment_name> <max_concurrent> <max_array_size> <lines_to_attack...>}"
@@ -81,7 +84,16 @@ fi
 
 CHUNK_SIZE=$(( (N_CHRONICS + MAX_ARRAY_SIZE - 1) / MAX_ARRAY_SIZE ))
 N_TASKS=$(( (N_CHRONICS + CHUNK_SIZE - 1) / CHUNK_SIZE ))
-echo "Sharding ${N_CHRONICS} chronics into ${N_TASKS} tasks of up to ${CHUNK_SIZE} chronics each (max ${MAX_CONCURRENT} concurrent)."
+SBATCH_TIME="${SBATCH_TIME:-48:00:00}"
+echo "Sharding ${N_CHRONICS} chronics into ${N_TASKS} tasks of up to ${CHUNK_SIZE} chronics each (max ${MAX_CONCURRENT} concurrent), --time=${SBATCH_TIME}."
+
+# Fail before sbatch rather than after, with a message that names the real cause.
+MAX_SLURM_ARRAY_SIZE=$(scontrol show config 2>/dev/null | awk -F'= *' '/^MaxArraySize/ {print $2}')
+if [[ -n "$MAX_SLURM_ARRAY_SIZE" && "$N_TASKS" -gt "$MAX_SLURM_ARRAY_SIZE" ]]; then
+    echo "N_TASKS=${N_TASKS} exceeds this cluster's MaxArraySize=${MAX_SLURM_ARRAY_SIZE}." >&2
+    echo "Lower max_array_size (bigger chunks, fewer tasks) and raise SBATCH_TIME to match." >&2
+    exit 1
+fi
 
 sbatch <<EOF
 #!/bin/bash
@@ -91,7 +103,7 @@ sbatch <<EOF
 #SBATCH --array=0-$((N_TASKS - 1))%${MAX_CONCURRENT}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=48:00:00
+#SBATCH --time=${SBATCH_TIME}
 #SBATCH --mem=16G
 #SBATCH --partition=cpu_il,cpu
 

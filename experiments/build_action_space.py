@@ -19,6 +19,10 @@ IEEE-118" for the full pipeline):
                        several chronics per task keeps the array width bounded.
   aggregate            Rank teacher_experience CSVs by frequency, report substation spread, and
                        (with --out) export the top-k actions to this repo's action-space JSON.
+  diagnose-n1          Explain why a grid yields few/no rows, by separating the two filters
+                       inside the N-1 search that can each silently reject every candidate.
+                       Run this before committing a long array on a grid whose smoke test hits
+                       the N-1 branch but writes nothing.
 
 Example:
     python experiments/build_action_space.py select-lines --grid case36
@@ -32,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import logging
 import sys
 from pathlib import Path
@@ -51,6 +56,7 @@ from action_space_generation.aggregation import (
 )
 from action_space_generation.export import export_action_space, verify_round_trip
 from action_space_generation.line_selection import select_lines_to_attack
+from action_space_generation.n1_conversion_diagnostic import diagnose, write_result
 from action_space_generation.teacher_runner import (
     TeacherConfig,
     list_chronic_ids,
@@ -151,6 +157,30 @@ def cmd_aggregate(args: argparse.Namespace) -> None:
         env.close()
 
 
+def cmd_diagnose_n1(args: argparse.Namespace) -> None:
+    """Report how often the N-1 search's two filters reject every candidate on a grid."""
+    result = diagnose(
+        env_name=_env_name(args.grid, args.split),
+        lines_to_attack=args.lines_to_attack,
+        n_probes=args.n_probes,
+        seed=args.seed,
+    )
+    summary = result.summary()
+    print(json.dumps(summary, indent=2))
+    if summary["n_probes"] and summary["n_would_save"] == 0:
+        print(
+            "\nNo probe would have saved a row. Dominant failure: "
+            + (
+                "Stage 1 — no single rewiring pulls rho below rho_n0."
+                if summary["n_failed_stage1_no_candidate_fixes_rho"]
+                >= summary["n_failed_stage2_all_candidates_blackout"]
+                else "Stage 2 — every candidate blacks out under some lines_to_attack contingency."
+            )
+        )
+    write_result(result, Path(args.out))
+    print(f"Wrote full diagnostic to {args.out}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the CLI argument parser with one subcommand per pipeline stage."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -206,6 +236,17 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--top-k", type=int, required=True)
     aggregate.add_argument("--out", default=None, help="Output JSON path, e.g. data/action_spaces/.../teacher_n1_k300.json")
     aggregate.set_defaults(func=cmd_aggregate)
+
+    diagnose_n1 = subparsers.add_parser(
+        "diagnose-n1", help="Separate the two filters that make the N-1 search save nothing"
+    )
+    diagnose_n1.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
+    diagnose_n1.add_argument("--split", default="train", choices=["train", "val", "test"])
+    diagnose_n1.add_argument("--lines-to-attack", type=int, nargs="+", required=True)
+    diagnose_n1.add_argument("--n-probes", type=int, default=6)
+    diagnose_n1.add_argument("--seed", type=int, default=42)
+    diagnose_n1.add_argument("--out", required=True, help="Output JSON path for the diagnostic")
+    diagnose_n1.set_defaults(func=cmd_diagnose_n1)
 
     return parser
 

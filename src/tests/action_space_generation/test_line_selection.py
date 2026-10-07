@@ -3,6 +3,7 @@ Unit tests for line_selection.py.
 
 Tests are organised by class:
   - TestLineStressStats
+  - TestFindBridgeLines
   - TestSelectLinesToAttack
 """
 from __future__ import annotations
@@ -12,7 +13,11 @@ import unittest
 import grid2op
 import numpy as np
 
-from action_space_generation.line_selection import LineStressStats, select_lines_to_attack
+from action_space_generation.line_selection import (
+    LineStressStats,
+    find_bridge_lines,
+    select_lines_to_attack,
+)
 
 ENV_NAME = "l2rpn_case14_sandbox"
 
@@ -54,6 +59,38 @@ class TestLineStressStats(unittest.TestCase):
         self.stats.update(np.array([0.1, 0.1, 0.1, 0.1]))
         ranked = self.stats.rank_lines(n_lines=100)
         self.assertEqual(len(ranked), 4)
+
+    def test_rank_lines_skips_excluded_ids_and_backfills(self):
+        """An excluded line is dropped even if it ranks first, and the next line takes its slot."""
+        self.stats.update(np.array([0.99, 0.9, 0.85, 0.1]))
+        ranked = self.stats.rank_lines(n_lines=2, exclude={0})
+        self.assertEqual(ranked, [1, 2])
+
+
+class TestFindBridgeLines(unittest.TestCase):
+    """Bridge detection on a synthetic substation graph (no powerflow needed)."""
+
+    class _FakeEnv:
+        def __init__(self, edges):
+            self.n_line = len(edges)
+            self.line_or_to_subid = np.array([a for a, _ in edges])
+            self.line_ex_to_subid = np.array([b for _, b in edges])
+            self.n_sub = int(max(max(a, b) for a, b in edges)) + 1
+
+    def test_detects_radial_line_but_not_parallel_or_ring_lines(self):
+        """Ring 0-1-2-0 with a doubled 0-1 and a leaf 3 hanging off 2: only the leaf's line is a bridge."""
+        env = self._FakeEnv([(0, 1), (0, 1), (1, 2), (2, 0), (2, 3)])
+        self.assertEqual(find_bridge_lines(env), [4])
+
+    def test_case14_sandbox_radial_bus_8(self):
+        """On IEEE-14 the only radial substation is bus 8 (index 7), hanging off bus 7 via one line."""
+        env = grid2op.make(ENV_NAME)
+        try:
+            bridges = find_bridge_lines(env)
+            self.assertEqual(len(bridges), 1)
+            self.assertEqual({int(env.line_or_to_subid[bridges[0]]), int(env.line_ex_to_subid[bridges[0]])}, {6, 7})
+        finally:
+            env.close()
 
 
 class TestSelectLinesToAttack(unittest.TestCase):

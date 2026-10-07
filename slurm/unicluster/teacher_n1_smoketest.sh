@@ -47,6 +47,13 @@ if [[ -z "$CHRONIC_ID" ]]; then
 fi
 echo "Smoke-testing chronic: ${CHRONIC_ID}"
 
+# One full chronic on IEEE-36 measured ~11h (8062 steps, greedy-dominated), so 12h is the
+# working default. Override for slower grids / longer chronics, e.g.
+#   SBATCH_TIME=24:00:00 slurm/unicluster/teacher_n1_smoketest.sh case118 ...
+# A truncated smoke test is still informative — the shard CSV is appended row-by-row — but a
+# timeout means the "Search stopped at .../..." line never appears in the log.
+SBATCH_TIME="${SBATCH_TIME:-12:00:00}"
+
 sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=teacher_n1_smoketest_${GRID}
@@ -54,7 +61,7 @@ sbatch <<EOF
 #SBATCH --error=${OUT_DIR}/smoketest.%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --time=12:00:00
+#SBATCH --time=${SBATCH_TIME}
 #SBATCH --mem=16G
 #SBATCH --partition=cpu_il,cpu
 
