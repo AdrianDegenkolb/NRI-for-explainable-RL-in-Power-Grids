@@ -6,10 +6,41 @@ Run log / decision record for building reduced topology action spaces with the F
 
 Started 2026-09-17. Branch `GraphComp`. All commands run in the `curriculum` conda env.
 
-**Status: IN PROGRESS, checked 2026-09-30.** case118 array finished; case36 array ~85% through,
-ETA ~2026-10-02/03. **Decision needed on 159 case36 walltime kills** (see snapshot).
-To resume, see **`results/teacher/HANDOFF.md`** (partly stale: its `lines_to_attack` for case118
-is the retired v1 list — use §2) and [Open items](#open-items) at the bottom.
+**Status: case36 action space DONE (k=208, wired into config), checked 2026-10-07.** Both
+arrays finished. case36 uses `teacher_n1_k208` pending the greedy Tutor check (§7); case118 k
+still open. To resume, see **`results/teacher/HANDOFF.md`** (partly stale: its `lines_to_attack`
+for case118 is the retired v1 list — use §2) and [Open items](#open-items) at the bottom.
+
+### Snapshot 2026-10-07 (session 5)
+
+| Job | What | State |
+|---|---|---|
+| `7009596` | case36 array, 864 tasks | **DONE** (last task ended 2026-10-02 11:14): 689 COMPLETED / 175 TIMEOUT; 823 shards, 14,898 rows (12,167 good), 4,319 unique good actions |
+| `7036197` | case118 array, 748 tasks | DONE (unchanged since 09-30): 743 COMPLETED / 5 TIMEOUT; 617 shards, 3,533 rows (2,829 good), 1,724 unique good actions |
+
+`aggregated/` re-run on the final shards. case36 timeouts rose 159 → 175 over the last tasks.
+
+**Decision: case36 k = 208**, matching the original binbinchen work, despite our flatter
+frequency curve (no knee). Measured on the final data:
+
+| k | in-sample coverage | held-out coverage (split-half by chronic, 20 splits) | picks of k-th action | split-half top-k Jaccard |
+|---|---|---|---|---|
+| 100 | 32.7% | 31.0% | 15 | 0.55 |
+| **208** | **42.5%** | **39.5%** | **9** | **0.50** |
+| 300 | 48.1% | 44.0% | 6 | 0.47 |
+| 500 | 56.5% | 50.4% | 4 | 0.41 |
+
+Rationale: a flatter curve means each extra action buys *less* coverage (208 → 300 adds +4.5 pp
+held-out for 92 actions, each picked ≤ 9×), and exact-match coverage undercounts near-equivalent
+actions (66% of unique actions are singletons). A greedy agent is run as a Tutor anyway; if it
+performs badly on `teacher_n1_k208`, revisit k (compare 208 / 300 / 500 by survival on val).
+
+Caveats on the k=208 set:
+- **Tie at the cutoff:** ranks 185-221 all have 9 picks; the export keeps 24 of these 37 by
+  pandas' ordering, not by merit.
+- **Winter timeout bias is baked in.** top-208 from completed-only tasks overlaps the all-tasks
+  top-208 at Jaccard 0.78, so the 72 h rerun of the 175 TIMEOUT tasks would change *which*
+  actions are in, not how many. Re-export if the rerun is done.
 
 ### Snapshot 2026-09-30 (session 4)
 
@@ -385,6 +416,13 @@ test CSVs in section 4.
 
 ## 5b. Compatibility check: no explicit do-nothing in the teacher export
 
+> **Correction (2026-10-07):** the concern below is moot. `src/grid2op_env/env.py:69` inserts
+> `action_space({})` at index 0 for *every* action space after `load_actions`, so the RL agent
+> always gets do-nothing first. Verified by building `CustomizedGrid2OpEnvironment` with
+> `env=case36`: `teacher_n1_k208` yields 209 actions, index 0 = do-nothing. Side effect: the
+> `rl2grid_*` spaces, which already start with `{}`, have do-nothing **twice** (index 0 and 1).
+> The analysis below missed `env.py` and is kept for the record.
+
 `grid2op_env/action_converters.load_actions` passes each JSON dict straight to
 `env.action_space(dict)` and `setup_converter` feeds the result to `IdToAct.init_converter(
 all_actions=...)`, which uses exactly the supplied list — nothing is prepended. The export
@@ -479,7 +517,25 @@ cut. Reporting it instead. Points for the decision:
 
 ## 7. Chosen k and final artifacts
 
-_Pending._
+| Grid | k | Artifact | Config | Status |
+|---|---|---|---|---|
+| case36 | **208** | `data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json` | `configs/rllib/env/case36.yaml` → `action_space: teacher_n1_k208` | done 2026-10-07; provisional until the greedy Tutor check |
+| case118 | _open_ | — | still `rl2grid_bus118-M_1` | ranking noisy (§ 09-30 snapshot) |
+
+case36 export (run by hand, `curriculum` env):
+
+```bash
+PYTHONPATH=$(pwd)/src python experiments/build_action_space.py aggregate --grid case36 \
+    --experience "results/teacher/2026_09_17_teacher_n1_case36/shard_*.csv" \
+    --top-k 208 --out data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json
+```
+
+Verified: 208 actions, no duplicates, all load in the `L2RPN` env; `CustomizedGrid2OpEnvironment`
+built from Hydra (`env=case36 obs_space=default`) gives 209 RL actions with do-nothing at index 0.
+Rationale and caveats in the 2026-10-07 snapshot.
+
+Incidental: `config.yaml` defaults to `obs_space: graph`, but no `obs_space/graph.yaml` exists —
+a bare `python experiments/train.py` fails to compose; pass `obs_space=<name>` explicitly.
 
 ## Open items
 
@@ -497,13 +553,14 @@ _Pending._
 - [x] Launch case118 array (job 7036197, 2026-09-18 10:15)
 - [x] case118 array finished (2026-09-28): 743 COMPLETED / 5 TIMEOUT
 - [x] Preliminary aggregation (`aggregate_shards.py`) + analysis notebook re-run on 09-30 data
-- [ ] case36 array to finish (125 pending, ETA ~2026-10-02/03)
-- [ ] **Decision needed:** rerun the 159 case36 TIMEOUT tasks' chronics at 72 h (recommended), or
-      accept the winter under-sampling (see 2026-09-30 snapshot)
+- [x] case36 array finished (2026-10-02): 689 COMPLETED / 175 TIMEOUT
+- [x] case36 k = 208, exported and wired into `case36.yaml` (2026-10-07, §7)
+- [ ] Greedy Tutor on `teacher_n1_k208`; if it performs badly, revisit k (208 / 300 / 500)
+- [ ] **Decision open:** rerun the 175 case36 TIMEOUT tasks' chronics at 72 h, or accept the
+      winter under-sampling (would change *which* 208 actions, Jaccard 0.78 — re-export if done)
 - [ ] **Decision needed:** how to pick k for case118 given its noisy ranking (small k, coverage
       target, or substation-stratified selection — notebook §3, §8, §10)
-- [ ] Aggregate + choose k per grid
-- [ ] Point `configs/rllib/env/case36.yaml` / `case118.yaml` at the new files
+- [ ] case118: aggregate, choose k, point `configs/rllib/env/case118.yaml` at the new file
 
 ### Files changed so far
 
@@ -519,5 +576,6 @@ _Pending._
   now also writes per-task SLURM states (`aggregated/task_states_<grid>.csv`, via `sacct`).
 - `experiments/teacher_action_space_analysis.ipynb` — k-selection analysis; restructured and
   re-run 2026-09-30 (see snapshot).
-- Configs and `data/action_spaces/` are **untouched** so far; they change in steps 5-6.
-- Nothing committed, per instructions.
+- `data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json` — **new**, case36 top-208 (§7).
+- `configs/rllib/env/case36.yaml` — `action_space: teacher_n1_k208` (was `rl2grid_bus36-M_1`).
+- Committed 2026-10-07 together with the tooling changes above.
