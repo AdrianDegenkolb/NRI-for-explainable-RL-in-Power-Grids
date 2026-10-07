@@ -23,6 +23,12 @@ IEEE-118" for the full pipeline):
                        inside the N-1 search that can each silently reject every candidate.
                        Run this before committing a long array on a grid whose smoke test hits
                        the N-1 branch but writes nothing.
+  to-npy               Convert an action-space JSON to the `.npy` (to_vect rows) the Tutor loads.
+                       `aggregate --out` already writes the `.npy` next to the JSON.
+  run-tutor-chronics   Run the GeneralTutor over a batch of chronics with a reduced action set,
+                       one imitation-data `.npy` per chronic — the unit of work for one SLURM
+                       array task of slurm/unicluster/tutor_array.sh.
+  build-tutor-dataset  Merge the per-chronic Tutor files into the Junior's train/val/test `.npz`.
 
 Example:
     python experiments/build_action_space.py select-lines --grid case36
@@ -54,7 +60,12 @@ from action_space_generation.aggregation import (
     select_top_k_actions,
     substation_distribution,
 )
-from action_space_generation.export import export_action_space, verify_round_trip
+from action_space_generation.export import (
+    export_action_space,
+    export_action_space_npy,
+    load_action_space,
+    verify_round_trip,
+)
 from action_space_generation.line_selection import select_lines_to_attack
 from action_space_generation.n1_conversion_diagnostic import diagnose, write_result
 from action_space_generation.teacher_runner import (
@@ -64,6 +75,7 @@ from action_space_generation.teacher_runner import (
     run_teacher_chronics,
     run_teacher_single_chronic,
 )
+from action_space_generation.tutor_runner import TutorConfig, build_tutor_dataset, run_tutor_chronics
 
 # Grid alias -> Grid2Op env base name, matching configs/rllib/env/case36.yaml / case118.yaml.
 GRID_ENV_NAMES = {
@@ -152,9 +164,39 @@ def cmd_aggregate(args: argparse.Namespace) -> None:
             if not verify_round_trip(actions, env):
                 raise RuntimeError("Serialize/deserialize round trip failed for at least one action")
             export_action_space(actions, Path(args.out))
-            print(f"Wrote {len(actions)} actions to {args.out}")
+            export_action_space_npy(actions, Path(args.out).with_suffix(".npy"), env)
+            print(f"Wrote {len(actions)} actions to {args.out} (+ .npy for the Tutor)")
     finally:
         env.close()
+
+
+def cmd_to_npy(args: argparse.Namespace) -> None:
+    """Convert an action-space JSON into the `.npy` format the curriculumagent Tutor loads."""
+    json_path = Path(args.action_space)
+    out_path = Path(args.out) if args.out else json_path.with_suffix(".npy")
+    env = grid2op.make(_env_name(args.grid, args.split), backend=LightSimBackend())
+    try:
+        actions = load_action_space(json_path, env)
+        export_action_space_npy(actions, out_path, env)
+    finally:
+        env.close()
+    print(f"Wrote {len(actions)} actions to {out_path}")
+
+
+def cmd_run_tutor_chronics(args: argparse.Namespace) -> None:
+    """Run the GeneralTutor on a batch of chronics — the unit of work for one SLURM array task."""
+    config = TutorConfig(
+        env_name=_env_name(args.grid, args.split),
+        action_space_path=Path(args.action_space),
+        save_dir=Path(args.save_dir),
+        seed=args.seed,
+    )
+    run_tutor_chronics(config, chronics_ids=args.chronic_ids)
+
+
+def cmd_build_tutor_dataset(args: argparse.Namespace) -> None:
+    """Merge per-chronic Tutor experience into the Junior's train/val/test split."""
+    build_tutor_dataset(Path(args.experience_dir), Path(args.out_dir), args.name, seed=args.seed)
 
 
 def cmd_diagnose_n1(args: argparse.Namespace) -> None:
@@ -247,6 +289,29 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose_n1.add_argument("--seed", type=int, default=42)
     diagnose_n1.add_argument("--out", required=True, help="Output JSON path for the diagnostic")
     diagnose_n1.set_defaults(func=cmd_diagnose_n1)
+
+    to_npy = subparsers.add_parser("to-npy", help="Convert an action-space JSON to the Tutor's .npy format")
+    to_npy.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
+    to_npy.add_argument("--split", default="train", choices=["train", "val", "test"])
+    to_npy.add_argument("--action-space", required=True, help="Action-space JSON path")
+    to_npy.add_argument("--out", default=None, help="Output .npy path (default: next to the JSON)")
+    to_npy.set_defaults(func=cmd_to_npy)
+
+    run_tutor = subparsers.add_parser("run-tutor-chronics", help="Run the GeneralTutor on a batch of chronics")
+    run_tutor.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
+    run_tutor.add_argument("--split", default="train", choices=["train", "val", "test"])
+    run_tutor.add_argument("--action-space", required=True, help="Action-space .npy path (see to-npy)")
+    run_tutor.add_argument("--chronic-ids", nargs="+", required=True)
+    run_tutor.add_argument("--save-dir", required=True, help="Directory for the per-chronic .npy files")
+    run_tutor.add_argument("--seed", type=int, default=42)
+    run_tutor.set_defaults(func=cmd_run_tutor_chronics)
+
+    tutor_dataset = subparsers.add_parser("build-tutor-dataset", help="Merge Tutor files into train/val/test .npz")
+    tutor_dataset.add_argument("--experience-dir", required=True)
+    tutor_dataset.add_argument("--out-dir", required=True)
+    tutor_dataset.add_argument("--name", required=True, help="File prefix, e.g. junior_case36_k208")
+    tutor_dataset.add_argument("--seed", type=int, default=42)
+    tutor_dataset.set_defaults(func=cmd_build_tutor_dataset)
 
     return parser
 
