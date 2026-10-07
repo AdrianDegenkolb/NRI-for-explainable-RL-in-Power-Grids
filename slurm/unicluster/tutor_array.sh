@@ -2,17 +2,26 @@
 
 # GeneralTutor imitation-data generation as a SLURM array — BWUniCluster.
 #
-# Each array task runs a contiguous chunk of chronics and writes one .npy per chronic to
+# Each array task runs a strided set of chronics and writes one .npy per chronic to
 # results/tutor/<experiment>/experience/ (rows: [action_idx, *obs.to_vect()]). Chronics whose
 # file already exists are skipped, so re-submitting the same experiment only redoes unfinished
 # chronics. Survival per chronic is in each task log ("game over at step-X").
+#
+# Chronics are assigned with a stride (task t gets lines t, t+N_TASKS, t+2*N_TASKS, ...), not in
+# contiguous chunks: chronic_ids.txt is sorted by name, so each month is one block of ~215
+# chronics, and contiguous chunks would give a task 13 chronics of the same month. Winter chronics
+# need far more Tutor searches than summer ones (in the teacher array, which used contiguous
+# chunks, ~50% of Nov-Mar tasks hit the walltime vs ~0% of Apr-Aug). Striding gives every task
+# roughly one chronic per month, so tasks have similar runtimes and the walltime can be sized from
+# the average chronic rather than an all-winter task.
 #
 # Afterwards, build the Junior's dataset:
 #   python experiments/build_action_space.py build-tutor-dataset \
 #       --experience-dir results/tutor/<experiment>/experience \
 #       --out-dir results/tutor/<experiment>/dataset --name <name>
 #
-# Walltime does not auto-scale: set SBATCH_TIME to chunk_size * per_chronic_p90_hours (measure
+# Walltime does not auto-scale: set SBATCH_TIME to chunk_size * per_chronic_mean_hours plus a
+# margin for the tail (measure
 # the per-chronic cost with slurm/unicluster/tutor_smoketest.sh first), capped at 72h.
 # MaxArraySize on BWUniCluster is 1001 (see teacher_n1_array.sh).
 #
@@ -84,10 +93,7 @@ module load devel/miniforge
 eval "\$(conda shell.bash hook)"
 conda activate curriculum
 
-CHUNK_SIZE=${CHUNK_SIZE}
-START=\$(( SLURM_ARRAY_TASK_ID * CHUNK_SIZE + 1 ))
-END=\$(( START + CHUNK_SIZE - 1 ))
-mapfile -t CHRONIC_IDS < <(sed -n "\${START},\${END}p" "${OUT_DIR}/chronic_ids.txt")
+mapfile -t CHRONIC_IDS < <(awk -v n=${N_TASKS} -v t=\$SLURM_ARRAY_TASK_ID '(NR - 1) % n == t' "${OUT_DIR}/chronic_ids.txt")
 
 echo "========================================"
 echo "Job ID:       \$SLURM_JOB_ID (array task \$SLURM_ARRAY_TASK_ID)"
