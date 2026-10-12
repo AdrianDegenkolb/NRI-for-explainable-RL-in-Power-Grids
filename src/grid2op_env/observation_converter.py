@@ -42,6 +42,9 @@ _DEFAULT_NODE_FEATURES = [
     "rho",
 ]
 
+# Features read from get_forecast_arrays(), which is only called when one of them is observed.
+_FORECAST_NODE_FEATURES = ("active_power_forecast", "reactive_power_forecast")
+
 
 @dataclass
 class _GridDimensions:
@@ -121,6 +124,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
 
         self.g2op_obs_space = g2op_obs_space
         self.attr_to_observe = attr_to_observe
+        self._use_forecasts = any(name in _FORECAST_NODE_FEATURES for name in attr_to_observe)
         self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
         self._num_nodes = (
             2 * self._dims.n_line + self._dims.n_gen + self._dims.n_load + self._dims.n_storage
@@ -277,13 +281,14 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         zeros_load = np.zeros(dims.n_load, dtype=np.float32)
         zeros_storage = np.zeros(dims.n_storage, dtype=np.float32)
 
-        if not g2op_obs._is_done:
+        if self._use_forecasts and not g2op_obs._is_done:
             t0 = time.perf_counter()
-            load_p, load_q, prod_p, prod_q, _ = g2op_obs.get_forecast_arrays()
+            load_p, load_q, prod_p, prod_v, _ = g2op_obs.get_forecast_arrays()
             self._timings["forecast_ms"] = (time.perf_counter() - t0) * 1000
             # Index 1 = next timestep forecast; sign convention: gen positive, load negative
             gen_p_forecast = prod_p[1].astype(np.float32)
-            gen_q_forecast = prod_q[1].astype(np.float32)
+            # grid2op forecasts no gen q; this slot holds the gen voltage setpoint forecast.
+            gen_q_forecast = prod_v[1].astype(np.float32)
             load_p_forecast = -load_p[1].astype(np.float32)
             load_q_forecast = -load_q[1].astype(np.float32)
         else:
@@ -774,7 +779,10 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         self,
         g2op_obs_space: ObservationSpace,
         verbose: bool = False,
+        use_forecasts: bool = True,
     ):
+        # If False, get_forecast_arrays() is never called and forecast slots 26-27 stay zero.
+        self._use_forecasts = use_forecasts
         n_gen = g2op_obs_space.n_gen
         n_load = g2op_obs_space.n_load
         n_line = g2op_obs_space.n_line
@@ -995,10 +1003,11 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         X = np.zeros((self._num_nodes, self._ELEM_X_DIM), dtype=np.float32)
 
         # --- Forecasts (slots 26-27): next-timestep p/q for gen and load ---
-        if not g2op_obs._is_done:
-            load_p_fc, load_q_fc, prod_p_fc, prod_q_fc, _ = g2op_obs.get_forecast_arrays()
+        if self._use_forecasts and not g2op_obs._is_done:
+            load_p_fc, load_q_fc, prod_p_fc, prod_v_fc, _ = g2op_obs.get_forecast_arrays()
             gen_p_forecast = prod_p_fc[1].astype(np.float32)
-            gen_q_forecast = prod_q_fc[1].astype(np.float32)
+            # grid2op forecasts no gen q; this slot holds the gen voltage setpoint forecast.
+            gen_q_forecast = prod_v_fc[1].astype(np.float32)
             load_p_forecast = load_p_fc[1].astype(np.float32)
             load_q_forecast = load_q_fc[1].astype(np.float32)
         else:
@@ -1239,8 +1248,9 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
         backend: LightSimBackend,
         g2op_obs_space: ObservationSpace,
         verbose: bool = False,
+        use_forecasts: bool = True,
     ):
-        super().__init__(g2op_obs_space, verbose)
+        super().__init__(g2op_obs_space, verbose, use_forecasts)
         self._grid = backend._grid
 
         n_line = self._n_line
@@ -2678,6 +2688,7 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         return ElementGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
+            use_forecasts=env_config.get("use_forecasts", True),
         )
     elif mode == "PTDFGraphObsSpace":
         return PTDFGraphObservationConverter(
@@ -2697,6 +2708,7 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
             backend=gym_env.init_env.backend,
             g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
+            use_forecasts=env_config.get("use_forecasts", True),
         )
     elif mode == "ZbusGraphObsSpace":
         return ZbusGraphObservationConverter(
