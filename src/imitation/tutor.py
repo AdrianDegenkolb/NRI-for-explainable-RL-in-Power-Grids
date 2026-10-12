@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,8 +57,9 @@ class TutorConfig:
         env_name: Grid2Op environment name or path (e.g. "l2rpn_wcci_2020_train").
         action_space_path: Action-space JSON, the same file the RL env loads.
         save_dir: Directory for the per-chronic `<chronic_name>.npz` files.
-        seed: Environment seed, re-applied before every chronic so each chronic's random
-            maintenance schedule is reproducible regardless of which task runs it.
+        seed: Base seed. Each chronic is seeded with `chronic_seed(seed, chronic)`, so its random
+            maintenance schedule is reproducible regardless of which task runs it, but differs
+            between chronics.
         rho_threshold: States with `rho.max()` above this are recorded and acted on.
         do_nothing_margin: See `DO_NOTHING_MARGIN`.
         line_reco: Enrich every action with `reconnection_rule`, as the RL env's `line_reco`.
@@ -72,6 +74,23 @@ class TutorConfig:
     do_nothing_margin: float = DO_NOTHING_MARGIN
     line_reco: bool = True
     max_steps: int | None = None
+
+
+def chronic_seed(base_seed: int, chronic_id: str) -> int:
+    """Seed for one chronic: depends on the chronic's name, not on its position in any list.
+
+    grid2op draws maintenance from the env seed, so a single seed for every chronic gives every
+    chronic the same maintenance schedule. Evaluating another agent with the same seed per chronic
+    reproduces the Tutor's maintenance exactly.
+
+    Args:
+        base_seed: Run-level seed.
+        chronic_id: Chronic path or name.
+
+    Returns:
+        A seed in [0, 2**31).
+    """
+    return (base_seed + zlib.crc32(Path(chronic_id).name.encode())) % 2**31
 
 
 def select_action(max_rho: np.ndarray, valid: np.ndarray, margin: float) -> int:
@@ -184,7 +203,8 @@ def run_chronic(env: BaseEnv, tutor: Tutor, chronic_id: str, config: TutorConfig
     Returns:
         Arrays to save, see `run_tutor_chronics`.
     """
-    env.seed(config.seed)
+    seed = chronic_seed(config.seed, chronic_id)
+    env.seed(seed)
     env.set_id(chronic_id)
     obs = env.reset()
     do_nothing = tutor.actions[DO_NOTHING_INDEX]
@@ -230,7 +250,8 @@ def run_chronic(env: BaseEnv, tutor: Tutor, chronic_id: str, config: TutorConfig
         "steps_survived": np.int32(obs.current_step),
         "max_step": np.int32(obs.max_step),
         "chronic": np.str_(Path(chronic_id).name),
-        "seed": np.int64(config.seed),
+        "seed": np.int64(seed),
+        "base_seed": np.int64(config.seed),
         "rho_threshold": np.float32(config.rho_threshold),
         "do_nothing_margin": np.float32(config.do_nothing_margin),
         "action_space": np.str_(Path(config.action_space_path).name),
@@ -256,7 +277,7 @@ def run_tutor_chronics(config: TutorConfig, chronic_ids: list[str]) -> None:
     Per-state arrays (n = recorded states, A = len(actions) incl. do-nothing):
         obs [n, obs_dim] `obs.to_vect()`; step [n]; max_rho [n, A] (NaN where invalid);
         valid [n, A]; action [n] executed candidate; {load,prod}_{p,q|v}_forecast [n, n_load|n_gen].
-    Per-chronic scalars: steps_survived, max_step, chronic, seed, rho_threshold,
+    Per-chronic scalars: steps_survived, max_step, chronic, seed (the chronic's), base_seed, rho_threshold,
         do_nothing_margin, action_space.
 
     Args:

@@ -3,6 +3,7 @@ Unit tests for imitation/tutor.py.
 
 Tests are organised by class:
   - TestSelectAction
+  - TestChronicSeed
   - TestLoadPolicyActions
 """
 from __future__ import annotations
@@ -14,7 +15,7 @@ import grid2op
 import numpy as np
 from lightsim2grid import LightSimBackend
 
-from imitation.tutor import DO_NOTHING_INDEX, load_policy_actions, select_action
+from imitation.tutor import DO_NOTHING_INDEX, chronic_seed, load_policy_actions, select_action
 
 ROOT = Path(__file__).resolve().parents[3]
 ACTION_SPACE = ROOT / "data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json"
@@ -44,6 +45,22 @@ class TestSelectAction(unittest.TestCase):
     def test_nothing_valid_falls_back_to_do_nothing(self):
         max_rho = np.full(3, np.nan, dtype=np.float32)
         self.assertEqual(select_action(max_rho, np.zeros(3, dtype=bool), margin=0.005), DO_NOTHING_INDEX)
+
+
+class TestChronicSeed(unittest.TestCase):
+    """Each chronic needs its own seed, or all chronics share one maintenance schedule."""
+
+    def test_differs_between_chronics(self):
+        self.assertNotEqual(chronic_seed(42, "Scenario_june_051"), chronic_seed(42, "Scenario_september_061"))
+
+    def test_path_and_name_give_the_same_seed(self):
+        self.assertEqual(chronic_seed(42, "/data/chronics/Scenario_june_051"), chronic_seed(42, "Scenario_june_051"))
+
+    def test_depends_on_base_seed(self):
+        self.assertNotEqual(chronic_seed(0, "Scenario_june_051"), chronic_seed(1, "Scenario_june_051"))
+
+    def test_in_valid_range(self):
+        self.assertTrue(0 <= chronic_seed(2**31 - 1, "Scenario_june_051") < 2**31)
 
 
 class TestLoadPolicyActions(unittest.TestCase):
