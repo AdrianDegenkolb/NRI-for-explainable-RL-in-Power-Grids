@@ -70,7 +70,10 @@ if [[ -n "$MAX_SLURM_ARRAY_SIZE" && "$N_TASKS" -gt "$MAX_SLURM_ARRAY_SIZE" ]]; t
 fi
 
 sbatch <<EOF
-#!/bin/bash
+#!/bin/bash -l
+# --export=NONE: a conda env active in the submitting shell would otherwise put its python
+# first on PATH and break the 'conda' launcher (ModuleNotFoundError: No module named 'conda').
+#SBATCH --export=NONE
 #SBATCH --job-name=imitation_tutor_${GRID}
 #SBATCH --output=${OUT_DIR}/task_%a.%j.log
 #SBATCH --error=${OUT_DIR}/task_%a.%j.err

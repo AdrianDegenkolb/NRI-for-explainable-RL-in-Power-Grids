@@ -32,6 +32,9 @@
 #
 # Environment:
 #   SBATCH_TIME       Walltime per array task (default 12:00:00).
+#   ARRAY_INDICES     Run only these array tasks (sbatch --array syntax, e.g. "6,7,10-11") instead
+#                     of all of them — to redo tasks that hit the walltime. Pass the same
+#                     max_array_size as the original submission so the chronic stride is unchanged.
 #
 # Example:
 #   slurm/unicluster/tutor_array.sh case36 2026_10_07_tutor_case36_k208 \
@@ -68,6 +71,7 @@ fi
 CHUNK_SIZE=$(( (N_CHRONICS + MAX_ARRAY_SIZE - 1) / MAX_ARRAY_SIZE ))
 N_TASKS=$(( (N_CHRONICS + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 SBATCH_TIME="${SBATCH_TIME:-12:00:00}"
+ARRAY_INDICES="${ARRAY_INDICES:-0-$((N_TASKS - 1))}"
 echo "Sharding ${N_CHRONICS} chronics into ${N_TASKS} tasks of up to ${CHUNK_SIZE} chronics each (max ${MAX_CONCURRENT} concurrent), --time=${SBATCH_TIME}."
 
 MAX_SLURM_ARRAY_SIZE=$(scontrol show config 2>/dev/null | awk -F'= *' '/^MaxArraySize/ {print $2}')
@@ -78,11 +82,14 @@ if [[ -n "$MAX_SLURM_ARRAY_SIZE" && "$N_TASKS" -gt "$MAX_SLURM_ARRAY_SIZE" ]]; t
 fi
 
 sbatch <<EOF
-#!/bin/bash
+#!/bin/bash -l
+# --export=NONE: a conda env active in the submitting shell would otherwise put its python
+# first on PATH and break the 'conda' launcher (ModuleNotFoundError: No module named 'conda').
+#SBATCH --export=NONE
 #SBATCH --job-name=tutor_${GRID}
 #SBATCH --output=${OUT_DIR}/task_%a.%j.log
 #SBATCH --error=${OUT_DIR}/task_%a.%j.err
-#SBATCH --array=0-$((N_TASKS - 1))%${MAX_CONCURRENT}
+#SBATCH --array=${ARRAY_INDICES}%${MAX_CONCURRENT}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=${SBATCH_TIME}
