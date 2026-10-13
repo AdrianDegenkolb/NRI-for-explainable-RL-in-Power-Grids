@@ -41,33 +41,24 @@ from ray.rllib.algorithms.callbacks import make_multi_callbacks
 from ray.rllib.algorithms.ppo import PPOTorchPolicy
 from ray.rllib.algorithms.registry import POLICIES
 from ray.rllib.algorithms.sac import SACTorchPolicy
-from ray.rllib.models import ModelCatalog
 from ray.rllib.policy.policy import PolicySpec
 
 from core.constants import DO_NOTHING_POLICY, RL_POLICY, HIGH_LEVEL_POLICY, RAPPO_POLICY, RASAC_POLICY, RADQN_POLICY, \
     DQN_GNN_POLICY, DQN_MLP_POLICY, set_seed
+from core.rllib_config import build_env_config, build_model_config, register_custom_models
 from core.train import run_training
-from core.utils import getl
 from grid2op_env import policy_mapping_fn
 from grid2op_env.env import CustomizedGrid2OpEnvironment
 from grid2op_env.multi_agent_policies.do_nothing_policy import DoNothingPolicy
 from grid2op_env.multi_agent_policies.select_agent_policy import SelectAgentPolicy
-from rarl_rllib import RADQNTorchPolicy, RAActorCriticModel, RASACTorchModel, RADQNTorchModel
+from rarl_rllib import RADQNTorchPolicy
 from rarl_rllib import RAPPOTorchPolicy, RASACTorchPolicy
-from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
 from rarl_rllib.dqn.gnn_dqn_policy import GNNBaselineDQNPolicy
 from rarl_rllib.dqn.mlp_dqn_policy import DictObsDQNTorchPolicy
-from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
-from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
 
 logger = logging.getLogger(__name__)
 
-ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
-ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
-ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
-ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
-ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
+register_custom_models()
 
 POLICIES[DQN_GNN_POLICY] = GNNBaselineDQNPolicy
 POLICIES[DQN_MLP_POLICY] = DictObsDQNTorchPolicy
@@ -87,92 +78,6 @@ _ALGORITHM_CONFIG_CLS = {
 # ---------------------------------------------------------------------------
 # Config → RLLib translation
 # ---------------------------------------------------------------------------
-
-def _build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
-    """Build an env_config dict for the given split ('train' or 'val')."""
-    env = cfg.env
-    obs = cfg.obs_space
-    reward_instance = get_class(cfg.reward._target_)()
-
-    env_config = {
-        "env_name": f"{env.env_name}_{split}",
-        "action_space": env.action_space,
-        "observation_space": obs.observation_space,
-        "g2op_input": obs.get("g2op_input", []),
-        "custom_input": obs.get("custom_input", []),
-        "lib_dir": os.getcwd(),
-        "grid2op_kwargs": {"reward_class": reward_instance},
-        "seed": cfg.experiment.seed,
-        "rho_threshold": env.rho_threshold,
-        "reset_topo": env.reset_topo,
-        "line_reco": env.line_reco,
-        "line_disc": env.line_disc,
-        "penalty_game_over": env.penalty_game_over,
-        "reward_finish": env.reward_finish,
-        "curriculum_training": env.curriculum_training,
-        "curriculum_thresholds": list(env.curriculum_thresholds),
-        "chronics_dir": env.get("chronics_dir", None),
-        "use_chronics_cache": env.get("use_chronics_cache", False),
-    }
-
-    if cfg.opponent.enabled:
-        opp = cfg.opponent
-        env_config["grid2op_kwargs"].update(
-            {
-                "opponent_attack_cooldown": opp.opponent_attack_cooldown,
-                "opponent_attack_duration": opp.opponent_attack_duration,
-                "opponent_budget_per_ts": opp.opponent_budget_per_ts,
-                "opponent_init_budget": opp.opponent_init_budget,
-                "opponent_action_class": get_class(opp.opponent_action_class),
-                "opponent_class": get_class(opp.opponent_class),
-                "opponent_budget_class": get_class(opp.opponent_budget_class),
-                "kwargs_opponent": OmegaConf.to_container(opp.kwargs_opponent, resolve=True),
-            }
-        )
-
-    if split == "val":
-        overrides = OmegaConf.to_container(cfg.evaluation.eval_env_overrides, resolve=True)
-        env_config.update(overrides)
-
-    return env_config
-
-
-def _build_model_config(cfg: DictConfig) -> dict[str, Any]:
-    """Build the RLLib model dict from cfg.model and cfg.relation_awareness."""
-    model = cfg.model
-    custom_model_config: dict[str, Any] = {}
-
-    if model.encoder is not None:
-        custom_model_config["encoder"] = OmegaConf.to_container(model.encoder, resolve=True)
-
-    if model.gnn is not None:
-        custom_model_config["gnn"] = OmegaConf.to_container(model.gnn, resolve=True)
-
-    # sampling and latent_space live in relation_awareness but are also needed by the model
-    custom_model_config["sampling"] = OmegaConf.to_container(
-        cfg.relation_awareness.sampling, resolve=True
-    )
-    custom_model_config["latent_space"] = OmegaConf.to_container(
-        cfg.relation_awareness.latent_space, resolve=True
-    )
-
-    # sparsification: always pass to custom_model_config; temperature is bridged from prior.
-    # n_powerlines_directed is only derivable when top_k_multiplier > 0.
-    sparse_cfg = OmegaConf.to_container(cfg.relation_awareness.sparsification, resolve=True)
-    if getl(sparse_cfg, "top_k_multiplier", 0) > 0:
-        env_tmp = grid2op.make(cfg.env.env_name + "_train")
-        sparse_cfg["n_powerlines_directed"] = 2 * env_tmp.n_line
-        env_tmp.close()
-    custom_model_config["sparsification"] = sparse_cfg
-
-    return {
-        "fcnet_hiddens": list(model.fcnet_hiddens),
-        "fcnet_activation": model.fcnet_activation,
-        "post_fcnet_hiddens": list(model.post_fcnet_hiddens),
-        "custom_model": model.custom_model if model.custom_model != "null" else None,
-        "custom_model_config": custom_model_config,
-    }
-
 
 def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     """Build the multi-agent policies dict."""
@@ -251,16 +156,19 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg.update(training)
 
     # --- Model ---
-    rllib_cfg["model"] = _build_model_config(cfg)
+    rllib_cfg["model"] = build_model_config(cfg)
     rllib_cfg["_enable_learner_api"] = cfg.model._enable_learner_api
     rllib_cfg["_enable_rl_module_api"] = False
 
     # --- Relation awareness (passed through to policy config) ---
     rllib_cfg["relation_awareness"] = OmegaConf.to_container(cfg.relation_awareness, resolve=True)
 
+    # --- Imitation pretraining (read by ImitationInitCallback) ---
+    rllib_cfg["imitation"] = OmegaConf.to_container(cfg.imitation, resolve=True)
+
     # --- Environment ---
-    train_env_config = _build_env_config(cfg, "train")
-    val_env_config = _build_env_config(cfg, "val")
+    train_env_config = build_env_config(cfg, "train")
+    val_env_config = build_env_config(cfg, "val")
     rllib_cfg["env_config"] = train_env_config
     rllib_cfg["env"] = CustomizedGrid2OpEnvironment
 

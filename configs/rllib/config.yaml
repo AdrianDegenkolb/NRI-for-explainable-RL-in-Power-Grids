@@ -11,6 +11,7 @@ defaults:
   - rollouts: default
   - callbacks: default
   - optimization: disabled
+  - imitation: disabled
   - _self_
 
 hydra:

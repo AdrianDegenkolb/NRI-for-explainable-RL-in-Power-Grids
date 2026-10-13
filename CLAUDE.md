@@ -83,6 +83,11 @@ Hydra Config
   `dataset.py` converts any Tutor's raw output into one shared format (`obs`, `policy_target`,
   `action_mask`, `chronic`, `step`, optional `max_rho`); targets are built there, not in the Tutor.
   Runs in `L2RPN` — see `experiments/imitation_data.py` and `slurm/unicluster/imitation_tutor_array.sh`.
+  Pretraining: `experiments/pretrain_policy.py` (same Hydra config as `train.py`, plus `imitation=default`
+  and `obs_space.use_forecasts=false`) trains the RL_POLICY network on that data and writes
+  `policy_weights.pt`; `train.py imitation=default imitation.weights_path=...` starts PPO from it with a
+  critic warm-up (`ImitationInitCallback`). `experiments/imitation_rollout.py` measures a policy's
+  survival per chronic. Pretraining needs a GPU (`slurm/unicluster/pretrain_policy.sh`).
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.

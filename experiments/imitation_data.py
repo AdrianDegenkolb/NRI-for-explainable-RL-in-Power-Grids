@@ -9,6 +9,8 @@ heuristics are exactly those of the RL env.
                        work for one task of slurm/unicluster/imitation_tutor_array.sh.
   build-dataset        Convert a Tutor's raw per-chronic output (either source) into the shared
                        dataset format of `src/imitation/dataset.py`, building the policy targets.
+  split                Assign the grid's chronics to train/val/test (stratified by month), shared by
+                       every dataset so all comparisons use the same held-out chronics.
   summarize            Write plot-ready summary files of a Tutor run (`src/imitation/summary.py`):
                        episodes.csv, states.npz, actions.csv, substations.csv.
   teacher-episodes     Recover per-chronic survival of a Teacher array run from its logs, in the
@@ -37,7 +39,16 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from analysis.episodes import save_episodes, teacher_episodes_from_logs
-from imitation.dataset import GENERAL_TUTOR, GREEDY_TUTOR, HARD, SOFT, from_general_tutor, from_greedy_tutor
+from imitation.dataset import (
+    GENERAL_TUTOR,
+    GREEDY_TUTOR,
+    HARD,
+    SOFT,
+    from_general_tutor,
+    from_greedy_tutor,
+    make_split,
+    save_split,
+)
 from imitation.tutor import (
     DO_NOTHING_MARGIN,
     RHO_THRESHOLD,
@@ -95,6 +106,13 @@ def cmd_build_dataset(args: argparse.Namespace) -> None:
           f"({n_dn} with do-nothing as top target) to {args.out}: {data.metadata}")
 
 
+def cmd_split(args: argparse.Namespace) -> None:
+    """Write a chronic-level train/val/test split."""
+    split = make_split(list_chronic_ids(_env_name(args.grid, args.split)), tuple(args.fractions), args.seed)
+    save_split(split, Path(args.out))
+    print(f"Wrote split to {args.out}: " + ", ".join(f"{k} {len(v)}" for k, v in split.items()))
+
+
 def cmd_summarize(args: argparse.Namespace) -> None:
     """Write plot-ready summary files of a Tutor run."""
     summarize_tutor_run(
@@ -145,6 +163,14 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--n-actions", type=int, default=209, help="general_tutor only: policy actions incl. do-nothing")
     build.add_argument("--action-space-name", default="teacher_n1_k208.json", help="general_tutor only: metadata")
     build.set_defaults(func=cmd_build_dataset)
+
+    split = subparsers.add_parser("split", help="Chronic-level train/val/test split, stratified by month")
+    split.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)
+    split.add_argument("--split", default="train", choices=["train", "val", "test"], help="Grid2Op env split to read chronics from")
+    split.add_argument("--fractions", type=float, nargs=3, default=[0.8, 0.1, 0.1], metavar=("TRAIN", "VAL", "TEST"))
+    split.add_argument("--seed", type=int, default=0)
+    split.add_argument("--out", required=True, help="Output .json path")
+    split.set_defaults(func=cmd_split)
 
     summarize = subparsers.add_parser("summarize", help="Write plot-ready summary files of a Tutor run")
     summarize.add_argument("--grid", required=True, choices=GRID_ENV_NAMES)

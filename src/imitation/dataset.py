@@ -17,6 +17,8 @@ Metadata (scalars): source, target, temperature, action_space, n_actions.
 """
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +31,8 @@ GREEDY_TUTOR = "greedy_tutor"    # imitation.tutor, one .npz per chronic
 
 HARD = "hard"
 SOFT = "soft"
+
+SPLITS = ("train", "val", "test")
 
 
 @dataclass
@@ -193,3 +197,53 @@ def from_greedy_tutor(experience_dir: Path, target: str, temperature: float = 0.
         metadata={"source": GREEDY_TUTOR, "target": target, "temperature": float(temperature),
                   "action_space": action_space, "n_actions": n_actions},
     )
+
+
+def chronic_group(chronic: str) -> str:
+    """Stratification group of a chronic: its month for `Scenario_<month>_<id>` names, else the name."""
+    parts = Path(chronic).name.split("_")
+    return parts[1] if len(parts) == 3 and parts[0] == "Scenario" else Path(chronic).name
+
+
+def make_split(chronics: list[str], fractions: tuple[float, float, float], seed: int) -> dict[str, list[str]]:
+    """Assign chronics to train/val/test, stratified by month so every split covers all seasons.
+
+    Args:
+        chronics: Chronic names or paths.
+        fractions: Shares of (train, val, test); the remainder after rounding goes to train.
+        seed: Seed of the shuffle within each month.
+
+    Returns:
+        Split name -> sorted chronic names.
+    """
+    if abs(sum(fractions) - 1.0) > 1e-6:
+        raise ValueError(f"Split fractions must sum to 1, got {fractions}")
+    groups: dict[str, list[str]] = defaultdict(list)
+    for chronic in sorted({Path(c).name for c in chronics}):
+        groups[chronic_group(chronic)].append(chronic)
+    rng = np.random.default_rng(seed)
+    split: dict[str, list[str]] = {name: [] for name in SPLITS}
+    for members in groups.values():
+        members = list(rng.permutation(members))
+        n_val = round(fractions[1] * len(members))
+        n_test = round(fractions[2] * len(members))
+        split["val"] += members[:n_val]
+        split["test"] += members[n_val:n_val + n_test]
+        split["train"] += members[n_val + n_test:]
+    return {name: sorted(members) for name, members in split.items()}
+
+
+def save_split(split: dict[str, list[str]], path: Path) -> None:
+    """Write a split as JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(split, indent=1))
+
+
+def load_split(path: Path) -> dict[str, list[str]]:
+    """Read a split written by `save_split`."""
+    return json.loads(Path(path).read_text())
+
+
+def split_indices(chronic: np.ndarray, split: dict[str, list[str]], name: str) -> np.ndarray:
+    """Indices of the samples whose chronic belongs to split `name`."""
+    return np.flatnonzero(np.isin(chronic, split[name]))

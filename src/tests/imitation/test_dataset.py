@@ -5,6 +5,7 @@ Tests are organised by class:
   - TestSoftTargets
   - TestFromGeneralTutor
   - TestFromGreedyTutor
+  - TestMakeSplit
 """
 from __future__ import annotations
 
@@ -22,7 +23,11 @@ from imitation.dataset import (
     ImitationData,
     from_general_tutor,
     from_greedy_tutor,
+    load_split,
+    make_split,
+    save_split,
     soft_targets,
+    split_indices,
 )
 
 
@@ -119,3 +124,35 @@ class TestFromGreedyTutor(unittest.TestCase):
             data = from_greedy_tutor(Path(tmp), target=HARD)
             self.assertTrue(data.action_mask[1, 0])
             self.assertTrue(np.all(data.action_mask[data.policy_target > 0]))
+
+
+class TestMakeSplit(unittest.TestCase):
+    """Chronic-level split, stratified by month."""
+
+    CHRONICS = [f"/data/chronics/Scenario_{m}_{i:03d}" for m in ("april", "may") for i in range(20)]
+
+    def setUp(self):
+        self.split = make_split(self.CHRONICS, (0.8, 0.1, 0.1), seed=0)
+
+    def test_disjoint_and_complete(self):
+        names = [c for members in self.split.values() for c in members]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(set(names), {Path(c).name for c in self.CHRONICS})
+
+    def test_every_month_in_every_split(self):
+        for members in self.split.values():
+            self.assertEqual({c.split("_")[1] for c in members}, {"april", "may"})
+        self.assertEqual(len(self.split["val"]), 4)
+        self.assertEqual(len(self.split["test"]), 4)
+
+    def test_deterministic_and_round_trips(self):
+        self.assertEqual(self.split, make_split(list(reversed(self.CHRONICS)), (0.8, 0.1, 0.1), seed=0))
+        with tempfile.TemporaryDirectory() as tmp:
+            save_split(self.split, Path(tmp) / "split.json")
+            self.assertEqual(load_split(Path(tmp) / "split.json"), self.split)
+
+    def test_split_indices(self):
+        val = self.split["val"][0]
+        chronic = np.array([val, "other", val])
+        np.testing.assert_array_equal(split_indices(chronic, self.split, "val"), [0, 2])
+

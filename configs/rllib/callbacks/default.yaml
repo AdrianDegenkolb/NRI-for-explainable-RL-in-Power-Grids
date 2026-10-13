@@ -5,5 +5,6 @@ callbacks:
   - _target_: rarl_rllib.callback.AnnealingCallback
   - _target_: rarl_rllib.callback.TimerCallback
   - _target_: rarl_rllib.callback.PretrainingCallback
+  - _target_: rarl_rllib.callback.ImitationInitCallback
 
 # annealing and pretraining are configured under relation_awareness
