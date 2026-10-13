@@ -466,6 +466,26 @@ def print_details(rllib_cfg: Dict[str, Any]) -> None:
     logger.info(f'Chronics are cached:        {rllib_cfg["env_config"].get("use_chronics_cache", False)}')
 
 
+def _slurm_ray_resources() -> dict[str, int]:
+    """
+    ray.init arguments that limit Ray to the SLURM allocation; empty outside SLURM.
+
+    Without them Ray sizes itself for the whole node (e.g. 192 CPUs and a 200 GB object store
+    in a job with 8 CPUs and 64 GB), which slows ray.init down from ~7 s to ~60 s and lets the
+    object store outgrow the job's memory limit. GPUs need no limit: Ray reads CUDA_VISIBLE_DEVICES.
+    """
+    resources = {}
+    cpus = os.environ.get("SLURM_CPUS_PER_TASK") or os.environ.get("SLURM_CPUS_ON_NODE")
+    if cpus:
+        resources["num_cpus"] = int(cpus)
+    mem_mb = os.environ.get("SLURM_MEM_PER_NODE")
+    if not mem_mb and os.environ.get("SLURM_MEM_PER_CPU") and cpus:
+        mem_mb = int(os.environ["SLURM_MEM_PER_CPU"]) * int(cpus)
+    if mem_mb:
+        resources["object_store_memory"] = int(int(mem_mb) * 1024 ** 2 * 0.3)  # Ray's default share
+    return resources
+
+
 def _setup_ray(exp):
     # --- Init Ray ---
     os.environ["RAY_DEDUP_LOGS"] = "0"
@@ -475,6 +495,8 @@ def _setup_ray(exp):
     os.environ["WANDB_SILENT"] = "true"
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     os.environ["PYTHONWARNINGS"] = "ignore:Could not parse CUBLAS_WORKSPACE_CONFIG:UserWarning"
-    ray.init(local_mode=exp.ray_local_mode)
+    ray.init(local_mode=exp.ray_local_mode, **_slurm_ray_resources())
     logger.info(f"Ray initialized in {'local' if exp.ray_local_mode else 'cluster'} mode.")
-    logger.info(f"Ray sees GPUs: {ray.available_resources().get('GPU', 0)}")
+    available = ray.available_resources()
+    logger.info(f"Ray sees CPUs: {available.get('CPU', 0)}, GPUs: {available.get('GPU', 0)}, "
+                f"object store: {available.get('object_store_memory', 0) / 1024 ** 3:.1f} GiB")
