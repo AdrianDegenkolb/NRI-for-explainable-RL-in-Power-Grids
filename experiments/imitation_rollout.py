@@ -3,8 +3,10 @@ Survival of a pretrained policy ("junior") on held-out chronics, as an episode t
 (`src/analysis/episodes.py`) comparable chronic by chronic with the Tutor's.
 
 Rebuilds env, converter and network from the `config.yaml` that experiments/pretrain_policy.py
-wrote next to `policy_weights.pt`. Chronics come from a split file, sharded over SLURM array
-tasks with a stride (task t of n takes chronics t, t+n, ...).
+wrote next to `policy_weights.pt` (or experiments/export_policy_weights.py, for RL policies).
+Chronics come from a split file of the train env, or with `--env-split val|test` are all chronics
+of that Grid2Op env, which no stage of the imitation pipeline has seen. They are sharded over SLURM
+array tasks with a stride (task t of n takes chronics t, t+n, ...).
 
 Example:
     PYTHONPATH=$(pwd)/src python experiments/imitation_rollout.py \\
@@ -41,11 +43,17 @@ def main(args: argparse.Namespace) -> None:
     run_dir = Path(args.run_dir)
     cfg = OmegaConf.load(run_dir / "config.yaml")
     register_custom_models()
-    env_config = build_env_config(cfg, "train")
+    env_config = build_env_config(cfg, args.env_split)
     device = torch.device(args.device)
 
-    chronics = load_split(Path(args.split_file or cfg.imitation.split))[args.split_name][args.task_id::args.n_tasks]
     env = make_g2op_env(env_config)
+    if args.env_split == "train":
+        all_chronics = load_split(Path(args.split_file or cfg.imitation.split))[args.split_name]
+        tag = args.split_name
+    else:
+        all_chronics = [Path(c).name for c in env.chronics_handler.subpaths]
+        tag = f"{args.env_split}env"
+    chronics = all_chronics[args.task_id::args.n_tasks]
     try:
         converter = make_observation_converter(GymEnv(env, with_forecast=True), env_config, backend=env.backend)
         actions = load_policy_actions(env, ROOT / f"data/action_spaces/{env.env_name}/{env_config['action_space']}.json")
@@ -59,7 +67,7 @@ def main(args: argparse.Namespace) -> None:
     finally:
         env.close()
 
-    out = run_dir / "rollout" / f"episodes_{args.split_name}_{args.task_id:03d}.csv"
+    out = run_dir / "rollout" / f"episodes_{tag}_{args.task_id:03d}.csv"
     save_episodes(episodes, out)
     print(f"Wrote {len(episodes)} episodes ({int(episodes['survived'].sum())} survived) to {out}")
 
@@ -68,7 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--run-dir", required=True, help="Output dir of experiments/pretrain_policy.py")
     parser.add_argument("--split-file", default=None, help="Default: the split the policy was trained with")
-    parser.add_argument("--split-name", default="test", choices=["train", "val", "test"])
+    parser.add_argument("--split-name", default="test", choices=["train", "val", "test"],
+                        help="Split of --split-file; only used with --env-split train")
+    parser.add_argument("--env-split", default="train", choices=["train", "val", "test"],
+                        help="Grid2Op env to roll out in; val/test use all of its chronics")
     parser.add_argument("--task-id", type=int, default=0)
     parser.add_argument("--n-tasks", type=int, default=1)
     parser.add_argument("--agent", default="junior", help="Value of the episode table's agent column")
