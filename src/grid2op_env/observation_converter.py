@@ -75,6 +75,11 @@ class ObservationConverter(ABC, Generic[T]):
     - Normalizes the resulting observation via `normalize`
     """
 
+    # True if `to_gym` also reads the backend's internal grid model (PTDF/LODF/Zbus), which only
+    # matches the observation in the env that produced it. To convert stored observations, first
+    # call `sync_backend_to_observation`.
+    needs_backend_state: bool = False
+
     @property
     @abstractmethod
     def observation_space(self) -> gym.spaces.Space:
@@ -1220,7 +1225,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
     active; type-1 LODF edges are active only when both line i and line j are
     connected (``line_status[i] & line_status[j]``).
 
-    LODF depends only on network topology, so it is cached per ``line_status``
+    LODF depends only on network topology, so it is cached per ``topo_vect``
     and recomputed only on topology changes via the shared
     :func:`_compute_lodf` module-level helper.
 
@@ -1242,6 +1247,8 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
     :param g2op_obs_space: grid2op observation space.
     :param verbose: log converter dimensions on construction.
     """
+
+    needs_backend_state = True
 
     def __init__(
         self,
@@ -1287,7 +1294,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
 
         self._edge_normalizer = RunningMeanStd(shape=(1,))
         self._cached_D: Optional[np.ndarray] = None
-        self._cached_line_status: Optional[np.ndarray] = None
+        self._cached_topo_vect: Optional[np.ndarray] = None
 
         if verbose:
             logger.info(
@@ -1297,16 +1304,16 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
                 f"x_dim={self._ELEM_X_DIM}."
             )
 
-    def _get_lodf_cached(self, line_status: np.ndarray) -> None:
+    def _get_lodf_cached(self, topo_vect: np.ndarray) -> None:
         """
-        Update _cached_D when line_status changes. Delegates to :func:`_compute_lodf`.
+        Update _cached_D when topo_vect changes. Delegates to :func:`_compute_lodf`.
 
         Args:
-            line_status: Boolean array [n_line] of current line connection state.
+            topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
         """
-        self._cached_D, self._cached_line_status = _compute_lodf(
-            self._grid, self._n_line, line_status,
-            self._cached_line_status, self._cached_D,
+        self._cached_D, self._cached_topo_vect = _compute_lodf(
+            self._grid, self._n_line, topo_vect,
+            self._cached_topo_vect, self._cached_D,
         )
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
@@ -1333,7 +1340,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
         self._timings["edge_attr_ms"] = (time.perf_counter() - t0) * 1000
 
         t0 = time.perf_counter()
-        self._get_lodf_cached(g2op_obs.line_status)
+        self._get_lodf_cached(g2op_obs.topo_vect)
         self._timings["lodf_ms"] = (time.perf_counter() - t0) * 1000
 
         # Local line indices (0-based) for LODF src/dst lookup.
@@ -1486,13 +1493,13 @@ class FlatObservationConverter(ObservationConverter[gym.spaces.Dict]):
 
 def _compute_ptdf_distance(
     grid,
-    line_status: np.ndarray,
-    cached_line_status: Optional[np.ndarray],
+    topo_vect: np.ndarray,
+    cached_topo_vect: Optional[np.ndarray],
     cached_ptdf: Optional[np.ndarray],
     cached_D: Optional[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Return (ptdf, D, line_status_copy), recomputing only when line_status changes.
+    Return (ptdf, D, topo_vect_copy), recomputing only when topo_vect changes (bus splits change PTDF without any line switching).
 
     D[i, j] = sum_l |PTDF[l, i] - PTDF[l, j]|  (L1 PTDF distance, [2*n_sub, 2*n_sub]).
 
@@ -1501,18 +1508,18 @@ def _compute_ptdf_distance(
 
     Args:
         grid: lightsim2grid GridModel instance (backend._grid).
-        line_status: Boolean array [n_line] of current line connection state.
-        cached_line_status: Previously cached line_status (or None).
+        topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
+        cached_topo_vect: Previously cached topo_vect (or None).
         cached_ptdf: Previously cached PTDF matrix (or None).
         cached_D: Previously cached distance matrix (or None).
     Returns:
-        (ptdf, D, line_status_copy) — ptdf is [n_branches, 2*n_sub],
+        (ptdf, D, topo_vect_copy) — ptdf is [n_branches, 2*n_sub],
         D is [2*n_sub, 2*n_sub] symmetric, non-negative.
     Raises:
         RuntimeError: if the DC power flow diverges.
     """
-    if cached_line_status is not None and np.array_equal(line_status, cached_line_status):
-        return cached_ptdf, cached_D, cached_line_status
+    if cached_topo_vect is not None and np.array_equal(topo_vect, cached_topo_vect):
+        return cached_ptdf, cached_D, cached_topo_vect
     Vinit = np.ones(grid.total_bus(), dtype=complex)
     Vdc = grid.dc_pf(Vinit, 10, 1e-8)
     if Vdc.shape[0] == 0:
@@ -1522,7 +1529,7 @@ def _compute_ptdf_distance(
     ptdf = grid.get_ptdf()
     diff = ptdf[:, :, np.newaxis] - ptdf[:, np.newaxis, :]  # (n_br, n_bus, n_bus)
     D = np.nan_to_num(np.abs(diff).sum(axis=0), nan=0.0, posinf=0.0, neginf=0.0)
-    return ptdf, D, line_status.copy()
+    return ptdf, D, topo_vect.copy()
 
 
 class PTDFGraphObservationConverter(GraphObservationConverter):
@@ -1555,6 +1562,8 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         slot = (busbar - 1) * n_sub + sub_id    for busbar ∈ {1, 2}
     Slots 0..n_sub-1 → busbar 1; slots n_sub..2*n_sub-1 → busbar 2.
     """
+
+    needs_backend_state = True
 
     _BUS_AGGREGATION: dict[str, str] = {
         "voltage": "mean",
@@ -1623,11 +1632,11 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         self._normalizer = RunningMeanStd(shape=(x_dim,))
         self._edge_normalizer = RunningMeanStd(shape=(1,))
 
-        # PTDF cache: only recompute when line_status changes.
+        # PTDF cache: only recompute when topo_vect changes.
         # _cached_D is derived from _cached_ptdf and shares the same lifetime.
         self._cached_ptdf: Optional[np.ndarray] = None
         self._cached_D: Optional[np.ndarray] = None
-        self._cached_line_status: Optional[np.ndarray] = None
+        self._cached_topo_vect: Optional[np.ndarray] = None
 
         if verbose:
             logger.info(
@@ -1651,21 +1660,21 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         """Number of directed edges in the fully-connected graph (max_nodes * (max_nodes - 1))."""
         return self._max_num_edges
 
-    def _get_ptdf_cached(self, line_status: np.ndarray) -> np.ndarray:
+    def _get_ptdf_cached(self, topo_vect: np.ndarray) -> np.ndarray:
         """
-        Return the PTDF matrix, recomputing only when line_status has changed.
+        Return the PTDF matrix, recomputing only when topo_vect has changed.
 
         Delegates to the module-level :func:`_compute_ptdf_distance` helper which
         is shared with :class:`SubstationPTDFGraphObservationConverter`.
 
         Args:
-            line_status: Boolean array [n_line] of current line connection state.
+            topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
         Returns:
             PTDF matrix [n_branches, 2*n_sub].
         """
-        self._cached_ptdf, self._cached_D, self._cached_line_status = _compute_ptdf_distance(
-            self._grid, line_status,
-            self._cached_line_status, self._cached_ptdf, self._cached_D,
+        self._cached_ptdf, self._cached_D, self._cached_topo_vect = _compute_ptdf_distance(
+            self._grid, topo_vect,
+            self._cached_topo_vect, self._cached_ptdf, self._cached_D,
         )
         return self._cached_ptdf
 
@@ -1741,7 +1750,7 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
 
         t0 = time.perf_counter()
-        self._get_ptdf_cached(g2op_obs.line_status)
+        self._get_ptdf_cached(g2op_obs.topo_vect)
         D = self._cached_D
         self._timings["ptdf_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -1808,30 +1817,30 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
 def _compute_lodf(
     grid,
     n_line: int,
-    line_status: np.ndarray,
-    cached_line_status: Optional[np.ndarray],
+    topo_vect: np.ndarray,
+    cached_topo_vect: Optional[np.ndarray],
     cached_D: Optional[np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Return (D, new_line_status) where D = |LODF[:n_line, :n_line]|.
+    Return (D, topo_vect_copy) where D = |LODF[:n_line, :n_line]|.
 
-    Recomputes only when *line_status* differs from *cached_line_status*.
+    Recomputes only when *topo_vect* differs from *cached_topo_vect*.
     DC PF is called directly on the C++ grid model, which is safe because
     lightsim2grid keeps separate DC and AC solver objects.
 
     Args:
         grid: lightsim2grid GridModel instance (backend._grid).
         n_line: number of AC transmission lines.
-        line_status: boolean array [n_line] of current connectivity.
-        cached_line_status: previously cached line_status (or None).
+        topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
+        cached_topo_vect: previously cached topo_vect (or None).
         cached_D: previously cached distance matrix (or None).
     Returns:
-        (D, line_status_copy) — D is [n_line, n_line] float64, non-negative.
+        (D, topo_vect_copy) — D is [n_line, n_line] float64, non-negative.
     Raises:
         RuntimeError: if the DC power flow diverges.
     """
-    if cached_line_status is not None and np.array_equal(line_status, cached_line_status):
-        return cached_D, cached_line_status
+    if cached_topo_vect is not None and np.array_equal(topo_vect, cached_topo_vect):
+        return cached_D, cached_topo_vect
     Vinit = np.ones(grid.total_bus(), dtype=complex)
     Vdc = grid.dc_pf(Vinit, 10, 1e-8)
     if Vdc.shape[0] == 0:
@@ -1840,7 +1849,7 @@ def _compute_lodf(
         )
     lodf = grid.get_lodf()
     lodf_sub = np.nan_to_num(lodf[:n_line, :n_line], nan=0.0, posinf=0.0, neginf=0.0)
-    return np.abs(lodf_sub), line_status.copy()
+    return np.abs(lodf_sub), topo_vect.copy()
 
 
 class LODFGraphObservationConverter(ObservationConverter[Dict]):
@@ -1873,6 +1882,8 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
       5: sin(theta_or)    — voltage angle sine (origin side)
       6: line_status      — 1.0 if connected, 0.0 if disconnected
     """
+
+    needs_backend_state = True
 
     _X_DIM = 7
 
@@ -1912,7 +1923,7 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
 
         # LODF cache: _cached_D = |LODF[:n_line, :n_line]|, shares lifetime with LODF.
         self._cached_D: Optional[np.ndarray] = None
-        self._cached_line_status: Optional[np.ndarray] = None
+        self._cached_topo_vect: Optional[np.ndarray] = None
 
         if verbose:
             logger.info(
@@ -1939,19 +1950,19 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         """Total directed edges in the fully-connected line graph."""
         return self._num_edges
 
-    def _get_lodf_cached(self, line_status: np.ndarray) -> None:
+    def _get_lodf_cached(self, topo_vect: np.ndarray) -> None:
         """
-        Update _cached_D and _cached_line_status if line_status has changed.
+        Update _cached_D and _cached_topo_vect if topo_vect has changed.
 
         Delegates to the module-level :func:`_compute_lodf` helper which is
         shared with :class:`ElementLODFGraphObservationConverter`.
 
         Args:
-            line_status: Boolean array [n_line] of current line connection state.
+            topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
         """
-        self._cached_D, self._cached_line_status = _compute_lodf(
-            self._grid, self._n_line, line_status,
-            self._cached_line_status, self._cached_D,
+        self._cached_D, self._cached_topo_vect = _compute_lodf(
+            self._grid, self._n_line, topo_vect,
+            self._cached_topo_vect, self._cached_D,
         )
 
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
@@ -2001,7 +2012,7 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         self._timings["node_features_ms"] = (time.perf_counter() - t0) * 1000
 
         t0 = time.perf_counter()
-        self._get_lodf_cached(g2op_obs.line_status)
+        self._get_lodf_cached(g2op_obs.topo_vect)
         self._timings["lodf_ms"] = (time.perf_counter() - t0) * 1000
         if self._cached_D is None:
             raise RuntimeError("LODF cache is uninitialized after _get_lodf_cached — DC PF likely failed.")
@@ -2145,7 +2156,6 @@ class ZbusGraphObservationConverter(PTDFGraphObservationConverter):
         # topology change that affects Ybus is detected.
         del self._cached_ptdf
         self._cached_D = None
-        self._cached_line_status = None          # unused; kept to avoid AttributeError on parent methods
         self._cached_topo_vect: Optional[np.ndarray] = None
 
         if verbose:
@@ -2234,7 +2244,7 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
     type-0 edges and padding positions are zeroed.
 
     PTDF depends only on network topology (not on the operating point), so it
-    is cached per ``line_status`` and recomputed only on topology changes using
+    is cached per ``topo_vect`` and recomputed only on topology changes using
     the shared :func:`_compute_ptdf_distance` module-level helper.
 
     Slot convention: this converter inherits the Substation slot ordering
@@ -2266,6 +2276,8 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
     :param attr_to_observe: node feature names (defaults to ``_DEFAULT_NODE_FEATURES``).
     :param verbose: log converter dimensions on construction.
     """
+
+    needs_backend_state = True
 
     def __init__(
         self,
@@ -2320,7 +2332,7 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
         # PTDF cache (in Substation slot order after permutation).
         self._cached_ptdf: Optional[np.ndarray] = None
         self._cached_D: Optional[np.ndarray] = None
-        self._cached_line_status: Optional[np.ndarray] = None
+        self._cached_topo_vect: Optional[np.ndarray] = None
 
         if verbose:
             logger.info(
@@ -2330,21 +2342,21 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
                 f"{self._n_phys_edges} PTDF), x_dim={x_dim}."
             )
 
-    def _get_ptdf_cached(self, line_status: np.ndarray) -> None:
+    def _get_ptdf_cached(self, topo_vect: np.ndarray) -> None:
         """
-        Update _cached_D (in Substation slot order) when line_status changes.
+        Update _cached_D (in Substation slot order) when topo_vect changes.
 
         Delegates to :func:`_compute_ptdf_distance`, then applies the
         PTDF-to-Substation slot permutation so subsequent indexing is
         consistent with the node ordering used by this converter.
 
         Args:
-            line_status: Boolean array [n_line] of current line connection state.
+            topo_vect: Bus of every element ([dim_topo], -1 = disconnected); covers bus splits and line status.
         """
         prev_D = self._cached_D
-        self._cached_ptdf, D_ptdf, self._cached_line_status = _compute_ptdf_distance(
-            self._grid, line_status,
-            self._cached_line_status, self._cached_ptdf, self._cached_D,
+        self._cached_ptdf, D_ptdf, self._cached_topo_vect = _compute_ptdf_distance(
+            self._grid, topo_vect,
+            self._cached_topo_vect, self._cached_ptdf, self._cached_D,
         )
         if D_ptdf is not prev_D:
             # Cache was stale — apply slot permutation before storing.
@@ -2372,7 +2384,7 @@ class SubstationPTDFGraphObservationConverter(SubstationGraphObservationConverte
         n_topo = edge_index_topo.shape[1]
 
         t0 = time.perf_counter()
-        self._get_ptdf_cached(g2op_obs.line_status)
+        self._get_ptdf_cached(g2op_obs.topo_vect)
         self._timings["ptdf_ms"] = (time.perf_counter() - t0) * 1000
 
         global_features = self._get_global_features(g2op_obs)
@@ -2488,6 +2500,7 @@ class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverte
     :param verbose: log converter dimensions on construction.
     """
 
+    needs_backend_state = True
 
     def __init__(
         self,
@@ -2662,26 +2675,64 @@ class SubstationZbusGraphObservationConverter(SubstationGraphObservationConverte
         }
 
 
+def sync_backend_to_observation(env, obs: BaseObservation) -> bool:
+    """Put `env`'s backend into the grid state of `obs` (from any env of the same grid).
+
+    Sets every element's bus (incl. line status) and the injections, then runs an AC power flow,
+    so converters with `needs_backend_state` compute the same PTDF/LODF/Zbus as in the env that
+    produced `obs`. `backend.update_from_obs` cannot be used: observations carry no shunt data.
+
+    Args:
+        env: Grid2Op environment whose backend the converter reads.
+        obs: Observation to reproduce, e.g. rebuilt with `observation_space.from_vect`.
+
+    Returns:
+        Whether the power flow converged.
+    """
+    action = env.action_space({
+        "set_bus": obs.topo_vect,
+        "injection": {"load_p": obs.load_p, "load_q": obs.load_q, "prod_p": obs.gen_p, "prod_v": obs.gen_v},
+    })
+    backend_action = env._backend_action_class()
+    backend_action += action
+    env.backend.apply_action(backend_action)
+    converged, _ = env.backend.runpf(is_dc=False)
+    return bool(converged)
+
+
 # --- Factory ---
-def make_observation_converter(gym_env: GymEnv, env_config: dict) -> ObservationConverter:
-    """Construct the appropriate ObservationConverter from env_config."""
+def make_observation_converter(gym_env: GymEnv, env_config: dict, backend: LightSimBackend) -> ObservationConverter:
+    """Construct the appropriate ObservationConverter from env_config.
+
+    Args:
+        gym_env: GymEnv wrapper of the grid2op env (for the observation space).
+        env_config: Env config, see `core.rllib_config.build_env_config`.
+        backend: Backend of the grid2op env that is actually stepped. Converters with
+            `needs_backend_state` read its grid model. Not `gym_env.init_env.backend`: GymEnv works
+            on a copy of the env, whose backend never follows the episode.
+    """
     mode = env_config.get("observation_space", "FlatSpace")
+    # use_forecasts=False removes forecasts from every converter: the default node features of the
+    # attribute-list converters lose their forecast columns, the element converters zero their slots.
+    attr_to_observe = env_config.get("attr_to_observe")
+    if attr_to_observe is None and not env_config.get("use_forecasts", True):
+        attr_to_observe = [f for f in _DEFAULT_NODE_FEATURES if f not in _FORECAST_NODE_FEATURES]
     if mode == "GraphObsSpace" or mode == "BusConnectivityGraphObsSpace":
         return GraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "HeterogeneousGraphObsSpace":
         return HeterogeneousGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "SubstationGraphObsSpace":
         return SubstationGraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "ElementGraphObsSpace":
@@ -2692,43 +2743,43 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict) -> Observation
         )
     elif mode == "PTDFGraphObsSpace":
         return PTDFGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "LODFGraphObsSpace":
         return LODFGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "ElementLODFGraphObsSpace":
         return ElementLODFGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
             verbose=env_config.get("verbose", False),
             use_forecasts=env_config.get("use_forecasts", True),
         )
     elif mode == "ZbusGraphObsSpace":
         return ZbusGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "SubstationPTDFGraphObsSpace":
         return SubstationPTDFGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "SubstationZbusGraphObsSpace":
         return SubstationZbusGraphObservationConverter(
-            backend=gym_env.init_env.backend,
+            backend=backend,
             g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=env_config.get("attr_to_observe"),
+            attr_to_observe=attr_to_observe,
             verbose=env_config.get("verbose", False),
         )
     elif mode == "FlatObsSpace":

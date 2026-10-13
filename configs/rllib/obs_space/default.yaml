@@ -2,3 +2,4 @@
 observation_space: GraphObsSpace
 g2op_input: ["r", "t"]
 custom_input: ["d"]
+use_forecasts: true  # false: no forecast node features (required for imitation pretraining)

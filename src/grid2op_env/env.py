@@ -75,7 +75,7 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
 
         # 4. customize observation space
         self._obs_space_in_preferred_format = True
-        self.observation_converter: ObservationConverter = make_observation_converter(self.env_gym, env_config)
+        self.observation_converter: ObservationConverter = make_observation_converter(self.env_gym, env_config, backend=self.env_g2op.backend)
         self.observation_space = gym.spaces.Dict({
             HIGH_LEVEL_AGENT: gym.spaces.Discrete(2),
             RL_AGENT: self.observation_converter.observation_space,

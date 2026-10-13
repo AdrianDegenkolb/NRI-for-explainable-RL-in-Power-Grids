@@ -1,2 +1,3 @@
 # Graph observation space — required by GNN and RAGNN models.
 observation_space: ElementLODFGraphObsSpace
+use_forecasts: true  # false: no forecast node features (required for imitation pretraining)

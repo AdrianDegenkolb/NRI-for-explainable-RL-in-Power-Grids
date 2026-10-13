@@ -2,3 +2,4 @@
 observation_space: FlatObsSpace
 g2op_input: ["r", "p", "t"]
 custom_input: []
+use_forecasts: true  # false: no forecast node features (required for imitation pretraining)

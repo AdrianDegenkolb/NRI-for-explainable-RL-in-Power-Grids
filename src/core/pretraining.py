@@ -117,7 +117,7 @@ class Pretrainer:
         """
         env_g2op = make_g2op_env(self._env_config)
         env_gym = GymEnv(env_g2op, with_forecast=True)
-        obs_converter = make_observation_converter(env_gym, self._env_config)
+        obs_converter = make_observation_converter(env_gym, self._env_config, backend=env_g2op.backend)
 
         observations = []
         g2op_obs = env_g2op.reset(seed=self.seed)
