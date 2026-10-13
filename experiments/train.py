@@ -164,7 +164,11 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["relation_awareness"] = OmegaConf.to_container(cfg.relation_awareness, resolve=True)
 
     # --- Imitation pretraining (read by ImitationInitCallback) ---
-    rllib_cfg["imitation"] = OmegaConf.to_container(cfg.imitation, resolve=True)
+    imitation = OmegaConf.to_container(cfg.imitation, resolve=True)
+    if imitation.get("weights_path"):
+        # Tune runs each trial in its own directory, so a relative path would not resolve there.
+        imitation["weights_path"] = os.path.abspath(imitation["weights_path"])
+    rllib_cfg["imitation"] = imitation
 
     # --- Environment ---
     train_env_config = build_env_config(cfg, "train")
