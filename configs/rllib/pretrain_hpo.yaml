@@ -1,0 +1,43 @@
+# Optuna search over imitation pretraining settings (experiments/pretrain_hpo.py), Junior experiment:
+# GNN policy (fixed graph, no encoder) with GAT convolutions on IEEE-36, GraphObsSpace without
+# forecasts. One study per dataset: select it with imitation.dataset=... and experiment.name=<study>.
+# Trials are written to imitation.out_dir (results/pretraining/<study>/trial_<n>/).
+defaults:
+  - config
+  - override env: case36
+  - override model: gnn
+  - override obs_space: default
+  - override relation_awareness: disabled
+  - override imitation: default
+  - _self_
+
+model:
+  gnn:
+    conv_type: gat
+
+obs_space:
+  use_forecasts: false  # imitation data has no forecasts
+
+hpo:
+  n_trials: 40          # trials per study (complete + pruned + failed), shared by all workers
+  worker_id: 0          # distinct per parallel worker (SLURM array task id); offsets the sampler seed
+  sampler_seed: 0
+  monitor: val_kl       # history column to minimise: CE - entropy of the targets on the val split
+  convert_only: false   # only convert (and cache) the observations, then exit; run once before the workers
+  pruner:
+    n_startup_trials: 5 # no pruning before this many trials have finished
+    n_warmup_steps: 3   # no pruning in a trial's first epochs
+  # Keys are dotted paths into this config. Types: float (low, high, log), int (low, high), categorical (choices).
+  search_space:
+    imitation.lr: {type: float, low: 1.0e-4, high: 1.0e-2, log: true}
+    imitation.batch_size: {type: categorical, choices: [128, 256, 512]}
+    imitation.weight_decay: {type: float, low: 1.0e-5, high: 1.0e-2, log: true}
+    imitation.patience: {type: categorical, choices: [3, 5, 10]}
+    model.gnn.hidden_dim: {type: categorical, choices: [128, 256, 512, 1024]}
+    model.gnn.num_layers: {type: categorical, choices: [2, 3, 4]}
+    model.gnn.dropout_prob: {type: float, low: 0.0, high: 0.3}
+    model.fcnet_hiddens: {type: categorical, choices: [[128, 128], [256, 256], [512, 512], [1024, 1024]]}
+
+hydra:
+  run:
+    dir: ${imitation.out_dir}/hydra/worker_${hpo.worker_id}
