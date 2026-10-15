@@ -88,6 +88,12 @@ Hydra Config
   `policy_weights.pt`; `train.py imitation=default imitation.weights_path=...` starts PPO from it with a
   critic warm-up (`ImitationInitCallback`). `experiments/imitation_rollout.py` measures a policy's
   survival per chronic. Pretraining needs a GPU (`slurm/unicluster/pretrain_policy.sh`).
+  Shared run setup (datasets, model, run directory) is in `src/imitation/pretrain_run.py`; model selection
+  uses the validation KL (CE − target entropy). Junior HPO: `experiments/pretrain_hpo.py` (config
+  `configs/rllib/pretrain_hpo.yaml`, Optuna in `src/imitation/hpo.py`, one study per dataset, journal file
+  storage shared by parallel workers), `experiments/summarize_hpo.py`, SLURM chain
+  `slurm/unicluster/pretrain_hpo.sh`, rollouts `slurm/unicluster/imitation_rollout_array.sh`
+  (`--do-nothing` for the reference), plots `experiments/junior_results.ipynb`.
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.
