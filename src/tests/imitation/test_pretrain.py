@@ -4,7 +4,9 @@ rarl_rllib/callback.py.
 
 Tests are organised by class:
   - TestSoftCrossEntropy
+  - TestTargetEntropy
   - TestEvaluate
+  - TestTrain
   - TestTrimEdges
   - TestCriticWarmup
   - TestPPOCompatibility
@@ -23,7 +25,15 @@ from ray.rllib.algorithms.ppo.ppo_torch_policy import PPOTorchPolicy
 
 from core.rllib_config import register_custom_models
 from grid2op_env.observation_converter import EDGE_INDEX, EDGE_MASK, GLOBAL, NODE_MASK, NODES
-from imitation.pretrain import build_policy_model, evaluate, policy_logits, soft_cross_entropy
+from imitation.pretrain import (
+    PretrainConfig,
+    build_policy_model,
+    evaluate,
+    policy_logits,
+    soft_cross_entropy,
+    target_entropy,
+    train,
+)
 from imitation.torch_dataset import _trim_edges
 from rarl_rllib.callback import is_value_parameter, set_policy_trainable
 
@@ -76,6 +86,21 @@ class TestSoftCrossEntropy(unittest.TestCase):
         self.assertAlmostEqual(actual.item(), expected.item(), places=5)
 
 
+class TestTargetEntropy(unittest.TestCase):
+    def test_one_hot_targets_have_zero_entropy(self):
+        self.assertEqual(target_entropy(F.one_hot(torch.tensor([0, 3]), N_ACTIONS).float()).item(), 0.0)
+
+    def test_uniform_target_over_k_actions_has_entropy_log_k(self):
+        target = torch.tensor([[0.5, 0.5, 0.0, 0.0]])
+        self.assertAlmostEqual(target_entropy(target).item(), np.log(2), places=6)
+
+    def test_cross_entropy_minus_entropy_is_zero_for_matching_logits(self):
+        target = torch.tensor([[0.7, 0.2, 0.1, 0.0]])
+        logits = torch.log(target.clamp_min(1e-12))
+        kl = soft_cross_entropy(logits, target) - target_entropy(target)
+        self.assertAlmostEqual(kl.item(), 0.0, places=5)
+
+
 class _FixedLogits(torch.nn.Module):
     """Stands in for a policy model: logits are passed in as the observation."""
 
@@ -99,6 +124,52 @@ class TestEvaluate(unittest.TestCase):
         self.assertAlmostEqual(metrics["invalid_rate"], 1 / 3)
         self.assertAlmostEqual(metrics["regret"], 0.025, places=5)
         self.assertEqual(metrics["do_nothing_rate"], 0.0)
+
+    def test_kl_is_loss_minus_target_entropy(self):
+        logits = torch.randn(3, N_ACTIONS)
+        target = torch.tensor([[0.5, 0.5, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.25, 0.25, 0.25, 0.25]])
+        dataset = [{"obs": {"logits": logits[i]}, "target": target[i]} for i in range(3)]
+        metrics = evaluate(_FixedLogits(), dataset, batch_size=2, device=torch.device("cpu"))
+        self.assertAlmostEqual(metrics["entropy"], target_entropy(target).item(), places=5)
+        self.assertAlmostEqual(metrics["kl"], metrics["loss"] - metrics["entropy"], places=6)
+        self.assertGreaterEqual(metrics["kl"], 0.0)
+
+
+def graph_dataset(n: int) -> list[dict]:
+    """Samples in the format of ImitationTorchDataset, with random graph observations and soft targets."""
+    obs = graph_batch(n)
+    target = torch.softmax(torch.randn(n, N_ACTIONS), dim=-1)
+    return [{"obs": {k: v[i] for k, v in obs.items()}, "target": target[i]} for i in range(n)]
+
+
+class TestTrain(unittest.TestCase):
+    def setUp(self):
+        torch.manual_seed(0)
+        self.train_set, self.val_set = graph_dataset(16), graph_dataset(8)
+
+    def test_callback_gets_every_epoch_and_history_has_kl(self):
+        seen = []
+        config = PretrainConfig(epochs=3, batch_size=8, patience=10)
+        _, history = train(gnn_model(), self.train_set, self.val_set, config, lambda epoch, row: seen.append(epoch))
+        self.assertEqual(seen, [1, 2, 3])
+        self.assertEqual(len(history), 3)
+        self.assertIn("val_kl", history[0])
+
+    def test_callback_exception_stops_training(self):
+        def stop(epoch, row):
+            if epoch == 2:
+                raise StopIteration
+
+        with self.assertRaises(StopIteration):
+            train(gnn_model(), self.train_set, self.val_set, PretrainConfig(epochs=5, batch_size=8), stop)
+
+    def test_keeps_weights_of_best_monitored_epoch(self):
+        model = gnn_model()
+        config = PretrainConfig(epochs=4, batch_size=8, patience=10, lr=1e-2)
+        best_state, history = train(model, self.train_set, self.val_set, config)
+        best_kl = min(row["val_kl"] for row in history)
+        final = evaluate(model, self.val_set, batch_size=8, device=torch.device("cpu"))
+        self.assertAlmostEqual(final["kl"], best_kl, places=5)
 
 
 class TestTrimEdges(unittest.TestCase):

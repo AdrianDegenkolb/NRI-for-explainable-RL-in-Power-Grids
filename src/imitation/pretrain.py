@@ -2,6 +2,10 @@
 Imitation pretraining of the RL policy network: cross-entropy between the policy's logits and the
 dataset's `policy_target` (one-hot for hard labels, a distribution for soft labels).
 
+Model selection uses `kl` = cross-entropy minus the entropy of the targets, i.e. KL(target || policy):
+the part of the loss the network can still reduce. It is comparable between hard labels (entropy 0)
+and soft labels, whose cross-entropy can never fall below their entropy.
+
 The network is built through RLlib's ModelCatalog exactly as PPO builds the RL_POLICY model, so
 the trained `state_dict` loads into the policy unchanged (`rarl_rllib.callback.ImitationInitCallback`).
 Only the policy logits are trained; the value branch is left to the critic warm-up in RL.
@@ -10,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -38,9 +43,10 @@ class PretrainConfig:
         batch_size: Samples per gradient step.
         lr: AdamW learning rate.
         weight_decay: AdamW weight decay.
-        patience: Stop after this many epochs without a lower validation loss.
+        patience: Stop after this many epochs without a lower validation `monitor` metric.
         device: Torch device.
         seed: Seed for initialisation and shuffling.
+        monitor: Validation metric (key of `evaluate`) for early stopping and the best epoch; lower is better.
     """
 
     epochs: int = 50
@@ -50,6 +56,11 @@ class PretrainConfig:
     patience: int = 5
     device: str = "cpu"
     seed: int = 42
+    monitor: str = "kl"
+
+
+# Called after every epoch with (epoch, history row); may raise to stop training (e.g. optuna.TrialPruned).
+EpochCallback = Callable[[int, dict[str, float]], None]
 
 
 def build_policy_model(obs_space: gym.spaces.Space, n_actions: int, model_config: dict) -> TorchModelV2:
@@ -87,6 +98,11 @@ def soft_cross_entropy(logits: torch.Tensor, target: torch.Tensor) -> torch.Tens
     return -(target * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
 
 
+def target_entropy(target: torch.Tensor) -> torch.Tensor:
+    """Mean entropy (nats) of target distributions [B, A], with 0 * log 0 = 0; the lower bound of the cross-entropy."""
+    return -torch.special.xlogy(target, target).sum(dim=-1).mean()
+
+
 def _to_device(batch: dict, device: torch.device) -> dict:
     return {k: (_to_device(v, device) if isinstance(v, dict) else v.to(device)) for k, v in batch.items()}
 
@@ -95,8 +111,9 @@ def _to_device(batch: dict, device: torch.device) -> dict:
 def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: torch.device) -> dict[str, float]:
     """Validation metrics.
 
-    Always: loss, accuracy (argmax = argmax of target), top5 (target argmax among the 5 highest
-    logits), do_nothing_rate (share of argmax = do-nothing). If the dataset has simulated max rho:
+    Always: loss (cross-entropy), entropy (of the targets), kl (loss - entropy), accuracy (argmax =
+    argmax of target), top5 (target argmax among the 5 highest logits), do_nothing_rate (share of
+    argmax = do-nothing). If the dataset has simulated max rho:
     good_action_rate (argmax within GOOD_ACTION_TOLERANCE of the best valid action), regret (mean
     rho excess of the argmax over the best valid action; invalid choices count as missing),
     invalid_rate (argmax not valid).
@@ -115,6 +132,7 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
         b = len(pred)
         stats = {
             "loss": soft_cross_entropy(logits, target).item() * b,
+            "entropy": target_entropy(target).item() * b,
             "accuracy": (pred == best_target).sum().item(),
             "top5": (top5 == best_target.unsqueeze(-1)).any(dim=-1).sum().item(),
             "do_nothing_rate": (pred == DO_NOTHING_INDEX).sum().item(),
@@ -133,16 +151,50 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
             sums[key] = sums.get(key, 0.0) + value
         n += b
     metrics = {k: v / n for k, v in sums.items() if k != "regret"}
+    metrics["kl"] = metrics["loss"] - metrics["entropy"]
     if "regret" in sums:
         metrics["regret"] = sums["regret"] / max(n_regret, 1)
     return metrics
 
 
-def train(model: TorchModelV2, train_set: Dataset, val_set: Dataset, config: PretrainConfig) -> tuple[dict, list[dict]]:
-    """Train with early stopping on validation loss.
+def train_epoch(model: TorchModelV2, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device) -> float:
+    """One pass over the training data.
+
+    Returns:
+        Mean training cross-entropy of the epoch.
+    """
+    model.train()
+    total, count = 0.0, 0
+    for batch in loader:
+        batch = _to_device(batch, device)
+        loss = soft_cross_entropy(policy_logits(model, batch["obs"]), batch["target"])
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total += loss.item() * len(batch["target"])
+        count += len(batch["target"])
+    return total / count
+
+
+def train(
+    model: TorchModelV2,
+    train_set: Dataset,
+    val_set: Dataset,
+    config: PretrainConfig,
+    epoch_callback: EpochCallback | None = None,
+) -> tuple[dict, list[dict]]:
+    """Train with early stopping on the validation metric `config.monitor`.
+
+    Args:
+        model: Policy network, as from `build_policy_model`.
+        train_set: Samples as from `ImitationTorchDataset`.
+        val_set: Validation samples, for early stopping and the best epoch.
+        config: Optimisation settings.
+        epoch_callback: Called after every epoch with (epoch, history row), e.g. to report to Optuna.
 
     Returns:
         `(best_state_dict, history)`; history has one dict per epoch with train_loss and `val_*` metrics.
+        The model is left with the best state loaded.
     """
     torch.manual_seed(config.seed)
     device = torch.device(config.device)
@@ -151,29 +203,22 @@ def train(model: TorchModelV2, train_set: Dataset, val_set: Dataset, config: Pre
     generator = torch.Generator().manual_seed(config.seed)
     loader = DataLoader(train_set, batch_size=config.batch_size, shuffle=True, generator=generator)
 
-    best_loss, best_state, epochs_without_gain = np.inf, copy.deepcopy(model.state_dict()), 0
+    best_value, best_state, epochs_without_gain = np.inf, copy.deepcopy(model.state_dict()), 0
     history = []
     for epoch in range(1, config.epochs + 1):
-        model.train()
-        total, count = 0.0, 0
-        for batch in loader:
-            batch = _to_device(batch, device)
-            loss = soft_cross_entropy(policy_logits(model, batch["obs"]), batch["target"])
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total += loss.item() * len(batch["target"])
-            count += len(batch["target"])
+        train_loss = train_epoch(model, loader, optimizer, device)
         val = evaluate(model, val_set, config.batch_size, device)
-        history.append({"epoch": epoch, "train_loss": total / count, **{f"val_{k}": v for k, v in val.items()}})
+        history.append({"epoch": epoch, "train_loss": train_loss, **{f"val_{k}": v for k, v in val.items()}})
         logger.info(" ".join(f"{k}={v:.4f}" if isinstance(v, float) else f"{k}={v}" for k, v in history[-1].items()))
+        if epoch_callback is not None:
+            epoch_callback(epoch, history[-1])
 
-        if val["loss"] < best_loss:
-            best_loss, best_state, epochs_without_gain = val["loss"], copy.deepcopy(model.state_dict()), 0
+        if val[config.monitor] < best_value:
+            best_value, best_state, epochs_without_gain = val[config.monitor], copy.deepcopy(model.state_dict()), 0
         else:
             epochs_without_gain += 1
             if epochs_without_gain >= config.patience:
-                logger.info(f"Early stop after epoch {epoch}: no lower validation loss for {config.patience} epochs")
+                logger.info(f"Early stop after epoch {epoch}: no lower validation {config.monitor} for {config.patience} epochs")
                 break
     model.load_state_dict(best_state)
     return best_state, history
