@@ -1,15 +1,18 @@
 """
-Rollout evaluation of a policy network outside RLlib, with the RL env's control logic: do-nothing
-while `rho.max() <= rho_threshold`, the policy's argmax action above it, every action enriched by
+Rollout evaluation of a policy outside RLlib, with the RL env's control logic: do-nothing while
+`rho.max() <= rho_threshold`, the policy's action above it, every action enriched by
 `reconnection_rule` (env `line_reco`), and the observation converter updated on every step.
 
-Each chronic is seeded with `imitation.tutor.chronic_seed`, so a policy faces exactly the
-maintenance schedule the Tutor faced on that chronic and survival can be compared per chronic.
+The policy is any `ActionChooser`: the greedy (argmax) action of a policy network
+(`greedy_chooser`), or always do-nothing (`do_nothing_chooser`) as the reference without topology
+actions. Each chronic is seeded with `imitation.tutor.chronic_seed`, so every agent faces exactly
+the maintenance schedule the Tutor faced on that chronic and survival can be compared per chronic.
 Results use the shared episode table of `analysis.episodes`.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -26,6 +29,9 @@ from imitation.pretrain import policy_logits
 from imitation.tutor import DO_NOTHING_INDEX, chronic_seed
 
 logger = logging.getLogger(__name__)
+
+# Maps a converted observation (None without converter) to a policy action index.
+ActionChooser = Callable[[dict | None], int]
 
 
 def resolve_chronic_ids(env: BaseEnv, names: list[str]) -> list[str]:
@@ -44,35 +50,59 @@ def choose_action(model: TorchModelV2, gym_obs: dict, device: torch.device) -> i
     return int(policy_logits(model, obs).argmax(dim=-1).item())
 
 
+def greedy_chooser(model: TorchModelV2, device: torch.device) -> ActionChooser:
+    """Chooser that takes the argmax action of `model` (switched to eval mode)."""
+    model.eval()
+    return lambda gym_obs: choose_action(model, gym_obs, device)
+
+
+def do_nothing_chooser(gym_obs: dict | None) -> int:
+    """Chooser that always takes do-nothing; needs no converter."""
+    return DO_NOTHING_INDEX
+
+
 def run_policy_chronic(
     env: BaseEnv,
-    converter: ObservationConverter,
-    model: TorchModelV2,
+    converter: ObservationConverter | None,
+    chooser: ActionChooser,
     actions: list[BaseAction],
     chronic_id: str,
     base_seed: int,
     rho_threshold: float,
     line_reco: bool,
-    device: torch.device,
 ) -> dict:
-    """Roll out one chronic and return its episode row (without `agent`)."""
+    """Roll out one chronic and return its episode row (without `agent`).
+
+    Args:
+        env: Grid2Op env containing the chronic.
+        converter: Observation converter feeding `chooser`; None if the chooser ignores observations.
+        chooser: Policy above `rho_threshold`.
+        actions: Policy actions, do-nothing at index 0.
+        chronic_id: Chronic path, as from `resolve_chronic_ids`.
+        base_seed: Base seed of `chronic_seed`.
+        rho_threshold: The policy acts only above this max rho.
+        line_reco: Enrich every action with `reconnection_rule`.
+
+    Returns:
+        Episode row with chronic, seed, steps_survived, max_step, n_decisions.
+    """
     seed = chronic_seed(base_seed, chronic_id)
     env.seed(seed)
     env.set_id(chronic_id)
     obs = env.reset()
-    gym_obs = converter.to_gym(obs)
+    gym_obs = converter.to_gym(obs) if converter is not None else None
     n_decisions = 0
     done = False
     while not done:
         if obs.rho.max() > rho_threshold:
-            action = actions[choose_action(model, gym_obs, device)]
+            action = actions[chooser(gym_obs)]
             n_decisions += 1
         else:
             action = actions[DO_NOTHING_INDEX]
         if line_reco:
             action = reconnection_rule(obs, action, env.action_space)
         obs, _, done, _ = env.step(action)
-        gym_obs = converter.to_gym(obs)
+        gym_obs = converter.to_gym(obs) if converter is not None else None
     return {
         "chronic": Path(chronic_id).name,
         "seed": seed,
@@ -84,21 +114,23 @@ def run_policy_chronic(
 
 def evaluate_policy(
     env: BaseEnv,
-    converter: ObservationConverter,
-    model: TorchModelV2,
+    converter: ObservationConverter | None,
+    chooser: ActionChooser,
     actions: list[BaseAction],
     chronic_names: list[str],
     agent: str,
     base_seed: int,
     rho_threshold: float,
     line_reco: bool,
-    device: torch.device,
 ) -> pd.DataFrame:
-    """Roll out several chronics; returns their episode table."""
-    model.eval()
+    """Roll out several chronics (see `run_policy_chronic`).
+
+    Returns:
+        Their episode table (`analysis.episodes`), with `agent` as agent column.
+    """
     rows = []
     for chronic_id in resolve_chronic_ids(env, chronic_names):
-        row = run_policy_chronic(env, converter, model, actions, chronic_id, base_seed, rho_threshold, line_reco, device)
+        row = run_policy_chronic(env, converter, chooser, actions, chronic_id, base_seed, rho_threshold, line_reco)
         logger.info(f"{row['chronic']}: survived {row['steps_survived']}/{row['max_step']} ({row['n_decisions']} decisions)")
         rows.append({"agent": agent, **row})
     return make_episodes(rows)
