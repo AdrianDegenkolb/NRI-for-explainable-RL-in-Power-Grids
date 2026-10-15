@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from imitation.tutor import DO_NOTHING_INDEX
+from imitation.tutor import DO_NOTHING_INDEX, DO_NOTHING_MARGIN
 
 GENERAL_TUTOR = "general_tutor"  # curriculumagent GeneralTutor, rows [action_idx, *obs.to_vect()]
 GREEDY_TUTOR = "greedy_tutor"    # imitation.tutor, one .npz per chronic
@@ -87,18 +87,28 @@ def one_hot(index: np.ndarray, n_actions: int) -> np.ndarray:
     return target
 
 
-def soft_targets(max_rho: np.ndarray, valid: np.ndarray, temperature: float) -> np.ndarray:
-    """Boltzmann targets p(a|s) ∝ exp(-(rho_a - rho_min) / T) over valid actions.
+def soft_targets(
+    max_rho: np.ndarray, valid: np.ndarray, temperature: float, margin: float = DO_NOTHING_MARGIN
+) -> np.ndarray:
+    """Boltzmann targets over do-nothing and the actions that beat it by more than `margin`.
+
+    The support is do-nothing plus every valid action with rho_a < rho_dn - margin, the Tutor's
+    rule for preferring a topology action (`select_action`). Within it, p(a|s) ∝ exp(-rho_a / T),
+    with do-nothing scored as rho_dn - margin. So do-nothing keeps mass when the best gain over it
+    is small and loses it smoothly as the gain grows, while actions that do not beat it by the
+    margin (including the many that simulate to exactly rho_dn) get 0. The argmax is the Tutor's
+    executed action. If do-nothing is invalid, all valid actions form the support; if no action is
+    valid, the target is do-nothing.
 
     The temperature is in rho units, not normalised per state: T = 0.01 gives actions within
-    ~0.01 of the best noticeable mass in every state. The argmax equals the lowest-rho action
-    for any T; invalid actions get probability 0. A state with no valid action falls back to
-    do-nothing.
+    ~0.01 of the best noticeable mass in every state.
 
     Args:
-        max_rho: Simulated max rho [n, A], NaN where invalid.
+        max_rho: Simulated max rho [n, A], NaN where invalid; index 0 is do-nothing.
         valid: Validity mask [n, A].
         temperature: Softmax temperature in rho units, > 0.
+        margin: Gain over do-nothing an action needs to enter the support (the Tutor's
+            `do_nothing_margin`).
 
     Returns:
         Targets [n, A] float32, rows summing to 1.
@@ -106,11 +116,18 @@ def soft_targets(max_rho: np.ndarray, valid: np.ndarray, temperature: float) -> 
     if temperature <= 0:
         raise ValueError(f"temperature must be > 0, got {temperature}; use hard targets instead")
     rho = np.where(valid, max_rho, np.inf).astype(np.float64)
+    rho_dn = rho[:, DO_NOTHING_INDEX:DO_NOTHING_INDEX + 1]
+    support = rho < rho_dn - margin
+    support[:, DO_NOTHING_INDEX] = valid[:, DO_NOTHING_INDEX]
+    rho[:, DO_NOTHING_INDEX] -= margin
+
+    # Subtracting the per-state minimum keeps the best weight at exp(0) = 1 (no underflow).
+    rho = np.where(support, rho, np.inf)
     rho_min = rho.min(axis=1, keepdims=True)
-    no_valid = ~np.isfinite(rho_min[:, 0])
+    empty = ~np.isfinite(rho_min[:, 0])
     logits = -(rho - np.where(np.isfinite(rho_min), rho_min, 0.0)) / temperature
-    weights = np.where(valid, np.exp(logits), 0.0)
-    weights[no_valid, DO_NOTHING_INDEX] = 1.0
+    weights = np.where(support, np.exp(logits), 0.0)
+    weights[empty, DO_NOTHING_INDEX] = 1.0
     return (weights / weights.sum(axis=1, keepdims=True)).astype(np.float32)
 
 
@@ -157,7 +174,8 @@ def from_greedy_tutor(experience_dir: Path, target: str, temperature: float = 0.
 
     Args:
         experience_dir: Directory of per-chronic `.npz` files.
-        target: `"hard"` (one-hot of the executed action) or `"soft"` (see `soft_targets`).
+        target: `"hard"` (one-hot of the executed action) or `"soft"` (see `soft_targets`, with
+            the margin the Tutor ran with).
         temperature: Softmax temperature for `"soft"`.
 
     Returns:
@@ -167,21 +185,26 @@ def from_greedy_tutor(experience_dir: Path, target: str, temperature: float = 0.
         raise ValueError(f"Unknown target '{target}', expected '{HARD}' or '{SOFT}'")
     parts: dict[str, list] = {k: [] for k in ("obs", "max_rho", "valid", "action", "chronic", "step")}
     action_space = None
+    margins = set()
     for path in sorted(experience_dir.glob("*.npz")):
         with np.load(path) as data:
             action_space = str(data["action_space"])
+            margins.add(float(data["do_nothing_margin"]))
             if len(data["action"]) == 0:
                 continue
             for key in ("obs", "max_rho", "valid", "action", "step"):
                 parts[key].append(data[key])
             parts["chronic"].append(np.full(len(data["action"]), str(data["chronic"])))
+    if len(margins) != 1:
+        raise ValueError(f"Expected one do_nothing_margin across all chronics, found {sorted(margins)}")
+    margin = margins.pop()
     arrays = {k: np.concatenate(v) for k, v in parts.items()}
     n_actions = arrays["max_rho"].shape[1]
 
     if target == HARD:
         policy_target = one_hot(arrays["action"].astype(np.int64), n_actions)
     else:
-        policy_target = soft_targets(arrays["max_rho"], arrays["valid"], temperature)
+        policy_target = soft_targets(arrays["max_rho"], arrays["valid"], temperature, margin)
 
     # When no action is valid the Tutor falls back to do-nothing; keep that target unmasked so a
     # masked policy can still assign it probability.
@@ -195,7 +218,7 @@ def from_greedy_tutor(experience_dir: Path, target: str, temperature: float = 0.
         step=arrays["step"].astype(np.int32),
         max_rho=arrays["max_rho"],
         metadata={"source": GREEDY_TUTOR, "target": target, "temperature": float(temperature),
-                  "action_space": action_space, "n_actions": n_actions},
+                  "do_nothing_margin": margin, "action_space": action_space, "n_actions": n_actions},
     )
 
 
