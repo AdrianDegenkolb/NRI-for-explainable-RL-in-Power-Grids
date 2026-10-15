@@ -36,7 +36,7 @@ from imitation.dataset import load_split
 from imitation.pretrain import build_policy_model
 from imitation.rollout import evaluate_policy
 from imitation.tutor import load_policy_actions
-from pretrain_policy import policy_model_config
+from imitation.pretrain_run import policy_model_config
 
 
 def main(args: argparse.Namespace) -> None:
