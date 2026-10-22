@@ -1,7 +1,8 @@
 """
 Optuna search over imitation pretraining settings (src/imitation/hpo.py), one study per dataset.
 
-Config: configs/rllib/pretrain_hpo.yaml (GNN + GAT on IEEE-36, search space in `hpo`). Each worker
+Config: configs/rllib/pretrain_hpo.yaml (GNN + GAT on IEEE-36, CompleteGraphObsSpace, search space
+and pruner in `hpo`, objective: mean validation regret of top-20 simulation). Each worker
 joins the study `experiment.name` in `imitation.out_dir/study.log` and runs trials until the study
 has `hpo.n_trials`. Run once with `hpo.convert_only=true` first, so the workers find the converted
 observations in the cache instead of all converting them at once.
@@ -13,7 +14,7 @@ Writes to `imitation.out_dir` (results/junior/<study>/):
 Summarize with experiments/summarize_hpo.py.
 
 Example:
-    PYTHONPATH=$(pwd)/src python experiments/pretrain_hpo.py experiment.name=junior_hard \\
+    PYTHONPATH=$(pwd)/src python experiments/pretrain_hpo.py experiment.name=junior2_hard \\
         imitation.dataset=data/imitation/case36_k208_greedy_hard.npz imitation.device=cuda hpo.worker_id=0
 """
 import logging
@@ -24,7 +25,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from core.constants import set_seed
 from core.rllib_config import build_env_config, register_custom_models
-from imitation.hpo import load_study, make_objective, run_study
+from imitation.hpo import load_study, make_objective, run_study, study_sampler_seed
 from imitation.pretrain_run import CONFIG_FILE, build_datasets, check_pretraining_config, converter_observation_space
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ def main(cfg: DictConfig) -> None:
     if cfg.hpo.convert_only:
         logger.info("Observations converted and cached (hpo.convert_only=true)")
         return
-    study = load_study(study_dir, cfg.experiment.name, sampler_seed=cfg.hpo.sampler_seed + cfg.hpo.worker_id,
+    sampler_seed = study_sampler_seed(cfg.experiment.name, cfg.hpo.worker_id, cfg.hpo.sampler_seed)
+    study = load_study(study_dir, cfg.experiment.name, sampler_seed=sampler_seed,
                        pruner=OmegaConf.to_container(cfg.hpo.pruner))
     study.set_user_attr("dataset", str(cfg.imitation.dataset))
     run_study(study, make_objective(cfg, sets, converter_observation_space(env_config), study_dir), cfg.hpo.n_trials)

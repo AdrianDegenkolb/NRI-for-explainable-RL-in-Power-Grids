@@ -9,15 +9,17 @@
 # the notebook reads. GPU training is not bit-for-bit reproducible, so the curves differ slightly from
 # the HPO trial's.
 #
-# The best trials took ~27 min on one GPU, so the 30 min dev partitions are too tight by default.
+# The best trials of the first Junior experiment took ~27 min on one GPU, those of Junior Continued
+# (junior2_*, up to 150 epochs) up to ~80 min, so the 30 min dev partitions are too tight by default.
 #
 # Usage:
 #   slurm/unicluster/junior_retrain.sh [study ...]
 #   default studies: junior_hard junior_soft_t0.005 junior_soft_t0.01 junior_soft_t0.02
+#   Junior Continued: junior2_hard junior2_soft_t0.005 junior2_soft_t0.01 junior2_soft_t0.02
 #
 # Environment:
 #   SBATCH_PARTITION   Partition(s) (default gpu_h100,gpu_a100_il).
-#   SBATCH_TIME        Walltime (default 01:00:00).
+#   SBATCH_TIME        Walltime (default 02:00:00).
 #   DRY_RUN=1          Print the sbatch scripts instead of submitting.
 #
 # Example:
@@ -30,7 +32,7 @@ if [[ ${#STUDIES[@]} -eq 0 ]]; then
     STUDIES=(junior_hard junior_soft_t0.005 junior_soft_t0.01 junior_soft_t0.02)
 fi
 SBATCH_PARTITION="${SBATCH_PARTITION:-gpu_h100,gpu_a100_il}"
-SBATCH_TIME="${SBATCH_TIME:-01:00:00}"
+SBATCH_TIME="${SBATCH_TIME:-02:00:00}"
 OUT_ROOT="results/junior/junior_training"
 
 for STUDY in "${STUDIES[@]}"; do

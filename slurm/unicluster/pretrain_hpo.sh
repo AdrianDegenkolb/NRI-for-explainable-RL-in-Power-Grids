@@ -22,7 +22,7 @@
 #   DRY_RUN=1          Print the sbatch scripts instead of submitting.
 #
 # Example:
-#   slurm/unicluster/pretrain_hpo.sh junior_hard data/imitation/case36_k208_greedy_hard.npz
+#   slurm/unicluster/pretrain_hpo.sh junior2_hard data/imitation/case36_k208_greedy_hard.npz
 
 USAGE="Usage: pretrain_hpo.sh <study_name> <dataset.npz> [hydra overrides...]"
 STUDY="${1:?$USAGE}"

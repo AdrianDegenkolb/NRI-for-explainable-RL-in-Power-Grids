@@ -3,8 +3,10 @@ Optuna search over imitation pretraining settings (configs/rllib/pretrain_hpo.ya
 
 A trial samples overrides of the Hydra config from a declarative search space (dotted config paths
 -> spec), trains one pretraining run (`imitation.pretrain_run.run_pretraining`) into
-`<study_dir>/trial_<n>/` and returns the best validation value of `hpo.monitor` (CE - target
-entropy by default). Epoch values are reported to Optuna so a median pruner can stop weak trials.
+`<study_dir>/trial_<n>/` and returns the best validation value of `hpo.monitor` (e.g.
+`val_regret_top20`, the regret of top-20 simulation). Epoch values are reported to Optuna so a
+percentile pruner can stop weak trials. Every study and worker gets its own sampler seed
+(`study_sampler_seed`), so no two of them start from the same configurations.
 
 The study lives in a journal file (`<study_dir>/study.log`), which several workers on a shared
 file system can use at once, unlike SQLite.
@@ -12,6 +14,7 @@ file system can use at once, unlike SQLite.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -147,14 +150,45 @@ def make_objective(
     return objective
 
 
+def study_sampler_seed(study_name: str, worker_id: int, base_seed: int = 0) -> int:
+    """Sampler seed of one worker of one study.
+
+    A stable hash of all three inputs (Python's `hash` of a string changes between processes), so
+    studies of different datasets and their workers do not start from the same configurations.
+
+    Args:
+        study_name: Name of the study (`experiment.name`).
+        worker_id: Index of the parallel worker.
+        base_seed: Extra seed, to repeat a study with different samples.
+
+    Returns:
+        Seed in [0, 2**32).
+    """
+    key = f"{base_seed}:{study_name}:{worker_id}".encode()
+    return int.from_bytes(hashlib.sha256(key).digest()[:4], "little")
+
+
+def make_pruner(pruner: dict | None = None) -> optuna.pruners.PercentilePruner:
+    """Percentile pruner from config kwargs.
+
+    For a minimised objective, a trial is pruned at an epoch if its best value so far is above the
+    `percentile`-th percentile of the completed trials' values at that epoch. 75 prunes only the
+    worst quarter; the default 50 equals Optuna's `MedianPruner`.
+
+    Args:
+        pruner: `PercentilePruner` kwargs (percentile, n_startup_trials, n_warmup_steps); None = defaults.
+    """
+    return optuna.pruners.PercentilePruner(**{"percentile": 50.0, **(pruner or {})})
+
+
 def load_study(study_dir: Path, study_name: str, sampler_seed: int | None = None, pruner: dict | None = None) -> optuna.Study:
     """Create or join the study stored in `<study_dir>/study.log`.
 
     Args:
         study_dir: Directory of the journal file.
         study_name: Name of the study within the journal.
-        sampler_seed: Seed of the TPE sampler; give every parallel worker its own.
-        pruner: `MedianPruner` kwargs (n_startup_trials, n_warmup_steps); None = defaults.
+        sampler_seed: Seed of the TPE sampler; give every study and worker its own (`study_sampler_seed`).
+        pruner: Kwargs of `make_pruner`.
 
     Returns:
         The study (direction: minimize).
@@ -166,7 +200,7 @@ def load_study(study_dir: Path, study_name: str, sampler_seed: int | None = None
         storage=storage,
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=sampler_seed),
-        pruner=optuna.pruners.MedianPruner(**(pruner or {})),
+        pruner=make_pruner(pruner),
         load_if_exists=True,
     )
 

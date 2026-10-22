@@ -109,6 +109,35 @@ def _to_device(batch: dict, device: torch.device) -> dict:
     return {k: (_to_device(v, device) if isinstance(v, dict) else v.to(device)) for k, v in batch.items()}
 
 
+def valid_rho(max_rho: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Simulated max rho [B, A] with inf for every action that is masked out or whose simulation failed (NaN)."""
+    return torch.where(valid & torch.isfinite(max_rho), max_rho, torch.full_like(max_rho, float("inf")))
+
+
+def regret_top_k(logits: torch.Tensor, rho: torch.Tensor, k: int) -> torch.Tensor:
+    """Per-state regret of top-k simulation: the best valid action among the k highest logits.
+
+    Mirrors the agent's top-k simulation without its do-nothing margin. If none of the k actions is
+    valid, the agent falls back to do-nothing. If do-nothing is invalid too (the episode would end),
+    the state counts as its worst valid action.
+
+    Args:
+        logits: Action logits [B, A].
+        rho: Simulated max rho [B, A], inf where invalid (see `valid_rho`).
+        k: Number of top-ranked actions.
+
+    Returns:
+        Regret [B]: max rho of the chosen action minus that of the best valid action. Meaningless
+        for states without any valid action (best rho inf); callers must leave them out.
+    """
+    top = logits.topk(min(k, logits.shape[-1]), dim=-1).indices
+    chosen = rho.gather(1, top).min(dim=-1).values
+    chosen = torch.where(torch.isfinite(chosen), chosen, rho[:, DO_NOTHING_INDEX])
+    worst = torch.where(torch.isfinite(rho), rho, torch.full_like(rho, -float("inf"))).max(dim=-1).values
+    chosen = torch.where(torch.isfinite(chosen), chosen, worst)
+    return chosen - rho.min(dim=-1).values
+
+
 @torch.no_grad()
 def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: torch.device) -> dict[str, float]:
     """Validation metrics.
@@ -118,11 +147,13 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
     do_nothing_rate (share of argmax = do-nothing). If the dataset has simulated max rho:
     good_action_rate (argmax within GOOD_ACTION_TOLERANCE of the best valid action), regret (mean
     rho excess of the argmax over the best valid action; invalid choices count as missing),
-    invalid_rate (argmax not valid).
+    invalid_rate (argmax not valid), regret_top<k> for k in TOP_K (mean `regret_top_k` over the
+    states with a valid action).
     """
     model.eval()
     sums: dict[str, float] = {}
     n_regret = 0
+    n_with_valid = 0
     n = 0
     for batch in DataLoader(dataset, batch_size=batch_size):
         batch = _to_device(batch, device)
@@ -140,7 +171,7 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
             "do_nothing_rate": (pred == DO_NOTHING_INDEX).sum().item(),
         }
         if "max_rho" in batch:
-            rho = torch.where(batch["valid"], batch["max_rho"], torch.full_like(batch["max_rho"], float("inf")))
+            rho = valid_rho(batch["max_rho"], batch["valid"])
             best = rho.min(dim=-1).values
             chosen = rho.gather(1, pred.unsqueeze(-1)).squeeze(-1)
             has_best = torch.isfinite(best)
@@ -148,14 +179,16 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
             stats["good_action_rate"] = (chosen_valid & (chosen - best <= GOOD_ACTION_TOLERANCE)).sum().item()
             stats["invalid_rate"] = (~torch.isfinite(chosen) & has_best).sum().item()
             stats["regret"] = (chosen - best)[chosen_valid].sum().item()
+            for k in TOP_K:
+                stats[f"regret_top{k}"] = regret_top_k(logits, rho, k)[has_best].sum().item()
             n_regret += int(chosen_valid.sum().item())
+            n_with_valid += int(has_best.sum().item())
         for key, value in stats.items():
             sums[key] = sums.get(key, 0.0) + value
         n += b
-    metrics = {k: v / n for k, v in sums.items() if k != "regret"}
+    regret_counts = {"regret": n_regret, **{f"regret_top{k}": n_with_valid for k in TOP_K}}
+    metrics = {k: v / max(regret_counts.get(k, n), 1) for k, v in sums.items()}
     metrics["kl"] = metrics["loss"] - metrics["entropy"]
-    if "regret" in sums:
-        metrics["regret"] = sums["regret"] / max(n_regret, 1)
     return metrics
 
 

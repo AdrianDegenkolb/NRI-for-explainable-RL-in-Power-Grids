@@ -1,12 +1,14 @@
-# Optuna search over imitation pretraining settings (experiments/pretrain_hpo.py), Junior experiment:
-# GNN policy (fixed graph, no encoder) with GAT convolutions on IEEE-36, GraphObsSpace without
-# forecasts. One study per dataset: select it with imitation.dataset=... and experiment.name=<study>.
+# Optuna search over imitation pretraining settings (experiments/pretrain_hpo.py), Junior Continued
+# experiment: GNN policy (fixed graph, no encoder) with GAT convolutions on IEEE-36, CompleteGraphObsSpace
+# without forecasts. One study per dataset: select it with imitation.dataset=... and experiment.name=<study>.
 # Trials are written to imitation.out_dir (results/junior/<study>/trial_<n>/).
+# The first Junior experiment (GraphObsSpace, val KL, median pruner, 50 epochs) is in the config.yaml of
+# its studies, results/junior/junior_*/config.yaml.
 defaults:
   - config
   - override env: case36
   - override model: gnn
-  - override obs_space: default
+  - override obs_space: complete_graph
   - override relation_awareness: disabled
   - override imitation: default
   - _self_
@@ -18,15 +20,20 @@ model:
 obs_space:
   use_forecasts: false  # imitation data has no forecasts
 
+imitation:
+  epochs: 150           # cap; early stopping (patience) usually ends a trial before
+  monitor: regret_top20 # mean regret of top-20 simulation on the val split, comparable across datasets
+
 hpo:
   n_trials: 40          # trials per study (complete + pruned + failed), shared by all workers
-  worker_id: 0          # distinct per parallel worker (SLURM array task id); offsets the sampler seed
-  sampler_seed: 0
-  monitor: val_kl       # history column to minimise: CE - entropy of the targets on the val split
+  worker_id: 0          # distinct per parallel worker (SLURM array task id)
+  sampler_seed: 0       # hashed with the study name and worker id (imitation.hpo.study_sampler_seed)
+  monitor: val_${imitation.monitor}  # history column to minimise: Optuna objective and pruning
   convert_only: false   # only convert (and cache) the observations, then exit; run once before the workers
-  pruner:
-    n_startup_trials: 5 # no pruning before this many trials have finished
-    n_warmup_steps: 3   # no pruning in a trial's first epochs
+  pruner:               # PercentilePruner
+    percentile: 75      # prune a trial only if it is worse than 75 % of the completed trials (the worst quarter)
+    n_startup_trials: 10 # no pruning before this many trials have completed (pruned ones do not count)
+    n_warmup_steps: 20  # no pruning before epoch 20
   # Keys are dotted paths into this config. Types: float (low, high, log), int (low, high), categorical (choices).
   search_space:
     imitation.lr: {type: float, low: 1.0e-4, high: 1.0e-2, log: true}
@@ -36,7 +43,7 @@ hpo:
     model.gnn.hidden_dim: {type: categorical, choices: [128, 256, 512, 1024]}
     model.gnn.num_layers: {type: categorical, choices: [2, 3, 4]}
     model.gnn.dropout_prob: {type: float, low: 0.0, high: 0.3}
-    model.fcnet_hiddens: {type: categorical, choices: [[128, 128], [256, 256], [512, 512], [1024, 1024]]}
+    model.fcnet_hiddens: {type: categorical, choices: [[64, 64], [128, 128], [256, 256], [512, 512], [1024, 1024]]}
 
 hydra:
   run:

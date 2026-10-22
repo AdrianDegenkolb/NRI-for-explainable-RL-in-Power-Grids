@@ -5,6 +5,7 @@ rarl_rllib/callback.py.
 Tests are organised by class:
   - TestSoftCrossEntropy
   - TestTargetEntropy
+  - TestRegretTopK
   - TestEvaluate
   - TestPredict
   - TestTrain
@@ -32,9 +33,11 @@ from imitation.pretrain import (
     evaluate,
     policy_logits,
     predict,
+    regret_top_k,
     soft_cross_entropy,
     target_entropy,
     train,
+    valid_rho,
 )
 from imitation.torch_dataset import _trim_edges
 from rarl_rllib.callback import is_value_parameter, set_policy_trainable
@@ -110,7 +113,41 @@ class _FixedLogits(torch.nn.Module):
         return input_dict["obs"]["logits"], state
 
 
+class TestRegretTopK(unittest.TestCase):
+    def test_best_valid_action_among_top_k_with_fallbacks(self):
+        inf = float("inf")
+        # Logits rank the actions 4 > 3 > 2 > 1 > 0 in every state, so k = 2 simulates actions 4 and 3.
+        logits = torch.arange(5, dtype=torch.float32).repeat(4, 1)
+        rho = torch.tensor([
+            [0.9, 0.95, 0.8, 0.7, 0.75],  # best valid action (3) among the top 2 -> 0
+            [0.9, 0.6, 0.8, 0.85, 0.95],  # top 2 valid, best is action 1 -> 0.85 - 0.6
+            [0.9, 0.6, 0.8, inf, inf],    # top 2 invalid -> do-nothing: 0.9 - 0.6
+            [inf, 0.6, 0.8, inf, inf],    # top 2 and do-nothing invalid -> worst valid action: 0.8 - 0.6
+        ])
+        torch.testing.assert_close(regret_top_k(logits, rho, k=2), torch.tensor([0.0, 0.25, 0.3, 0.2]))
+
+    def test_valid_rho_marks_masked_and_failed_simulations_as_inf(self):
+        max_rho = torch.tensor([[0.9, float("nan"), 0.8]])
+        valid = torch.tensor([[True, True, False]])
+        torch.testing.assert_close(valid_rho(max_rho, valid), torch.tensor([[0.9, float("inf"), float("inf")]]))
+
+
 class TestEvaluate(unittest.TestCase):
+    def test_regret_top_k_skips_states_without_valid_action(self):
+        # Logits rank action a at position a + 1. State 0: rho falls with the action index, best is
+        # action 24 (0.76); top 5 reach action 4 (0.96), top 20 action 19 (0.81). State 1: nothing valid.
+        n = 25
+        logits = torch.arange(n, dtype=torch.float32).flip(0).repeat(2, 1)
+        target = torch.zeros(2, n)
+        target[:, 0] = 1.0
+        max_rho = torch.stack([1.0 - 0.01 * torch.arange(n, dtype=torch.float32), torch.full((n,), float("nan"))])
+        valid = torch.stack([torch.ones(n, dtype=torch.bool), torch.arange(n) == 0])
+        dataset = [{"obs": {"logits": logits[i]}, "target": target[i], "max_rho": max_rho[i], "valid": valid[i]}
+                   for i in range(2)]
+        metrics = evaluate(_FixedLogits(), dataset, batch_size=2, device=torch.device("cpu"))
+        self.assertAlmostEqual(metrics["regret_top5"], 0.2, places=5)
+        self.assertAlmostEqual(metrics["regret_top20"], 0.05, places=5)
+
     def test_regret_and_good_action_rate(self):
         # Sample 0 picks action 1 (best). Sample 1 picks action 2: valid, 0.05 worse than best.
         # Sample 2 picks invalid action 3.

@@ -45,6 +45,25 @@ _DEFAULT_NODE_FEATURES = [
 # Features read from get_forecast_arrays(), which is only called when one of them is observed.
 _FORECAST_NODE_FEATURES = ("active_power_forecast", "reactive_power_forecast")
 
+# Node features of CompleteGraphObservationConverter besides forecasts and the node-type one-hot.
+# Voltage angles are left out: obs.to_vect() of l2rpn_wcci_2020 does not contain them, so they
+# cannot be restored from imitation data.
+_COMPLETE_STATE_NODE_FEATURES = [
+    "active_power",
+    "reactive_power",
+    "voltage",
+    "rho",
+    "timestep_overflow",
+    "time_before_cooldown_line",
+    "time_next_maintenance",
+    "duration_next_maintenance",
+    "time_before_cooldown_sub",
+]
+# Node types in node order; each gets a one-hot column `node_type_<type>`.
+_NODE_TYPES = ("line_or", "line_ex", "gen", "load", "storage")
+# time_next_maintenance is clipped to this many steps (one day of 5-minute steps).
+MAINTENANCE_HORIZON_STEPS = 288
+
 
 @dataclass
 class _GridDimensions:
@@ -179,6 +198,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs_space.load_to_subid,
             g2op_obs_space.storage_to_subid,
         ])
+        self._sub_ids = sub_ids
         # Candidate topology pairs: all (i, j) with i < j in the same substation.
         # Filtering to same-bus + connected is done dynamically; this eliminates the
         # O(N²) same_sub broadcast that was recomputed on every observation step.
@@ -394,6 +414,86 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs.day_of_week,
             g2op_obs.minute_of_hour,
         ], dtype=np.float32)
+
+
+def complete_node_features(use_forecasts: bool, has_storage: bool) -> list[str]:
+    """Node features of CompleteGraphObservationConverter, in column order.
+
+    Args:
+        use_forecasts: Include the forecast features first.
+        has_storage: Include the `node_type_storage` column (only grids with storage units).
+
+    Returns:
+        Feature names: forecasts, `_COMPLETE_STATE_NODE_FEATURES`, then one `node_type_<type>` per node type.
+    """
+    forecasts = list(_FORECAST_NODE_FEATURES) if use_forecasts else []
+    types = [t for t in _NODE_TYPES if t != "storage" or has_storage]
+    return forecasts + _COMPLETE_STATE_NODE_FEATURES + [f"node_type_{t}" for t in types]
+
+
+def scale_time_next_maintenance(steps: npt.ArrayLike, horizon: int = MAINTENANCE_HORIZON_STEPS) -> npt.NDArray[np.float32]:
+    """Steps until the next maintenance, clipped to `horizon` and scaled to [0, 1].
+
+    Args:
+        steps: grid2op `time_next_maintenance` per line; -1 means none planned, 0 means ongoing.
+
+    Returns:
+        min(steps, horizon) / horizon per line; -1 maps to 1 (not within the horizon).
+    """
+    steps = np.asarray(steps, dtype=np.float32)
+    return np.where(steps < 0, 1.0, np.minimum(steps, horizon) / horizon).astype(np.float32)
+
+
+class CompleteGraphObservationConverter(GraphObservationConverter):
+    """GraphObservationConverter with the operational state of lines and substations.
+
+    Same graph (nodes, edges, global features) as the parent. Node features differ:
+      - no voltage angles (not restorable from `obs.to_vect()` of imitation data)
+      - line features on both line-end nodes, 0 elsewhere: `timestep_overflow`,
+        `time_before_cooldown_line`, `time_next_maintenance` (see `scale_time_next_maintenance`),
+        `duration_next_maintenance`
+      - `time_before_cooldown_sub` on every node of the substation
+      - a node-type one-hot (line origin, line extremity, generator, load, storage if the grid has any)
+
+    The feature set is fixed (`complete_node_features`); `use_forecasts` only adds or drops the
+    forecast columns. Features are normalized like the parent's, by a running mean/variance.
+    """
+
+    def __init__(self, g2op_obs_space: ObservationSpace, use_forecasts: bool = True, verbose: bool = False):
+        """Args:
+            g2op_obs_space: Observation space of the grid2op env.
+            use_forecasts: Include the forecast node features.
+            verbose: Log the graph size and features.
+        """
+        features = complete_node_features(use_forecasts, has_storage=g2op_obs_space.n_storage > 0)
+        super().__init__(g2op_obs_space, attr_to_observe=features, verbose=verbose)
+        self._node_type_features = self._build_node_type_features()
+
+    def _build_node_type_features(self) -> dict[str, npt.NDArray[np.float32]]:
+        """Static one-hot columns: `node_type_<type>` -> [num_nodes] (1 on nodes of that type)."""
+        dims = self._dims
+        counts = [dims.n_line, dims.n_line, dims.n_gen, dims.n_load, dims.n_storage]
+        node_type = np.repeat(np.arange(len(_NODE_TYPES)), counts)
+        return {f"node_type_{name}": (node_type == i).astype(np.float32) for i, name in enumerate(_NODE_TYPES)}
+
+    def _on_line_ends(self, values: npt.ArrayLike) -> npt.NDArray[np.float32]:
+        """Per-line values [n_line] as a node column [num_nodes]: on both line ends, 0 elsewhere."""
+        values = np.asarray(values, dtype=np.float32)
+        rest = np.zeros(self._num_nodes - 2 * self._dims.n_line, dtype=np.float32)
+        return np.concatenate([values, values, rest])
+
+    def _compute_all_node_features(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
+        """Parent features plus line, substation and node-type features, each [num_nodes]."""
+        features = super()._compute_all_node_features(g2op_obs)
+        features.update({
+            "timestep_overflow": self._on_line_ends(g2op_obs.timestep_overflow),
+            "time_before_cooldown_line": self._on_line_ends(g2op_obs.time_before_cooldown_line),
+            "time_next_maintenance": self._on_line_ends(scale_time_next_maintenance(g2op_obs.time_next_maintenance)),
+            "duration_next_maintenance": self._on_line_ends(g2op_obs.duration_next_maintenance),
+            "time_before_cooldown_sub": g2op_obs.time_before_cooldown_sub[self._sub_ids].astype(np.float32),
+            **self._node_type_features,
+        })
+        return features
 
 
 class HeterogeneousGraphObservationConverter(GraphObservationConverter):
@@ -2721,6 +2821,12 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict, backend: Light
         return GraphObservationConverter(
             g2op_obs_space=gym_env.init_env.observation_space,
             attr_to_observe=attr_to_observe,
+            verbose=env_config.get("verbose", False),
+        )
+    elif mode == "CompleteGraphObsSpace":
+        return CompleteGraphObservationConverter(
+            g2op_obs_space=gym_env.init_env.observation_space,
+            use_forecasts=env_config.get("use_forecasts", True),
             verbose=env_config.get("verbose", False),
         )
     elif mode == "HeterogeneousGraphObsSpace":

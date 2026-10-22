@@ -13,7 +13,8 @@ epochs: 50
 batch_size: 256
 lr: 1.0e-3
 weight_decay: 1.0e-4
-patience: 5                # epochs without lower val loss before stopping
+patience: 5                # epochs without a lower val `monitor` before stopping
+monitor: kl                # val metric (key of imitation.pretrain.evaluate, lower = better) for early stopping and the best epoch
 device: cpu
 out_dir: ${experiment.storage_path}/junior/${experiment.name}
 

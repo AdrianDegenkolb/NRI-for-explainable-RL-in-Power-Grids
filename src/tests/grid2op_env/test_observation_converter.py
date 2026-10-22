@@ -8,6 +8,7 @@ Tests are organised by class:
   - TestGraphObservationConverterEdgeIndex
   - TestGraphObservationConverterNormalize
   - TestGraphObservationConverterIntegration
+  - TestCompleteGraphObservationConverter
 """
 from __future__ import annotations
 
@@ -15,8 +16,10 @@ import unittest
 
 import grid2op
 import numpy as np
+from grid2op.gym_compat import GymEnv
 
 from grid2op_env.observation_converter import (
+    CompleteGraphObservationConverter,
     GraphObservationConverter,
     HeterogeneousGraphObservationConverter,
     SubstationGraphObservationConverter,
@@ -24,6 +27,9 @@ from grid2op_env.observation_converter import (
     _GridDimensions,
     NODES, EDGE_INDEX, EDGE_MASK, NODE_MASK, EDGE_TYPE, EDGES, GLOBAL,
     _DEFAULT_NODE_FEATURES,
+    complete_node_features,
+    make_observation_converter,
+    scale_time_next_maintenance,
 )
 
 ENV_NAME = "l2rpn_wcci_2020"
@@ -993,6 +999,82 @@ class TestElementGraphObservationConverterIntegration(unittest.TestCase):
         count_before = self.converter._normalizer.count
         self.converter.to_gym(self.obs)
         self.assertGreater(self.converter._normalizer.count, count_before)
+
+
+class TestCompleteGraphObservationConverter(unittest.TestCase):
+    """Node features of CompleteGraphObservationConverter (before normalization)."""
+
+    def setUp(self):
+        self.converter = CompleteGraphObservationConverter(env.observation_space, use_forecasts=False)
+        self.dim = _GridDimensions.from_obs_space(env.observation_space)
+        self.obs = env.reset().copy()
+        self.n_rest = self.converter.num_nodes - 2 * self.dim.n_line
+
+    def features(self, obs) -> dict[str, np.ndarray]:
+        """Selected raw node feature columns by name."""
+        matrix = self.converter._get_node_features(obs)
+        return dict(zip(self.converter.attr_to_observe, matrix.T))
+
+    def test_feature_list_has_no_angles_and_four_node_types_without_storage(self):
+        names = self.converter.attr_to_observe
+        self.assertNotIn("voltage_angle_cos", names)
+        self.assertNotIn("voltage_angle_sin", names)
+        self.assertNotIn("active_power_forecast", names)
+        self.assertEqual([n for n in names if n.startswith("node_type_")],
+                         ["node_type_line_or", "node_type_line_ex", "node_type_gen", "node_type_load"])
+        self.assertEqual(self.converter.x_dim, len(names))
+
+    def test_forecasts_and_storage_columns_are_optional(self):
+        names = complete_node_features(use_forecasts=True, has_storage=True)
+        self.assertEqual(names[:2], ["active_power_forecast", "reactive_power_forecast"])
+        self.assertEqual(names[-1], "node_type_storage")
+
+    def test_line_features_on_both_line_ends_and_zero_elsewhere(self):
+        n_line = self.dim.n_line
+        self.obs.timestep_overflow = np.arange(n_line, dtype=np.int32) % 4
+        self.obs.time_before_cooldown_line = np.arange(n_line, dtype=np.int32) % 3
+        self.obs.duration_next_maintenance = np.arange(n_line, dtype=np.int32)
+        feats = self.features(self.obs)
+        for name in ("timestep_overflow", "time_before_cooldown_line", "duration_next_maintenance"):
+            with self.subTest(feature=name):
+                expected = getattr(self.obs, name).astype(np.float32)
+                np.testing.assert_array_equal(feats[name][:n_line], expected)
+                np.testing.assert_array_equal(feats[name][n_line:2 * n_line], expected)
+                np.testing.assert_array_equal(feats[name][2 * n_line:], np.zeros(self.n_rest))
+
+    def test_time_next_maintenance_is_clipped_to_one_day(self):
+        np.testing.assert_allclose(scale_time_next_maintenance([-1, 0, 144, 288, 600]), [1.0, 0.0, 0.5, 1.0, 1.0])
+        feats = self.features(self.obs)
+        n_line = self.dim.n_line
+        expected = scale_time_next_maintenance(self.obs.time_next_maintenance)
+        np.testing.assert_array_equal(feats["time_next_maintenance"][n_line:2 * n_line], expected)
+        np.testing.assert_array_equal(feats["time_next_maintenance"][2 * n_line:], np.zeros(self.n_rest))
+
+    def test_substation_cooldown_on_every_node_of_the_substation(self):
+        self.obs.time_before_cooldown_sub = np.arange(env.n_sub, dtype=np.int32)
+        sub_ids = np.concatenate([env.line_or_to_subid, env.line_ex_to_subid, env.gen_to_subid,
+                                  env.load_to_subid, env.storage_to_subid])
+        np.testing.assert_array_equal(self.features(self.obs)["time_before_cooldown_sub"], sub_ids)
+
+    def test_node_type_one_hot(self):
+        feats = self.features(self.obs)
+        one_hot = np.stack([feats[f"node_type_{t}"] for t in ("line_or", "line_ex", "gen", "load")], axis=1)
+        np.testing.assert_array_equal(one_hot.sum(axis=1), np.ones(self.converter.num_nodes))
+        counts = [self.dim.n_line, self.dim.n_line, self.dim.n_gen, self.dim.n_load]
+        np.testing.assert_array_equal(one_hot.argmax(axis=1), np.repeat(np.arange(4), counts))
+
+    def test_features_survive_the_to_vect_round_trip_of_imitation_data(self):
+        """Imitation data stores obs.to_vect(); every feature must be restorable from it."""
+        restored = env.observation_space.from_vect(self.obs.to_vect())
+        np.testing.assert_array_equal(self.converter._get_node_features(restored),
+                                      self.converter._get_node_features(self.obs))
+
+    def test_factory_and_observation_space(self):
+        converter = make_observation_converter(
+            GymEnv(env), {"observation_space": "CompleteGraphObsSpace", "use_forecasts": False}, backend=env.backend)
+        self.assertIsInstance(converter, CompleteGraphObservationConverter)
+        self.assertEqual(converter.attr_to_observe, self.converter.attr_to_observe)
+        self.assertTrue(converter.observation_space.contains(converter.to_gym(self.obs)))
 
 
 if __name__ == "__main__":

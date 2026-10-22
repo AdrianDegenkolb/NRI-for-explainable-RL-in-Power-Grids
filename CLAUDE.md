@@ -47,7 +47,8 @@ The training pipeline is configured entirely via **Hydra** (configs/rllib/) and 
 - **experiment/**: trial-level settings (timesteps, seed, checkpoint freq)
 - **training/**: algorithm params — `ppo.yaml`, `sac.yaml`, `ppo_test.yaml`, `sac_test.yaml`
 - **model/**: network architecture — `ragnn.yaml` (full model), `gnn.yaml` (no encoder), `mlp.yaml` (baseline)
-- **obs_space/**: `graph.yaml` (nodes/edge_index/edge_mask) or `flat.yaml`
+- **obs_space/**: `default.yaml` (graph: nodes/edge_index/edge_mask), `complete_graph.yaml` (graph plus
+  line/substation state and node-type one-hot, no voltage angles; used for imitation) or `flat.yaml`
 - **env/**: Grid2Op case definition (case14)
 - **reward/**: reward function class (`rho`, `scaled_l2rpn`, `constant`, `alpha_zero`)
 - **relation_awareness/**: `default.yaml` (enable encoder + KL annealing) or `disabled.yaml`
@@ -89,9 +90,10 @@ Hydra Config
   critic warm-up (`ImitationInitCallback`). `experiments/imitation_rollout.py` measures a policy's
   survival per chronic. Pretraining needs a GPU (`slurm/unicluster/pretrain_policy.sh`).
   Shared run setup (datasets, model, run directory) is in `src/imitation/pretrain_run.py`; model selection
-  uses the validation KL (CE − target entropy). Junior HPO: `experiments/pretrain_hpo.py` (config
-  `configs/rllib/pretrain_hpo.yaml`, Optuna in `src/imitation/hpo.py`, one study per dataset, journal file
-  storage shared by parallel workers), `experiments/summarize_hpo.py`, SLURM chain
+  uses `imitation.monitor` (default: validation KL = CE − target entropy). Junior HPO: `experiments/pretrain_hpo.py`
+  (config `configs/rllib/pretrain_hpo.yaml`: `CompleteGraphObsSpace`, objective `regret_top20` = regret of
+  top-20 simulation, percentile pruner; Optuna in `src/imitation/hpo.py`, one study per dataset, journal file
+  storage shared by parallel workers, sampler seed hashed from study name + worker), `experiments/summarize_hpo.py`, SLURM chain
   `slurm/unicluster/pretrain_hpo.sh`, rollouts `slurm/unicluster/imitation_rollout_array.sh`
   (`--do-nothing` for the reference). Training curves and per-state val analysis of the best trials:
   `slurm/unicluster/junior_retrain.sh` retrains them into `results/junior/junior_training/<study>/`.

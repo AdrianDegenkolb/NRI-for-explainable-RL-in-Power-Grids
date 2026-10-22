@@ -1,0 +1,7 @@
+# Graph observation space of GraphObsSpace plus line/substation state (overflow duration, cooldowns,
+# maintenance) and a node-type one-hot, without voltage angles (CompleteGraphObservationConverter).
+# The node features are fixed by the converter; use_forecasts only adds or drops the forecast columns.
+observation_space: CompleteGraphObsSpace
+g2op_input: ["r", "t"]
+custom_input: ["d"]
+use_forecasts: true  # false: no forecast node features (required for imitation pretraining)

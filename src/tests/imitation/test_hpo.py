@@ -5,6 +5,7 @@ Tests are organised by class:
   - TestSampling
   - TestApplyOverrides
   - TestPruning
+  - TestSamplerSeedAndPruner
   - TestObjective
   - TestStudy
 """
@@ -94,6 +95,31 @@ class TestPruning(unittest.TestCase):
     def test_best_epoch_has_lowest_monitor(self):
         history = [{"epoch": 1, "val_kl": 0.5}, {"epoch": 2, "val_kl": 0.2}, {"epoch": 3, "val_kl": 0.3}]
         self.assertEqual(hpo.best_epoch(history, "val_kl")["epoch"], 2)
+
+
+class TestSamplerSeedAndPruner(unittest.TestCase):
+    def test_seed_is_stable_and_differs_between_studies_and_workers(self):
+        seeds = {hpo.study_sampler_seed(study, worker) for study in ("junior2_hard", "junior2_soft_t0.01")
+                 for worker in range(4)}
+        self.assertEqual(len(seeds), 8)
+        # Fixed value: the seed must not depend on the process (Python's str hash does).
+        self.assertEqual(hpo.study_sampler_seed("junior2_hard", 0), hpo.study_sampler_seed("junior2_hard", 0))
+        self.assertNotEqual(hpo.study_sampler_seed("junior2_hard", 0, base_seed=1), hpo.study_sampler_seed("junior2_hard", 0))
+
+    def test_percentile_pruner_prunes_only_the_worst_quarter(self):
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study = optuna.create_study(pruner=hpo.make_pruner({"percentile": 75, "n_startup_trials": 4, "n_warmup_steps": 0}))
+        for value in (1.0, 2.0, 3.0, 4.0):  # completed trials; 75th percentile = 3.25
+            trial = study.ask()
+            trial.report(value, step=1)
+            study.tell(trial, value)
+        for value, pruned in ((3.0, False), (3.5, True)):
+            trial = study.ask()
+            trial.report(value, step=1)
+            self.assertEqual(trial.should_prune(), pruned)
+
+    def test_default_percentile_is_the_median(self):
+        self.assertEqual(hpo.make_pruner()._percentile, 50.0)
 
 
 class TestObjective(unittest.TestCase):
