@@ -5,7 +5,9 @@ settings, train, and write the run directory.
 
 A run directory contains:
     policy_weights.pt   state_dict of the RL_POLICY model -> `imitation.weights_path` for RL
-    history.csv         per-epoch train loss and validation metrics
+    history.csv         per-epoch train loss and validation metrics, rewritten after every epoch
+    val_predictions.npz per-state predictions of the best model on the val split (`imitation.pretrain.predict`)
+                        with n_actions and the good-action tolerance they use
     test_metrics.json   metrics of the best model on the test split
     config.yaml         the resolved Hydra config (used by experiments/imitation_rollout.py)
 
@@ -32,11 +34,20 @@ from core.rllib_config import PPO_CUSTOM_MODELS, build_model_config
 from grid2op_env.observation_converter import make_observation_converter
 from grid2op_env.utils import make_g2op_env
 from imitation.dataset import ImitationData, load_split, split_indices
-from imitation.pretrain import EpochCallback, PretrainConfig, build_policy_model, evaluate, train
+from imitation.pretrain import (
+    GOOD_ACTION_TOLERANCE,
+    EpochCallback,
+    PretrainConfig,
+    build_policy_model,
+    evaluate,
+    predict,
+    train,
+)
 from imitation.torch_dataset import ImitationTorchDataset, load_or_convert
 
 WEIGHTS_FILE = "policy_weights.pt"
 HISTORY_FILE = "history.csv"
+VAL_PREDICTIONS_FILE = "val_predictions.npz"
 TEST_METRICS_FILE = "test_metrics.json"
 CONFIG_FILE = "config.yaml"
 
@@ -161,8 +172,8 @@ def run_pretraining(
 ) -> tuple[list[dict], dict[str, float]]:
     """Train the network of `cfg` on `sets` and write the run directory (see module docstring).
 
-    The config is written first, so a run stopped by `epoch_callback` (e.g. a pruned Optuna trial)
-    still documents its settings.
+    The config is written first and the history after every epoch, so a run stopped by
+    `epoch_callback` (e.g. a pruned Optuna trial) or the walltime still documents its settings and curves.
 
     Args:
         cfg: Full Hydra config; `cfg.model` and `cfg.imitation` define network and optimisation.
@@ -178,11 +189,21 @@ def run_pretraining(
     OmegaConf.save(cfg, out_dir / CONFIG_FILE, resolve=True)
     model = build_model(cfg, obs_space, sets.n_actions)
     config = pretrain_config(cfg)
-    best_state, history = train(model, sets.train, sets.val, config, epoch_callback)
+    rows = []
+
+    def write_history(epoch: int, row: dict[str, float]) -> None:
+        rows.append(row)
+        pd.DataFrame(rows).to_csv(out_dir / HISTORY_FILE, index=False)
+        if epoch_callback is not None:
+            epoch_callback(epoch, row)
+
+    best_state, history = train(model, sets.train, sets.val, config, write_history)
 
     torch.save(best_state, out_dir / WEIGHTS_FILE)
-    pd.DataFrame(history).to_csv(out_dir / HISTORY_FILE, index=False)
-    test_metrics = evaluate(model, sets.test, config.batch_size, torch.device(config.device))
+    device = torch.device(config.device)
+    np.savez_compressed(out_dir / VAL_PREDICTIONS_FILE, **predict(model, sets.val, config.batch_size, device),
+                        n_actions=sets.n_actions, good_action_tolerance=GOOD_ACTION_TOLERANCE)
+    test_metrics = evaluate(model, sets.test, config.batch_size, device)
     (out_dir / TEST_METRICS_FILE).write_text(json.dumps({"n_train": len(sets.train), **test_metrics}, indent=1))
     logger.info(f"Test: {test_metrics}. Wrote {out_dir / WEIGHTS_FILE}")
     return history, test_metrics

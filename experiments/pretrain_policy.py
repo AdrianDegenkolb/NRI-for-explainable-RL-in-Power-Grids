@@ -5,8 +5,8 @@ Uses the same Hydra config as experiments/train.py, so `model`, `obs_space` and 
 same network and observation converter that RL training will use. The `imitation` group sets the
 data and optimisation. Imitation data has no forecasts, so `obs_space.use_forecasts=false`.
 
-Writes a run directory (policy_weights.pt, history.csv, test_metrics.json, config.yaml; see
-src/imitation/pretrain_run.py) to `imitation.out_dir`.
+Writes a run directory (policy_weights.pt, history.csv, val_predictions.npz, test_metrics.json,
+config.yaml; see src/imitation/pretrain_run.py) to `imitation.out_dir`.
 
 Example:
     PYTHONPATH=$(pwd)/src python experiments/pretrain_policy.py env=case36 model=gnn \\

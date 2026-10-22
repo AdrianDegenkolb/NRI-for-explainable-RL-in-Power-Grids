@@ -94,6 +94,8 @@ Hydra Config
   storage shared by parallel workers), `experiments/summarize_hpo.py`, SLURM chain
   `slurm/unicluster/pretrain_hpo.sh`, rollouts `slurm/unicluster/imitation_rollout_array.sh`
   (`--do-nothing` for the reference), plots `experiments/junior_results.ipynb`.
+  Training curves and per-state val analysis of the best trials: `slurm/unicluster/junior_retrain.sh` retrains
+  them into `results/pretraining/junior_training/<study>/` (the only input of `experiments/junior_training.ipynb`).
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.

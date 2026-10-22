@@ -6,6 +6,7 @@ Tests are organised by class:
   - TestSoftCrossEntropy
   - TestTargetEntropy
   - TestEvaluate
+  - TestPredict
   - TestTrain
   - TestTrimEdges
   - TestCriticWarmup
@@ -30,6 +31,7 @@ from imitation.pretrain import (
     build_policy_model,
     evaluate,
     policy_logits,
+    predict,
     soft_cross_entropy,
     target_entropy,
     train,
@@ -133,6 +135,52 @@ class TestEvaluate(unittest.TestCase):
         self.assertAlmostEqual(metrics["entropy"], target_entropy(target).item(), places=5)
         self.assertAlmostEqual(metrics["kl"], metrics["loss"] - metrics["entropy"], places=6)
         self.assertGreaterEqual(metrics["kl"], 0.0)
+
+    def test_top_k_counts_target_argmax_among_k_highest_logits(self):
+        # Target argmax is action 0; it ranks 1st, 3rd, 6th and 21st (25 actions).
+        logits = torch.arange(25, dtype=torch.float32).flip(0).repeat(4, 1)
+        target = torch.zeros(4, 25)
+        for i, rank in enumerate([1, 3, 6, 21]):
+            target[i, rank - 1] = 1.0
+        dataset = [{"obs": {"logits": logits[i]}, "target": target[i]} for i in range(4)]
+        metrics = evaluate(_FixedLogits(), dataset, batch_size=4, device=torch.device("cpu"))
+        self.assertAlmostEqual(metrics["accuracy"], 1 / 4)
+        self.assertAlmostEqual(metrics["top5"], 2 / 4)
+        self.assertAlmostEqual(metrics["top20"], 3 / 4)
+
+
+class TestPredict(unittest.TestCase):
+    def setUp(self):
+        # Sample 0: Tutor action 1 has the highest logit. Sample 1: Tutor action 1 ranks 2nd behind
+        # action 2, which is 0.05 worse; action 3 (rank 3) is within tolerance of the best.
+        # Sample 2: no valid action.
+        self.logits = torch.tensor([[0.0, 3.0, 1.0, 2.0], [0.0, 2.0, 3.0, 1.0], [3.0, 2.0, 1.0, 0.0]])
+        target = torch.tensor([[0.0, 1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]])
+        max_rho = torch.tensor([[0.9, 0.8, 0.85, 0.9], [0.9, 0.80, 0.85, 0.805], [0.9, 0.9, 0.9, 0.9]])
+        valid = torch.tensor([[True] * 4, [True] * 4, [False] * 4])
+        self.dataset = [{"obs": {"logits": self.logits[i]}, "target": target[i], "max_rho": max_rho[i],
+                         "valid": valid[i]} for i in range(3)]
+        self.out = predict(_FixedLogits(), self.dataset, batch_size=2, device=torch.device("cpu"))
+
+    def test_ranks_and_probabilities(self):
+        np.testing.assert_array_equal(self.out["tutor_action"], [1, 1, 0])
+        np.testing.assert_array_equal(self.out["pred"], [1, 2, 0])
+        np.testing.assert_array_equal(self.out["tutor_rank"], [1, 2, 1])
+        probs = torch.softmax(self.logits, dim=-1).numpy()
+        np.testing.assert_allclose(self.out["p_tutor"], probs[[0, 1, 2], [1, 1, 0]], rtol=1e-6)
+        np.testing.assert_allclose(self.out["p_pred"], probs.max(axis=-1), rtol=1e-6)
+
+    def test_simulated_outcomes(self):
+        np.testing.assert_allclose(self.out["rho_pred"][:2], [0.8, 0.85], rtol=1e-6)
+        np.testing.assert_allclose(self.out["rho_tutor"][:2], [0.8, 0.8], rtol=1e-6)
+        np.testing.assert_allclose(self.out["rho_best"][:2], [0.8, 0.8], rtol=1e-6)
+        np.testing.assert_array_equal(self.out["good_rank"], [1, 2, np.inf])
+        self.assertTrue(np.isinf(self.out["rho_best"][2]))
+
+    def test_without_max_rho_has_only_policy_fields(self):
+        dataset = [{k: v for k, v in item.items() if k in ("obs", "target")} for item in self.dataset]
+        out = predict(_FixedLogits(), dataset, batch_size=2, device=torch.device("cpu"))
+        self.assertEqual(set(out), {"tutor_action", "pred", "tutor_rank", "p_tutor", "p_pred"})
 
 
 def graph_dataset(n: int) -> list[dict]:

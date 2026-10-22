@@ -22,6 +22,7 @@ import logging
 import os
 import time
 import zlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -139,7 +140,7 @@ def simulate_candidate(obs: BaseObservation, action: BaseAction) -> tuple[float,
 
 
 class Tutor:
-    """Evaluates every candidate of the policy's action space on a state.
+    """Evaluates the candidates of the policy's action space on a state (all, or a subset).
 
     Args:
         env: The Grid2Op environment the candidates belong to.
@@ -160,23 +161,28 @@ class Tutor:
             return reconnection_rule(obs, action, self.env.action_space)
         return action
 
-    def evaluate(self, obs: BaseObservation) -> tuple[np.ndarray, np.ndarray, int, BaseAction]:
-        """Simulate all candidates and choose one.
+    def evaluate(
+        self, obs: BaseObservation, candidates: Sequence[int] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, int, BaseAction]:
+        """Simulate candidates and choose one with `select_action`.
 
         Args:
             obs: Current observation.
+            candidates: Indices to simulate; default all. Do-nothing is always simulated, as the
+                reference the others must beat. The rest count as invalid, so the choice is the
+                Tutor's rule restricted to these candidates.
 
         Returns:
-            `(max_rho, valid, chosen_index, chosen_enriched_action)`.
+            `(max_rho, valid, chosen_index, chosen_enriched_action)`, arrays over all actions.
         """
         n = len(self.actions)
+        indices = range(n) if candidates is None else sorted({DO_NOTHING_INDEX, *candidates})
         max_rho = np.full(n, np.nan, dtype=np.float32)
         valid = np.zeros(n, dtype=bool)
-        enriched = []
-        for i, action in enumerate(self.actions):
-            action = self.enrich(obs, action)
-            enriched.append(action)
-            max_rho[i], valid[i] = simulate_candidate(obs, action)
+        enriched = {}
+        for i in indices:
+            enriched[i] = self.enrich(obs, self.actions[i])
+            max_rho[i], valid[i] = simulate_candidate(obs, enriched[i])
         chosen = select_action(max_rho, valid, self.margin)
         return max_rho, valid, chosen, enriched[chosen]
 

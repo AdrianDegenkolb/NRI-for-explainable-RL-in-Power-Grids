@@ -91,7 +91,7 @@ WORKER_JOB=$(submit "afterok:${CONVERT_JOB}" <<EOF
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=${SBATCH_TIME}
-#SBATCH --partition=gpu_h100,gpu_a100_il
+#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_h100_vip1
 ${ENV_SETUP}
 python experiments/pretrain_hpo.py ${OVERRIDES} imitation.device=cuda hpo.worker_id=\$SLURM_ARRAY_TASK_ID
 EOF

@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 # An action counts as "good" if its simulated max rho is within this of the best valid action.
 GOOD_ACTION_TOLERANCE = 0.01
+# k of the top-k accuracies of `evaluate`.
+TOP_K = (5, 20)
 
 
 @dataclass
@@ -112,8 +114,8 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
     """Validation metrics.
 
     Always: loss (cross-entropy), entropy (of the targets), kl (loss - entropy), accuracy (argmax =
-    argmax of target), top5 (target argmax among the 5 highest logits), do_nothing_rate (share of
-    argmax = do-nothing). If the dataset has simulated max rho:
+    argmax of target), top<k> for k in TOP_K (target argmax among the k highest logits),
+    do_nothing_rate (share of argmax = do-nothing). If the dataset has simulated max rho:
     good_action_rate (argmax within GOOD_ACTION_TOLERANCE of the best valid action), regret (mean
     rho excess of the argmax over the best valid action; invalid choices count as missing),
     invalid_rate (argmax not valid).
@@ -127,14 +129,14 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
         logits = policy_logits(model, batch["obs"])
         target = batch["target"]
         pred = logits.argmax(dim=-1)
-        top5 = logits.topk(min(5, logits.shape[-1]), dim=-1).indices
         best_target = target.argmax(dim=-1)
+        hits = logits.topk(min(max(TOP_K), logits.shape[-1]), dim=-1).indices == best_target.unsqueeze(-1)
         b = len(pred)
         stats = {
             "loss": soft_cross_entropy(logits, target).item() * b,
             "entropy": target_entropy(target).item() * b,
             "accuracy": (pred == best_target).sum().item(),
-            "top5": (top5 == best_target.unsqueeze(-1)).any(dim=-1).sum().item(),
+            **{f"top{k}": hits[:, :k].any(dim=-1).sum().item() for k in TOP_K},
             "do_nothing_rate": (pred == DO_NOTHING_INDEX).sum().item(),
         }
         if "max_rho" in batch:
@@ -155,6 +157,54 @@ def evaluate(model: TorchModelV2, dataset: Dataset, batch_size: int, device: tor
     if "regret" in sums:
         metrics["regret"] = sums["regret"] / max(n_regret, 1)
     return metrics
+
+
+@torch.no_grad()
+def predict(model: TorchModelV2, dataset: Dataset, batch_size: int, device: torch.device) -> dict[str, np.ndarray]:
+    """Per-state predictions of a trained model, for analyses beyond the means of `evaluate`.
+
+    Returns:
+        Arrays of length n:
+            tutor_action: argmax of the target (the Tutor's executed action for greedy-Tutor data).
+            pred: argmax of the logits.
+            tutor_rank: rank of tutor_action among the logits (1 = highest), for top-k accuracies.
+            p_tutor, p_pred: policy probability of tutor_action and of pred.
+        If the dataset has simulated max rho (invalid actions are inf):
+            rho_pred, rho_tutor, rho_best: simulated max rho of pred, of tutor_action and of the best
+                valid action.
+            good_rank: highest rank of an action within GOOD_ACTION_TOLERANCE of the best valid action;
+                inf if no action is valid.
+    """
+    model.eval()
+    out: dict[str, list[torch.Tensor]] = {}
+    for batch in DataLoader(dataset, batch_size=batch_size):
+        batch = _to_device(batch, device)
+        logits = policy_logits(model, batch["obs"])
+        probs = torch.softmax(logits, dim=-1)
+        tutor = batch["target"].argmax(dim=-1, keepdim=True)
+        pred = logits.argmax(dim=-1, keepdim=True)
+        # rank[i, a] = 1 + number of actions with a higher logit than a (ties share the better rank)
+        rank = (logits.unsqueeze(-1) < logits.unsqueeze(-2)).sum(dim=-1) + 1
+        rows = {
+            "tutor_action": tutor,
+            "pred": pred,
+            "tutor_rank": rank.gather(1, tutor),
+            "p_tutor": probs.gather(1, tutor),
+            "p_pred": probs.gather(1, pred),
+        }
+        if "max_rho" in batch:
+            rho = torch.where(batch["valid"], batch["max_rho"], torch.full_like(batch["max_rho"], float("inf")))
+            best = rho.min(dim=-1, keepdim=True).values
+            good = torch.isfinite(rho) & (rho - best <= GOOD_ACTION_TOLERANCE)
+            rows.update({
+                "rho_pred": rho.gather(1, pred),
+                "rho_tutor": rho.gather(1, tutor),
+                "rho_best": best,
+                "good_rank": torch.where(good, rank.float(), torch.full_like(rho, float("inf"))).min(dim=-1, keepdim=True).values,
+            })
+        for key, value in rows.items():
+            out.setdefault(key, []).append(value.squeeze(-1).cpu())
+    return {key: torch.cat(values).numpy() for key, values in out.items()}
 
 
 def train_epoch(model: TorchModelV2, loader: DataLoader, optimizer: torch.optim.Optimizer, device: torch.device) -> float:
