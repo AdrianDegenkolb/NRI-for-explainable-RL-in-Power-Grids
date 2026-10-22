@@ -170,7 +170,7 @@ def from_general_tutor(experience_dir: Path, n_actions: int, action_space: str) 
 
 
 def from_greedy_tutor(experience_dir: Path, target: str, temperature: float = 0.0) -> ImitationData:
-    """Convert `imitation.tutor` files (`results/imitation/*/experience/*.npz`).
+    """Convert `imitation.tutor` files (`results/tutor/*/experience/*.npz`).
 
     Args:
         experience_dir: Directory of per-chronic `.npz` files.

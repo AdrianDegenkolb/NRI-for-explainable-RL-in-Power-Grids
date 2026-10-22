@@ -11,8 +11,8 @@ saved resolved like pretrain_policy.py's: `${hydra:...}` interpolations are fill
 
 Example:
     PYTHONPATH=$(pwd)/src python experiments/export_policy_weights.py \\
-        --experiment-dir results/2026_10_14_IEEE36_imitation/senior_s0 \\
-        --out results/2026_10_14_IEEE36_imitation/eval/senior_s0
+        --experiment-dir results/senior/2026_10_14_IEEE36_imitation/senior_s0 \\
+        --out results/senior/2026_10_14_IEEE36_imitation/eval/senior_s0
 """
 from __future__ import annotations
 

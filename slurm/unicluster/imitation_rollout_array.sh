@@ -17,10 +17,10 @@
 #
 # Examples:
 #   # Greedy policy of the best trial on the Grid2Op val env (144 chronics, unseen by the pipeline)
-#   slurm/unicluster/imitation_rollout_array.sh results/pretraining/junior_hard/best val junior_hard
+#   slurm/unicluster/imitation_rollout_array.sh results/junior/junior_hard/best val junior_hard
 #   # Do-nothing reference; the run dir only provides the env config
-#   slurm/unicluster/imitation_rollout_array.sh results/pretraining/junior_hard val do_nothing \
-#       --do-nothing --out-dir results/pretraining/junior_do_nothing/rollout
+#   slurm/unicluster/imitation_rollout_array.sh results/junior/junior_hard val do_nothing \
+#       --do-nothing --out-dir results/junior/junior_do_nothing/rollout
 
 USAGE="Usage: imitation_rollout_array.sh <run_dir> <env_split> <agent> [extra args...]"
 RUN_DIR="${1:?$USAGE}"
@@ -31,7 +31,7 @@ REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 N_TASKS="${N_TASKS:-8}"
 SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
-LOG_DIR="results/pretraining/rollout_logs"
+LOG_DIR="results/junior/rollout_logs"
 mkdir -p "$LOG_DIR"
 
 SCRIPT=$(cat <<EOF

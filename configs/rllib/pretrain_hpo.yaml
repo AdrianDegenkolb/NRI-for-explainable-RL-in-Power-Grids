@@ -1,7 +1,7 @@
 # Optuna search over imitation pretraining settings (experiments/pretrain_hpo.py), Junior experiment:
 # GNN policy (fixed graph, no encoder) with GAT convolutions on IEEE-36, GraphObsSpace without
 # forecasts. One study per dataset: select it with imitation.dataset=... and experiment.name=<study>.
-# Trials are written to imitation.out_dir (results/pretraining/<study>/trial_<n>/).
+# Trials are written to imitation.out_dir (results/junior/<study>/trial_<n>/).
 defaults:
   - config
   - override env: case36

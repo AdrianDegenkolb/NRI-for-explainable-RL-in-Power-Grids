@@ -19,13 +19,13 @@ heuristics are exactly those of the RL env.
 Example:
     PYTHONPATH=$(pwd)/src python experiments/imitation_data.py run-tutor-chronics --grid case36 \\
         --action-space data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json \\
-        --chronic-ids Scenario_april_000 --save-dir results/imitation/smoketest/experience
+        --chronic-ids Scenario_april_000 --save-dir results/tutor/smoketest/experience
     PYTHONPATH=$(pwd)/src python experiments/imitation_data.py build-dataset --source greedy_tutor \\
-        --experience-dir results/imitation/<experiment>/experience --target soft --temperature 0.01 \\
+        --experience-dir results/tutor/<experiment>/experience --target soft --temperature 0.01 \\
         --out data/imitation/case36_k208_greedy_soft_t0.01.npz
     PYTHONPATH=$(pwd)/src python experiments/imitation_data.py summarize --grid case36 \
         --action-space data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json \
-        --experience-dir results/imitation/<experiment>/experience --out-dir results/imitation/<experiment>/summary
+        --experience-dir results/tutor/<experiment>/experience --out-dir results/tutor/<experiment>/summary
 """
 from __future__ import annotations
 

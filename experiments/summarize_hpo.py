@@ -4,7 +4,7 @@ parameters, objective and the best epoch's val/test metrics) and the link `best`
 of the best complete trial, which experiments/imitation_rollout.py takes as `--run-dir`.
 
 Example:
-    PYTHONPATH=$(pwd)/src python experiments/summarize_hpo.py results/pretraining/junior_hard
+    PYTHONPATH=$(pwd)/src python experiments/summarize_hpo.py results/junior/junior_hard
 """
 from __future__ import annotations
 

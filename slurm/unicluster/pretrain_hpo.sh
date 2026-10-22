@@ -3,7 +3,7 @@
 # Optuna search over imitation pretraining settings for one dataset (experiments/pretrain_hpo.py,
 # configs/rllib/pretrain_hpo.yaml) and survival of its best trial — BWUniCluster.
 #
-# Job chain, all writing to results/pretraining/<study_name>/:
+# Job chain, all writing to results/junior/<study_name>/:
 #   1. convert    (CPU)  converts and caches the dataset's observations, writes config.yaml
 #   2. workers    (GPU array, after 1) N_WORKERS workers share the study until it has hpo.n_trials trials
 #   3. summarize  (CPU, after 2 ended, also on timeout) trials.csv + link best -> best trial
@@ -37,7 +37,7 @@ fi
 N_WORKERS="${N_WORKERS:-4}"
 SBATCH_TIME="${SBATCH_TIME:-24:00:00}"
 N_ROLLOUT_TASKS="${N_ROLLOUT_TASKS:-8}"
-STUDY_DIR="results/pretraining/${STUDY}"
+STUDY_DIR="results/junior/${STUDY}"
 LOG_DIR="${STUDY_DIR}/out"
 mkdir -p "$LOG_DIR"
 

@@ -15,7 +15,7 @@ array tasks with a stride (task t of n takes chronics t, t+n, ...).
 
 Example:
     PYTHONPATH=$(pwd)/src python experiments/imitation_rollout.py \\
-        --run-dir results/pretraining/pretrain_gnn_graph_soft --split-name test \\
+        --run-dir results/junior/pretrain_gnn_graph_soft --split-name test \\
         --task-id 0 --n-tasks 1
 """
 from __future__ import annotations

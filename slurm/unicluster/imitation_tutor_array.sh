@@ -3,7 +3,7 @@
 # Imitation-data Tutor (src/imitation/tutor.py) as a SLURM array — BWUniCluster.
 #
 # Each array task runs a strided set of chronics and writes one .npz per chronic to
-# results/imitation/<experiment>/experience/ with, per state above rho_threshold, obs.to_vect(),
+# results/tutor/<experiment>/experience/ with, per state above rho_threshold, obs.to_vect(),
 # the simulated max rho + validity of all policy actions (do-nothing + action-space JSON), and the
 # executed action. Chronics whose file already exists are skipped, so re-submitting the same
 # experiment only redoes unfinished chronics. Survival per chronic is in each task's .err log.
@@ -43,7 +43,7 @@ if [[ ! -f "$ACTION_SPACE" ]]; then
     exit 1
 fi
 
-OUT_DIR="results/imitation/${EXPERIMENT}"
+OUT_DIR="results/tutor/${EXPERIMENT}"
 mkdir -p "$OUT_DIR"
 
 module load devel/miniforge

@@ -15,7 +15,7 @@ lr: 1.0e-3
 weight_decay: 1.0e-4
 patience: 5                # epochs without lower val loss before stopping
 device: cpu
-out_dir: ${experiment.storage_path}/pretraining/${experiment.name}
+out_dir: ${experiment.storage_path}/junior/${experiment.name}
 
 # --- RL fine-tuning ---
 weights_path: null         # e.g. ${imitation.out_dir}/policy_weights.pt

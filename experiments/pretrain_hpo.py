@@ -6,7 +6,7 @@ joins the study `experiment.name` in `imitation.out_dir/study.log` and runs tria
 has `hpo.n_trials`. Run once with `hpo.convert_only=true` first, so the workers find the converted
 observations in the cache instead of all converting them at once.
 
-Writes to `imitation.out_dir` (results/pretraining/<study>/):
+Writes to `imitation.out_dir` (results/junior/<study>/):
     study.log           Optuna journal
     config.yaml         base config of the study (env config for do-nothing rollouts)
     trial_<n>/          run directory of every trial (src/imitation/pretrain_run.py)

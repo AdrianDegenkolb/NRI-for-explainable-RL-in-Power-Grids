@@ -17,7 +17,7 @@
 # The test env (144 chronics) was never seen by Teacher, Tutor, junior or RL; RL evaluates on the
 # val env during training.
 #
-# Layout (results/<experiment_name>/):
+# Layout (results/senior/<experiment_name>/):
 #   senior_s<seed>/, baseline_s<seed>/   train.py output (Hydra config + Tune trial with checkpoints)
 #   eval/<agent>/                        policy_weights.pt, config.yaml, rollout/episodes_testenv_*.csv
 #   out/                                 SLURM logs
@@ -34,7 +34,7 @@
 #
 # Example:
 #   slurm/unicluster/imitation_vs_rl36.sh 2026_10_14_IEEE36_imitation \
-#       results/pretraining/pretrain_gnn_graph_soft 0 1 2
+#       results/junior/pretrain_gnn_graph_soft 0 1 2
 
 USAGE="Usage: imitation_vs_rl36.sh <experiment_name> <junior_run_dir> [seed ...]"
 EXPERIMENT="${1:?$USAGE}"
@@ -57,7 +57,7 @@ for f in policy_weights.pt config.yaml; do
     fi
 done
 
-OUT_DIR="results/${EXPERIMENT}"
+OUT_DIR="results/senior/${EXPERIMENT}"
 mkdir -p "${OUT_DIR}/out" "${OUT_DIR}/eval/junior"
 cp "${JUNIOR_DIR}/policy_weights.pt" "${JUNIOR_DIR}/config.yaml" "${OUT_DIR}/eval/junior/"
 echo "${JUNIOR_DIR}" > "${OUT_DIR}/eval/junior/source_run_dir.txt"
@@ -131,7 +131,7 @@ for seed in "${SEEDS[@]}"; do
 export RAY_gcs_rpc_server_reconnect_timeout_s=300
 ${ENV_SETUP}
 python experiments/train.py ${COMMON_OVERRIDES} ${weights} \
-    experiment.seed=${seed} experiment.name=${EXPERIMENT}/${name}
+    experiment.seed=${seed} experiment.name=senior/${EXPERIMENT}/${name}
 EOF
 )
         EXPORT_JOB=$(submit "${RL_JOB}" <<EOF

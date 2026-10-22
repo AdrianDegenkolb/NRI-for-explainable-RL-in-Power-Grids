@@ -93,9 +93,13 @@ Hydra Config
   `configs/rllib/pretrain_hpo.yaml`, Optuna in `src/imitation/hpo.py`, one study per dataset, journal file
   storage shared by parallel workers), `experiments/summarize_hpo.py`, SLURM chain
   `slurm/unicluster/pretrain_hpo.sh`, rollouts `slurm/unicluster/imitation_rollout_array.sh`
-  (`--do-nothing` for the reference), plots `experiments/junior_results.ipynb`.
-  Training curves and per-state val analysis of the best trials: `slurm/unicluster/junior_retrain.sh` retrains
-  them into `results/pretraining/junior_training/<study>/` (the only input of `experiments/junior_training.ipynb`).
+  (`--do-nothing` for the reference). Training curves and per-state val analysis of the best trials:
+  `slurm/unicluster/junior_retrain.sh` retrains them into `results/junior/junior_training/<study>/`.
+  `experiments/junior_results.ipynb` plots those runs (validation split only) and the HPO studies.
+  Senior vs. junior vs. PPO baseline: `slurm/unicluster/imitation_vs_rl36.sh`.
+  Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),
+  `results/junior/` (pretraining, HPO studies, rollouts), `results/senior/` (PPO fine-tuning + test rollouts).
+  Notebooks: `experiments/{teacher,tutor,junior}_results.ipynb`.
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.

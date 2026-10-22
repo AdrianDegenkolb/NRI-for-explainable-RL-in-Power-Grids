@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Retrain the best trial of Junior HPO studies (pretrain_hpo.sh) for experiments/junior_training.ipynb
+# Retrain the best trial of Junior HPO studies (pretrain_hpo.sh) for experiments/junior_results.ipynb
 # — BWUniCluster.
 #
 # One GPU job per study. Each reruns experiments/pretrain_policy.py with the study's best/config.yaml
 # (same data, hyperparameters and seed) and writes the run directory (see src/imitation/pretrain_run.py)
-# to results/pretraining/junior_training/<study>/. All studies land in that one directory, which is all
+# to results/junior/junior_training/<study>/. All studies land in that one directory, which is all
 # the notebook reads. GPU training is not bit-for-bit reproducible, so the curves differ slightly from
 # the HPO trial's.
 #
@@ -31,10 +31,10 @@ if [[ ${#STUDIES[@]} -eq 0 ]]; then
 fi
 SBATCH_PARTITION="${SBATCH_PARTITION:-gpu_h100,gpu_a100_il}"
 SBATCH_TIME="${SBATCH_TIME:-01:00:00}"
-OUT_ROOT="results/pretraining/junior_training"
+OUT_ROOT="results/junior/junior_training"
 
 for STUDY in "${STUDIES[@]}"; do
-    BEST_DIR="results/pretraining/${STUDY}/best"
+    BEST_DIR="results/junior/${STUDY}/best"
     if [[ ! -f "${BEST_DIR}/config.yaml" ]]; then
         echo "${BEST_DIR}/config.yaml not found; run pretrain_hpo.sh ${STUDY} first." >&2
         exit 1

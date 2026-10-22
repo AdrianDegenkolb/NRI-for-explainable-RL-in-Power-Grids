@@ -21,7 +21,7 @@ EXPERIMENT="${1:?$USAGE}"
 shift
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
-OUT_DIR="results/pretraining/${EXPERIMENT}"
+OUT_DIR="results/junior/${EXPERIMENT}"
 mkdir -p "$OUT_DIR"
 SBATCH_TIME="${SBATCH_TIME:-08:00:00}"
 
