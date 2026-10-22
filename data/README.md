@@ -21,6 +21,7 @@ Each subfolder corresponds to a Grid2Op scenario (matched by the environment nam
 action_spaces/
 ├── l2rpn_case14_sandbox/    # IEEE 14-bus
 ├── l2rpn_wcci_2020/         # IEEE 36-bus (WCCI 2020)
+├── l2rpn_neurips_2020_track1_small/  # IEEE 36-bus (NeurIPS 2020 track 1), Fraunhofer paper actions
 └── l2rpn_wcci_2022/         # IEEE 118-bus (WCCI 2022)
 ```
 
@@ -48,6 +49,19 @@ Files follow the naming pattern `rl2grid_bus{N}-M_{level}.json`, where the level
 | `_2` | ~300 KB | Medium |
 | `_3` | ~2 MB | Large |
 | `_4` | ~12 MB | Full action space |
+
+### `l2rpn_neurips_2020_track1_small/` (Fraunhofer CurriculumAgent paper)
+
+Downloaded unchanged from [`FraunhoferIEE/CurriculumAgent/paper_data_MPGTTA/action_spaces_paper`](https://github.com/FraunhoferIEE/CurriculumAgent/tree/master/paper_data_MPGTTA/action_spaces_paper),
+the action spaces of Lehna et al. (2023), *Managing power grids through topology actions* (Energy and AI).
+Each row is a Grid2Op action vector (length 494) for `from_vect`.
+The `.npy` files are gitignored: download them from the link above into this folder.
+
+| File | Shape | Description |
+|---|---|---|
+| `actions62.npy` | (62, 494), int32 | Binbinchen actions, part 1 |
+| `actions146.npy` | (146, 494), int32 | Binbinchen actions, part 2 (62 + 146 = 208) |
+| `n-1_actions.npy` | (300, 494), float64 | The paper's 300 N-1 Teacher actions |
 
 ---
 
