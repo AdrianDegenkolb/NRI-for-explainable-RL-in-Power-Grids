@@ -241,11 +241,38 @@ def set_policy_trainable(policy: Policy, trainable: bool) -> None:
 
     Frozen parameters get no gradient, so PPO's optimizer leaves them unchanged while the value
     branch keeps learning. The shared feature network (GNN) is frozen too: its features feed the
-    policy logits, so training it on the value loss alone would change the policy.
+    policy logits, so training it on the value loss alone would change the policy. Its BatchNorm
+    layers stay in eval mode while frozen (`set_batch_norm_frozen`).
     """
     for model in _policy_models(policy):
         for name, param in model.named_parameters():
             param.requires_grad = trainable or is_value_parameter(name)
+        set_batch_norm_frozen(model, not trainable)
+
+
+def _to_eval_mode(module: torch.nn.Module, inputs: tuple) -> None:
+    """Forward pre-hook: run the module in eval mode, whatever mode RLlib set."""
+    module.eval()
+
+
+def set_batch_norm_frozen(model: torch.nn.Module, frozen: bool) -> None:
+    """Keep every BatchNorm outside the value branch in eval mode while the policy is frozen.
+
+    RLlib switches the model to train mode for every update. A frozen BatchNorm would then normalize
+    with batch statistics and keep updating its running statistics, which the sampling workers use
+    (eval mode): the policy would drift during the critic warm-up, and the critic would learn on
+    other features than the sampled ones. A forward pre-hook switches the layer back to eval mode;
+    unfreezing removes it, and RLlib's next `model.train()` restores train mode.
+    """
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.modules.batchnorm._BatchNorm) or is_value_parameter(name):
+            continue
+        hook = getattr(module, "_frozen_eval_hook", None)
+        if frozen and hook is None:
+            module._frozen_eval_hook = module.register_forward_pre_hook(_to_eval_mode)
+        elif not frozen and hook is not None:
+            hook.remove()
+            del module._frozen_eval_hook
 
 
 class ImitationInitCallback(DefaultCallbacks):

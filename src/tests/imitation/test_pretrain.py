@@ -294,6 +294,29 @@ class TestCriticWarmup(unittest.TestCase):
         set_policy_trainable(SimpleNamespace(model=model), True)
         self.assertTrue(all(p.requires_grad for p in model.parameters()))
 
+    def test_frozen_batch_norm_matches_sampling_in_train_mode(self):
+        """While frozen, a train-mode forward (RLlib's updates) equals the eval-mode one (sampling)
+        and leaves the running statistics unchanged; unfreezing restores normal BatchNorm training."""
+        torch.manual_seed(0)
+        model = gnn_model()
+        batch_norms = [m for m in model.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+        self.assertTrue(batch_norms)
+        obs = graph_batch(8)
+        model.eval()
+        sampled = policy_logits(model, obs).detach()
+        stats = [m.running_mean.clone() for m in batch_norms]
+
+        set_policy_trainable(SimpleNamespace(model=model), False)
+        model.train()
+        torch.testing.assert_close(policy_logits(model, obs).detach(), sampled)
+        for before, m in zip(stats, batch_norms):
+            torch.testing.assert_close(m.running_mean, before)
+
+        set_policy_trainable(SimpleNamespace(model=model), True)
+        model.train()
+        policy_logits(model, obs)
+        self.assertTrue(any(not torch.equal(m.running_mean, s) for m, s in zip(batch_norms, stats)))
+
 
 class TestPPOCompatibility(unittest.TestCase):
     """Pretrained weights must load strictly into the model PPO builds (ImitationInitCallback)."""
