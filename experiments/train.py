@@ -102,6 +102,9 @@ def _build_policies(cfg: DictConfig, algorithm: str) -> dict:
     elif custom_model == "gnn_model" and algorithm == "dqn":
         policy_class = GNNBaselineDQNPolicy
         model_override = {"model": {"custom_model": "gnn_dqn_model"}}
+    elif custom_model == "flat_mlp_model" and algorithm == "ppo":
+        policy_class = PPOTorchPolicy
+        model_override = {"model": {"custom_model": "flat_mlp_model"}}
     elif custom_model is None or custom_model == "mlp_model":
         model_override = {}
         if algorithm == "ppo":

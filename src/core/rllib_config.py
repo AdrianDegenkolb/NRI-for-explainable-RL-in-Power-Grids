@@ -16,6 +16,7 @@ from core.utils import getl
 from rarl_rllib import RAActorCriticModel, RADQNTorchModel, RASACTorchModel
 from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
 from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
+from rarl_rllib.ppo.mlp_ppo_model import FlatMLPModel
 from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
 
 # Custom model name used with PPO per `cfg.model.custom_model`, see `_build_policies` in experiments/train.py.
@@ -30,6 +31,7 @@ def register_custom_models() -> None:
     ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
     ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
     ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
+    ModelCatalog.register_custom_model("flat_mlp_model", FlatMLPModel)
 
 
 def build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
@@ -94,6 +96,9 @@ def build_model_config(cfg: DictConfig) -> dict[str, Any]:
 
     if model.gnn is not None:
         custom_model_config["gnn"] = OmegaConf.to_container(model.gnn, resolve=True)
+
+    if model.get("mlp") is not None:
+        custom_model_config["mlp"] = OmegaConf.to_container(model.mlp, resolve=True)
 
     # sampling and latent_space live in relation_awareness but are also needed by the model
     custom_model_config["sampling"] = OmegaConf.to_container(

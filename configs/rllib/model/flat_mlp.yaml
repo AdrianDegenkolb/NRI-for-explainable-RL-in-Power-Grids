@@ -1,0 +1,14 @@
+# One MLP on the concatenated flat observation (FlatMLPModel, registered as "flat_mlp_model"), sized
+# as the Junior/Senior network of Lehna et al. 2023 (Fraunhofer CurriculumAgent). Use with
+# obs_space=flat_vect (or flat). Unlike model=mlp (RLlib default), it does not build one MLP per attribute.
+custom_model: flat_mlp_model
+fcnet_hiddens: [400, 773, 1044, 344]
+fcnet_activation: relu
+post_fcnet_hiddens: []
+_enable_learner_api: false
+
+encoder: null
+gnn: null
+
+mlp:
+  dropout_prob: 0.0  # after every hidden layer of the policy network
