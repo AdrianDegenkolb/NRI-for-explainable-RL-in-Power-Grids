@@ -19,10 +19,13 @@
 #   N_WORKERS          Parallel GPU workers (default 4).
 #   SBATCH_TIME        Walltime per worker (default 24:00:00).
 #   N_ROLLOUT_TASKS    Rollout array tasks (default 8).
+#   CONFIG_NAME        Hydra config of experiments/pretrain_hpo.py (default pretrain_hpo; pretrain_hpo_mlp
+#                      for the Fraunhofer-style MLP).
 #   DRY_RUN=1          Print the sbatch scripts instead of submitting.
 #
 # Example:
 #   slurm/unicluster/pretrain_hpo.sh junior2_hard data/imitation/case36_k208_greedy_hard.npz
+#   CONFIG_NAME=pretrain_hpo_mlp slurm/unicluster/pretrain_hpo.sh junior2_mlp_hard data/imitation/case36_k208_greedy_hard.npz
 
 USAGE="Usage: pretrain_hpo.sh <study_name> <dataset.npz> [hydra overrides...]"
 STUDY="${1:?$USAGE}"
@@ -41,7 +44,8 @@ STUDY_DIR="results/junior/${STUDY}"
 LOG_DIR="${STUDY_DIR}/out"
 mkdir -p "$LOG_DIR"
 
-OVERRIDES="experiment.name=${STUDY} imitation.dataset=${DATASET} $*"
+CONFIG_NAME="${CONFIG_NAME:-pretrain_hpo}"
+OVERRIDES="--config-name ${CONFIG_NAME} experiment.name=${STUDY} imitation.dataset=${DATASET} $*"
 ENV_SETUP='module load devel/miniforge
 eval "$(conda shell.bash hook)"
 conda activate L2RPN
