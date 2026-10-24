@@ -20,10 +20,16 @@
 # Environment:
 #   SBATCH_PARTITION   Partition(s) (default gpu_h100,gpu_a100_il).
 #   SBATCH_TIME        Walltime (default 02:00:00).
+#   OVERRIDES          Extra Hydra overrides of the best trial's config, e.g. for an ablation
+#                      (default none). Use with OUT_SUFFIX so the plain retrained run is kept.
+#   OUT_SUFFIX         Appended to the output folder name: junior_training/<study><OUT_SUFFIX>/.
 #   DRY_RUN=1          Print the sbatch scripts instead of submitting.
 #
-# Example:
+# Examples:
 #   SBATCH_PARTITION=dev_gpu_h100 SBATCH_TIME=00:30:00 slurm/unicluster/junior_retrain.sh junior_hard
+#   # Old best configs with the Junior Continued observations (only the observation space changes):
+#   OVERRIDES=obs_space.observation_space=CompleteGraphObsSpace OUT_SUFFIX=_complete_obs \
+#       slurm/unicluster/junior_retrain.sh junior_hard junior_soft_t0.005 junior_soft_t0.01 junior_soft_t0.02
 
 REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
@@ -34,6 +40,8 @@ fi
 SBATCH_PARTITION="${SBATCH_PARTITION:-gpu_h100,gpu_a100_il}"
 SBATCH_TIME="${SBATCH_TIME:-02:00:00}"
 OUT_ROOT="results/junior/junior_training"
+OVERRIDES="${OVERRIDES:-}"
+OUT_SUFFIX="${OUT_SUFFIX:-}"
 
 for STUDY in "${STUDIES[@]}"; do
     BEST_DIR="results/junior/${STUDY}/best"
@@ -41,12 +49,12 @@ for STUDY in "${STUDIES[@]}"; do
         echo "${BEST_DIR}/config.yaml not found; run pretrain_hpo.sh ${STUDY} first." >&2
         exit 1
     fi
-    OUT_DIR="${OUT_ROOT}/${STUDY}"
+    OUT_DIR="${OUT_ROOT}/${STUDY}${OUT_SUFFIX}"
     SCRIPT=$(cat <<EOF
 #!/bin/bash -l
 # --export=NONE: see imitation_tutor_array.sh.
 #SBATCH --export=NONE
-#SBATCH --job-name=retrain_${STUDY}
+#SBATCH --job-name=retrain_${STUDY}${OUT_SUFFIX}
 #SBATCH --output=${OUT_DIR}/job.%j.log
 #SBATCH --error=${OUT_DIR}/job.%j.err
 #SBATCH --ntasks=1
@@ -63,11 +71,11 @@ echo "Node: \$(hostname)"
 
 PYTHONPATH="\$(pwd)/src" python experiments/pretrain_policy.py \
     --config-path "$(realpath "$BEST_DIR")" --config-name config \
-    imitation.out_dir=${OUT_DIR} imitation.device=cuda hydra.run.dir=${OUT_DIR}/hydra
+    imitation.out_dir=${OUT_DIR} imitation.device=cuda hydra.run.dir=${OUT_DIR}/hydra ${OVERRIDES}
 EOF
 )
     if [[ -n "${DRY_RUN:-}" ]]; then
-        echo "----- sbatch (${STUDY})"
+        echo "----- sbatch (${STUDY}${OUT_SUFFIX})"
         echo "$SCRIPT"
     else
         mkdir -p "$OUT_DIR"
