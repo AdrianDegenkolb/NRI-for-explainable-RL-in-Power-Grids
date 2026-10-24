@@ -58,6 +58,9 @@ def tutor_episodes(experience_dir: Path, agent: str = "tutor") -> pd.DataFrame:
                 "steps_survived": int(data["steps_survived"]),
                 "max_step": int(data["max_step"]),
                 "n_decisions": len(data["action"]),
+                # The Tutor executes only actions whose simulation was legal.
+                "n_actions": int((data["action"] != DO_NOTHING_INDEX).sum()),
+                "n_illegal": 0,
             })
     return make_episodes(rows)
 

@@ -12,6 +12,10 @@ One row per (agent, chronic) episode, stored as CSV:
     survived        bool   steps_survived == max_step.
     truncated       bool   The run was cut off externally (e.g. SLURM walltime), not by a game over.
     n_decisions     int    States in which the agent was asked to act (rho above threshold); -1 if unknown.
+    n_actions       int    Decisions in which the agent's own topology action (not do-nothing) was executed;
+                           heuristic line reconnections alone do not count. -1 if unknown.
+    n_illegal       int    Decisions in which the agent chose a topology action that the env rejected as
+                           illegal (grid2op then plays do-nothing). -1 if unknown.
 """
 from __future__ import annotations
 
@@ -20,7 +24,10 @@ from pathlib import Path
 
 import pandas as pd
 
-EPISODE_COLUMNS = ["agent", "chronic", "seed", "steps_survived", "max_step", "survived", "truncated", "n_decisions"]
+EPISODE_COLUMNS = ["agent", "chronic", "seed", "steps_survived", "max_step", "survived", "truncated", "n_decisions",
+                   "n_actions", "n_illegal"]
+# Columns added later; older tables get them as -1 (unknown) when loaded.
+_COUNT_COLUMNS = ("n_decisions", "n_actions", "n_illegal")
 
 # Teacher (curriculumagent) log lines: "[<chronic>] Search stopped at <step>/<max_step>" at the end of
 # a chronic, "[<chronic>] (<step>/<max_step>) ..." while it runs.
@@ -38,7 +45,7 @@ def make_episodes(rows: list[dict]) -> pd.DataFrame:
         DataFrame with exactly `EPISODE_COLUMNS`.
     """
     df = pd.DataFrame(rows)
-    for col, default in (("seed", -1), ("truncated", False), ("n_decisions", -1)):
+    for col, default in (("seed", -1), ("truncated", False), *((c, -1) for c in _COUNT_COLUMNS)):
         df[col] = df[col].fillna(default).astype(type(default)) if col in df else default
     df["survived"] = df["steps_survived"] >= df["max_step"]
     return df[EPISODE_COLUMNS]
@@ -51,8 +58,14 @@ def save_episodes(df: pd.DataFrame, path: Path) -> None:
 
 
 def load_episodes(*paths: Path) -> pd.DataFrame:
-    """Read and concatenate episode tables, e.g. one per agent, for a joint plot."""
-    return pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)[EPISODE_COLUMNS]
+    """Read and concatenate episode tables, e.g. one per agent, for a joint plot.
+
+    Tables written before a count column existed get it as -1 (unknown).
+    """
+    df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+    for col in _COUNT_COLUMNS:
+        df[col] = df[col].fillna(-1).astype(int) if col in df else -1
+    return df[EPISODE_COLUMNS]
 
 
 def teacher_episodes_from_logs(log_dir: Path, agent: str = "teacher", seed: int = -1) -> pd.DataFrame:

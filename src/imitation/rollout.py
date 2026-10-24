@@ -109,24 +109,30 @@ def run_policy_chronic(
         line_reco: Enrich every action with `reconnection_rule`.
 
     Returns:
-        Episode row with chronic, seed, steps_survived, max_step, n_decisions.
+        Episode row with chronic, seed, steps_survived, max_step, n_decisions, n_actions (decisions
+        whose topology action was executed) and n_illegal (decisions whose topology action the env
+        rejected as illegal).
     """
     seed = chronic_seed(base_seed, chronic_id)
     env.seed(seed)
     env.set_id(chronic_id)
     obs = env.reset()
     gym_obs = converter.to_gym(obs) if converter is not None else None
-    n_decisions = 0
+    n_decisions = n_actions = n_illegal = 0
     done = False
     while not done:
+        chosen = DO_NOTHING_INDEX
         if obs.rho.max() > rho_threshold:
-            action = actions[chooser(obs, gym_obs)]
+            chosen = chooser(obs, gym_obs)
             n_decisions += 1
-        else:
-            action = actions[DO_NOTHING_INDEX]
+        action = actions[chosen]
         if line_reco:
             action = reconnection_rule(obs, action, env.action_space)
-        obs, _, done, _ = env.step(action)
+        obs, _, done, info = env.step(action)
+        if chosen != DO_NOTHING_INDEX:
+            illegal = bool(info.get("is_illegal", False))
+            n_illegal += illegal
+            n_actions += not illegal
         gym_obs = converter.to_gym(obs) if converter is not None else None
     return {
         "chronic": Path(chronic_id).name,
@@ -134,6 +140,8 @@ def run_policy_chronic(
         "steps_survived": int(obs.current_step),
         "max_step": int(obs.max_step),
         "n_decisions": n_decisions,
+        "n_actions": n_actions,
+        "n_illegal": n_illegal,
     }
 
 
@@ -156,6 +164,6 @@ def evaluate_policy(
     rows = []
     for chronic_id in resolve_chronic_ids(env, chronic_names):
         row = run_policy_chronic(env, converter, chooser, actions, chronic_id, base_seed, rho_threshold, line_reco)
-        logger.info(f"{row['chronic']}: survived {row['steps_survived']}/{row['max_step']} ({row['n_decisions']} decisions)")
+        logger.info(f"{row['chronic']}: survived {row['steps_survived']}/{row['max_step']} ({row['n_decisions']} decisions, {row['n_actions']} actions)")
         rows.append({"agent": agent, **row})
     return make_episodes(rows)

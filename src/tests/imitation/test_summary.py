@@ -74,6 +74,15 @@ class TestEpisodes(unittest.TestCase):
         self.assertEqual(len(loaded), 4)
         self.assertEqual(list(loaded["seed"][:2]), [-1, 7])
 
+    def test_tables_without_action_counts_load_as_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old.csv"
+            path.write_text("agent,chronic,seed,steps_survived,max_step,survived,truncated,n_decisions\n"
+                            "junior,a,1,10,10,True,False,3\n")
+            loaded = load_episodes(path)
+        self.assertEqual(list(loaded.columns), EPISODE_COLUMNS)
+        self.assertEqual((loaded.loc[0, "n_decisions"], loaded.loc[0, "n_actions"], loaded.loc[0, "n_illegal"]), (3, -1, -1))
+
 
 class TestTeacherEpisodesFromLogs(unittest.TestCase):
     """Survival recovered from curriculumagent Teacher logs."""
