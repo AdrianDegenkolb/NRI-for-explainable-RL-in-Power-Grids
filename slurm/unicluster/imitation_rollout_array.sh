@@ -13,6 +13,7 @@
 #   N_TASKS       Array tasks (default 8).
 #   DEPENDENCY    Start after this job id finished successfully (sbatch afterok).
 #   SBATCH_TIME   Walltime per task (default 04:00:00).
+#   LOG_DIR       SLURM log directory (default results/junior/rollout_logs).
 #   DRY_RUN=1     Print the sbatch script instead of submitting.
 #
 # Examples:
@@ -31,7 +32,7 @@ REPO_ROOT="$(realpath "$(dirname "${BASH_SOURCE[0]}")/../..")"
 cd "$REPO_ROOT"
 N_TASKS="${N_TASKS:-8}"
 SBATCH_TIME="${SBATCH_TIME:-04:00:00}"
-LOG_DIR="results/junior/rollout_logs"
+LOG_DIR="${LOG_DIR:-results/junior/rollout_logs}"
 mkdir -p "$LOG_DIR"
 
 SCRIPT=$(cat <<EOF

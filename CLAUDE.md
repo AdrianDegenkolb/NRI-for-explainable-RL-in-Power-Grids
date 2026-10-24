@@ -103,10 +103,20 @@ Hydra Config
   `slurm/unicluster/junior_retrain.sh` retrains them into `results/junior/junior_training/<study>/`
   (`OVERRIDES` + `OUT_SUFFIX` for ablations, e.g. `<study>_complete_obs`).
   `experiments/junior_results.ipynb` plots those runs (validation split only) and the HPO studies.
-  Senior vs. junior vs. PPO baseline: `slurm/unicluster/imitation_vs_rl36.sh`.
+  Senior (PPO from the Junior): `slurm/unicluster/imitation_vs_rl36.sh <experiment> <junior_run_dir>` trains
+  `senior_warmup`, `senior_nowarmup` and `baseline` (random init) per seed, all with the Junior's network and
+  observation space (`src/imitation/senior.py` → `experiments/architecture_overrides.py`, dropout set to 0),
+  exports each final policy and rolls every agent out on the val and test envs (argmax + top-k), plus the
+  do-nothing and Tutor references. Its RL runs set `reward.normalize_by_episode_length=true` (reward / max_step
+  in `CustomizedGrid2OpEnvironment`): unscaled, the RL agent collects every grid step's reward until its next
+  decision, value targets reach hundreds, and RLlib's `vf_clip_param` (a cap on each sample's squared error)
+  zeroes the critic's gradient — explained variance stayed ≈ 0 in all earlier PPO runs. During the critic warm-up `set_policy_trainable` (`src/rarl_rllib/callback.py`)
+  freezes actor and GNN, and keeps their BatchNorm layers in eval mode so the sampling policy can't drift.
+  `experiments/senior_results.ipynb` plots TensorBoard curves (`src/analysis/training_curves.py`) and survival
+  tables (`analysis.episodes.survival_metrics`, shared with the Junior notebook).
   Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),
-  `results/junior/` (pretraining, HPO studies, rollouts), `results/senior/` (PPO fine-tuning + test rollouts).
-  Notebooks: `experiments/{teacher,tutor,junior}_results.ipynb`.
+  `results/junior/` (pretraining, HPO studies, rollouts), `results/senior/` (PPO fine-tuning + val/test rollouts).
+  Notebooks: `experiments/{teacher,tutor,junior,senior}_results.ipynb`.
 
 ### Constants (src/core/constants.py)
 Defines global output paths (`LOGS_PATH`, `MODELS_PATH`, `EVAL_PATH`, `EDGE_PROBS_PATH`), agent name strings (`RL_AGENT`, `HIGH_LEVEL_AGENT`, `DO_NOTHING_AGENT`), and policy names used consistently across the codebase.
