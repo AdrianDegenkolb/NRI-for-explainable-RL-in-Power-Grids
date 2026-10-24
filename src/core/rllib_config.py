@@ -55,6 +55,8 @@ def build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         "line_disc": env.line_disc,
         "penalty_game_over": env.penalty_game_over,
         "reward_finish": env.reward_finish,
+        # Missing in the configs of runs from before the switch existed.
+        "normalize_reward_by_episode_length": cfg.reward.get("normalize_by_episode_length", False),
         "curriculum_training": env.curriculum_training,
         "curriculum_thresholds": list(env.curriculum_thresholds),
         "chronics_dir": env.get("chronics_dir", None),

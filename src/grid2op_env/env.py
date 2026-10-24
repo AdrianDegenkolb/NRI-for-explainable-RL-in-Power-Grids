@@ -22,6 +22,7 @@ from core.constants import DO_NOTHING_AGENT, RL_AGENT, HIGH_LEVEL_AGENT, DO_NOTH
 from core.heuristic_actions import reconnection_rule, revert_to_reference_topo, disconnection_rule
 from .action_converters import CustomDiscreteActions, setup_converter, load_actions
 from .observation_converter import make_observation_converter, ObservationConverter
+from .rewards import normalize_by_episode_length
 from .utils import make_g2op_env
 
 # Environment configuration per curriculum level:
@@ -90,6 +91,7 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
         self.reset_topo        = env_config.get("reset_topo", 0)                                             # reset topo option
         self.penalty_game_over = env_config.get("penalty_game_over", 0)                                      # penalty for game over
         self.reward_finish     = env_config.get("reward_finish", 0)                                          # reward for finishing complete episode
+        self.normalize_reward  = env_config.get("normalize_reward_by_episode_length", False)                 # divide every reward by the chronic's max_step
 
         # 6. initialize metrics
         self.step_surv        = 0
@@ -223,6 +225,7 @@ class CustomizedGrid2OpEnvironment(MultiAgentEnv):
 
         if self.penalty_game_over and terminated: reward = self.penalty_game_over                                       # Adjust reward when episode terminates early
         if self.reward_finish and g2op_obs.current_step == g2op_obs.max_step: reward = self.reward_finish               # Adjust reward when episode finished
+        if self.normalize_reward: reward = normalize_by_episode_length(reward, g2op_obs)                                # Returns become shares of the episode
 
         return g2op_obs, reward, terminated, infos
 
