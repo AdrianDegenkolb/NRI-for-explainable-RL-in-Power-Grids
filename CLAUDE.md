@@ -46,9 +46,12 @@ The training pipeline is configured entirely via **Hydra** (configs/rllib/) and 
 ### Config Groups (configs/rllib/)
 - **experiment/**: trial-level settings (timesteps, seed, checkpoint freq)
 - **training/**: algorithm params — `ppo.yaml`, `sac.yaml`, `ppo_test.yaml`, `sac_test.yaml`
-- **model/**: network architecture — `ragnn.yaml` (full model), `gnn.yaml` (no encoder), `mlp.yaml` (baseline)
+- **model/**: network architecture — `ragnn.yaml` (full model), `gnn.yaml` (no encoder), `mlp.yaml` (baseline;
+  RLlib's default, which builds one MLP per attribute of a Dict observation), `flat_mlp.yaml` (one MLP on the
+  concatenated flat observation, Fraunhofer Junior size; `FlatMLPModel` in `src/rarl_rllib/ppo/mlp_ppo_model.py`)
 - **obs_space/**: `default.yaml` (graph: nodes/edge_index/edge_mask), `complete_graph.yaml` (graph plus
-  line/substation state and node-type one-hot, no voltage angles; used for imitation) or `flat.yaml`
+  line/substation state and node-type one-hot, no voltage angles; used for imitation), `flat.yaml` or
+  `flat_vect.yaml` (flat, every attribute of `obs.to_vect()`)
 - **env/**: Grid2Op case definition (case14)
 - **reward/**: reward function class (`rho`, `scaled_l2rpn`, `constant`, `alpha_zero`)
 - **relation_awareness/**: `default.yaml` (enable encoder + KL annealing) or `disabled.yaml`
@@ -94,9 +97,11 @@ Hydra Config
   (config `configs/rllib/pretrain_hpo.yaml`: `CompleteGraphObsSpace`, objective `regret_top20` = regret of
   top-20 simulation, percentile pruner; Optuna in `src/imitation/hpo.py`, one study per dataset, journal file
   storage shared by parallel workers, sampler seed hashed from study name + worker), `experiments/summarize_hpo.py`, SLURM chain
-  `slurm/unicluster/pretrain_hpo.sh`, rollouts `slurm/unicluster/imitation_rollout_array.sh`
-  (`--do-nothing` for the reference). Training curves and per-state val analysis of the best trials:
-  `slurm/unicluster/junior_retrain.sh` retrains them into `results/junior/junior_training/<study>/`.
+  `slurm/unicluster/pretrain_hpo.sh` (`CONFIG_NAME=pretrain_hpo_mlp` for the flat-MLP study), rollouts
+  `slurm/unicluster/imitation_rollout_array.sh` (`--do-nothing` for the reference; episode tables of
+  `src/analysis/episodes.py` count decisions, executed and illegal topology actions). Training curves and per-state val analysis of the best trials:
+  `slurm/unicluster/junior_retrain.sh` retrains them into `results/junior/junior_training/<study>/`
+  (`OVERRIDES` + `OUT_SUFFIX` for ablations, e.g. `<study>_complete_obs`).
   `experiments/junior_results.ipynb` plots those runs (validation split only) and the HPO studies.
   Senior vs. junior vs. PPO baseline: `slurm/unicluster/imitation_vs_rl36.sh`.
   Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),
