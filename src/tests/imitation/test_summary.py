@@ -5,6 +5,7 @@ Tests are organised by class:
   - TestBestAction
   - TestSubstationTable
   - TestEpisodes
+  - TestSurvivalMetrics
   - TestTeacherEpisodesFromLogs
   - TestRhoSlice
 """
@@ -19,7 +20,14 @@ import numpy as np
 import pandas as pd
 from lightsim2grid import LightSimBackend
 
-from analysis.episodes import EPISODE_COLUMNS, load_episodes, make_episodes, save_episodes, teacher_episodes_from_logs
+from analysis.episodes import (
+    EPISODE_COLUMNS,
+    load_episodes,
+    make_episodes,
+    save_episodes,
+    survival_metrics,
+    teacher_episodes_from_logs,
+)
 from imitation.summary import best_action, rho_slice, substation_table
 
 
@@ -82,6 +90,29 @@ class TestEpisodes(unittest.TestCase):
             loaded = load_episodes(path)
         self.assertEqual(list(loaded.columns), EPISODE_COLUMNS)
         self.assertEqual((loaded.loc[0, "n_decisions"], loaded.loc[0, "n_actions"], loaded.loc[0, "n_illegal"]), (3, -1, -1))
+
+
+class TestSurvivalMetrics(unittest.TestCase):
+    """One survival table row per episode table."""
+
+    def test_shares_and_rates_per_day_survived(self):
+        df = make_episodes([
+            {"agent": "a", "chronic": "x", "steps_survived": 576, "max_step": 576, "n_decisions": 4, "n_actions": 2, "n_illegal": 0},
+            {"agent": "a", "chronic": "y", "steps_survived": 288, "max_step": 576, "n_decisions": 2, "n_actions": 1, "n_illegal": 1},
+        ])
+        m = survival_metrics(df)
+        self.assertEqual(m.chronics, 2)
+        self.assertAlmostEqual(m.full_survival_pct, 50.0)
+        self.assertAlmostEqual(m.full_survival_se_pct, 100 * np.sqrt(0.25 / 2))
+        self.assertAlmostEqual(m.mean_survival_pct, 75.0)
+        # 3 days survived in total
+        self.assertAlmostEqual(m.decisions_per_day, 2.0)
+        self.assertAlmostEqual(m.actions_per_day, 1.0)
+        self.assertAlmostEqual(m.illegal_per_day, 1 / 3)
+
+    def test_unknown_counts_give_nan(self):
+        df = make_episodes([{"agent": "a", "chronic": "x", "steps_survived": 10, "max_step": 10}])
+        self.assertTrue(np.isnan(survival_metrics(df).actions_per_day))
 
 
 class TestTeacherEpisodesFromLogs(unittest.TestCase):

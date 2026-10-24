@@ -20,14 +20,17 @@ One row per (agent, chronic) episode, stored as CSV:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 EPISODE_COLUMNS = ["agent", "chronic", "seed", "steps_survived", "max_step", "survived", "truncated", "n_decisions",
                    "n_actions", "n_illegal"]
 # Columns added later; older tables get them as -1 (unknown) when loaded.
 _COUNT_COLUMNS = ("n_decisions", "n_actions", "n_illegal")
+STEPS_PER_DAY = 288  # 5-minute steps
 
 # Teacher (curriculumagent) log lines: "[<chronic>] Search stopped at <step>/<max_step>" at the end of
 # a chronic, "[<chronic>] (<step>/<max_step>) ..." while it runs.
@@ -66,6 +69,54 @@ def load_episodes(*paths: Path) -> pd.DataFrame:
     for col in _COUNT_COLUMNS:
         df[col] = df[col].fillna(-1).astype(int) if col in df else -1
     return df[EPISODE_COLUMNS]
+
+
+@dataclass
+class SurvivalMetrics:
+    """Survival of one agent over a set of episodes (one row of a survival table).
+
+    Attributes:
+        chronics: Number of episodes.
+        full_survival_pct: Share of chronics survived to the end, in %.
+        full_survival_se_pct: Its standard error sqrt(p(1-p)/n), in %.
+        mean_survival_pct: Mean over chronics of steps survived / chronic length, in %.
+        decisions_per_day: Decisions (max rho above the threshold) per day survived.
+        actions_per_day: Executed own topology actions per day survived.
+        illegal_per_day: Illegal topology actions chosen per day survived.
+    """
+
+    chronics: int
+    full_survival_pct: float
+    full_survival_se_pct: float
+    mean_survival_pct: float
+    decisions_per_day: float
+    actions_per_day: float
+    illegal_per_day: float
+
+
+def per_day(episodes: pd.DataFrame, column: str) -> float:
+    """Sum of a count column per day survived (288 steps); NaN if a table predates the column (-1).
+
+    The ratio of sums over all chronics, not the mean of per-chronic rates, which chronics that end
+    after a few hours would dominate.
+    """
+    if (episodes[column] < 0).any():
+        return np.nan
+    return episodes[column].sum() / (episodes["steps_survived"].sum() / STEPS_PER_DAY)
+
+
+def survival_metrics(episodes: pd.DataFrame) -> SurvivalMetrics:
+    """Survival table row of an episode table (`EPISODE_COLUMNS`, one agent and mode)."""
+    full = episodes["survived"].mean()
+    return SurvivalMetrics(
+        chronics=len(episodes),
+        full_survival_pct=100 * full,
+        full_survival_se_pct=100 * np.sqrt(full * (1 - full) / len(episodes)),
+        mean_survival_pct=100 * (episodes["steps_survived"] / episodes["max_step"]).mean(),
+        decisions_per_day=per_day(episodes, "n_decisions"),
+        actions_per_day=per_day(episodes, "n_actions"),
+        illegal_per_day=per_day(episodes, "n_illegal"),
+    )
 
 
 def teacher_episodes_from_logs(log_dir: Path, agent: str = "teacher", seed: int = -1) -> pd.DataFrame:
