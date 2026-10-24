@@ -2889,9 +2889,13 @@ def make_observation_converter(gym_env: GymEnv, env_config: dict, backend: Light
             verbose=env_config.get("verbose", False),
         )
     elif mode == "FlatObsSpace":
+        g2op_input = env_config.get("g2op_input", ["p_i", "p_l", "q_i", "q_l", "a", "v_i", "v_l", "theta_i", "theta_l", "r", "t"])
+        # "vect": every attribute of obs.to_vect(), i.e. exactly what imitation data stores.
+        attrs = (list(gym_env.init_env.observation_space.attr_list_vect) if "vect" in g2op_input
+                 else get_attr_list(g2op_input))
         return FlatObservationConverter(
             gym_env=gym_env,
-            attr_to_observe=get_attr_list(env_config.get("g2op_input", ["p_i", "p_l", "q_i", "q_l", "a", "v_i", "v_l", "theta_i", "theta_l","r", "t"])),
+            attr_to_observe=attrs,
             verbose=env_config.get("verbose", False),
         )
     else:

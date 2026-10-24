@@ -1,0 +1,6 @@
+# Flat (Dict of Box) observation space with every attribute of obs.to_vect(), i.e. exactly what the
+# imitation data stores (the Fraunhofer Junior's input). Use with model=flat_mlp.
+observation_space: FlatObsSpace
+g2op_input: ["vect"]
+custom_input: []
+use_forecasts: false  # the flat converter reads no forecasts
