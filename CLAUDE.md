@@ -112,6 +112,9 @@ Hydra Config
   decision, value targets reach hundreds, and RLlib's `vf_clip_param` (a cap on each sample's squared error)
   zeroes the critic's gradient — explained variance stayed ≈ 0 in all earlier PPO runs. During the critic warm-up `set_policy_trainable` (`src/rarl_rllib/callback.py`)
   freezes actor and GNN, and keeps their BatchNorm layers in eval mode so the sampling policy can't drift.
+  The Senior runs keep BatchNorm in eval mode for the whole run (`imitation.freeze_batch_norm`: RLlib samples in
+  eval mode but computes the PPO loss in train mode) and set `+training.kl_coeff=0.0` (RLlib's old API stack
+  ignores `use_kl_loss: false` and applies an adaptive KL penalty).
   `experiments/senior_results.ipynb` plots TensorBoard curves (`src/analysis/training_curves.py`) and survival
   tables (`analysis.episodes.survival_metrics`, shared with the Junior notebook).
   Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),

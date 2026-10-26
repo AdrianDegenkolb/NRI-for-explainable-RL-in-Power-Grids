@@ -21,3 +21,4 @@ out_dir: ${experiment.storage_path}/junior/${experiment.name}
 # --- RL fine-tuning ---
 weights_path: null         # e.g. ${imitation.out_dir}/policy_weights.pt
 critic_warmup_iters: 10    # first RL iterations in which only the value branch is trained
+freeze_batch_norm: false   # BatchNorm in eval mode for the whole RL run, so sampling and PPO loss use the same policy

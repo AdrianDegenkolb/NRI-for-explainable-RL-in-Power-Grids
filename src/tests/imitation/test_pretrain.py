@@ -312,6 +312,11 @@ class TestCriticWarmup(unittest.TestCase):
         for before, m in zip(stats, batch_norms):
             torch.testing.assert_close(m.running_mean, before)
 
+        set_policy_trainable(SimpleNamespace(model=model), True, freeze_batch_norm=True)
+        self.assertTrue(all(p.requires_grad for p in model.parameters()))
+        model.train()
+        torch.testing.assert_close(policy_logits(model, obs).detach(), sampled)
+
         set_policy_trainable(SimpleNamespace(model=model), True)
         model.train()
         policy_logits(model, obs)
