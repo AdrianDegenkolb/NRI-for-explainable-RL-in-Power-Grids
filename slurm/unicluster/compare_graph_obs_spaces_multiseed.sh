@@ -14,6 +14,7 @@
 # Results: results/<date>_compare_graph_obs_spaces_IEEE14/<obs_space>/
 #
 # Environment:
+#   EXPERIMENT_NAME  Results folder (default <today>_compare_graph_obs_spaces_IEEE14)
 #   SEEDS          Seeds to train (default "0 1 2 3 4")
 #   OBS_SPACES     Representations to train (default: all 12)
 #   N_WORKERS      Rollout workers per run (default 48)
@@ -22,7 +23,8 @@
 #                  (not gpu_mi300: AMD GPUs and only 40 cores per node); cpu: CPU nodes (cpu_il, cpu)
 #   DRY_RUN=1      Print the sbatch scripts instead of submitting
 
-experiment_name="$(date +%Y_%m_%d)_compare_graph_obs_spaces_IEEE14"
+# Set EXPERIMENT_NAME to resubmit failed runs into an earlier submission's folder.
+experiment_name="${EXPERIMENT_NAME:-$(date +%Y_%m_%d)_compare_graph_obs_spaces_IEEE14}"
 
 read -r -a SEEDS <<< "${SEEDS:-0 1 2 3 4}"
 read -r -a OBS_SPACES <<< "${OBS_SPACES:-complete heterogeneous no_edges substation ptdf zbus substation_ptdf substation_zbus elements lodf elements_lodf flat}"
