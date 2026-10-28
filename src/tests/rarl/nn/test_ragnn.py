@@ -51,6 +51,38 @@ class TestRAGNN(unittest.TestCase):
             _ = model(self.x, self.edge_index, bad_edge_weights, self.batch)
 
 
+class TestBaselineGNNComparisonOptions(unittest.TestCase):
+    """GCN edge-weight positivity and the per-substation readout."""
+
+    def setUp(self):
+        self.x, self.edge_index, self.batch = _make_batch()
+        self.E = self.edge_index.size(1)
+
+    def test_gcn_edge_weights_from_attributes_are_positive(self):
+        """Even edge attributes that drive the projection negative give no NaN (softplus weights)."""
+        torch.manual_seed(0)
+        model = BaselineGNN(x_dim=4, hidden_dim=8, x_out_dim=5, num_layers=2, edge_dim=1, conv_type="gcn")
+        with torch.no_grad():
+            for layer in (model.edge_proj.fc1, model.edge_proj.fc2):
+                layer.weight.fill_(-5.0)
+                layer.bias.fill_(-5.0)
+        edge_attr = torch.full((self.E, 1), 10.0)
+        weights = torch.nn.functional.softplus(model.edge_proj(edge_attr))
+        self.assertTrue((weights > 0).all())
+        out = model(self.x, self.edge_index, self.batch, edge_attr=edge_attr)
+        self.assertFalse(torch.isnan(out).any())
+
+    def test_substation_readout_shape(self):
+        model = BaselineGNN(x_dim=4, hidden_dim=8, x_out_dim=5, num_layers=2, readout="substation", n_sub=3)
+        subs = torch.tensor([[0, -1], [1, -1], [0, 2], [1, -1], [2, -1]])
+        out = model(self.x, self.edge_index, self.batch, node_substations=subs, num_graphs=2)
+        self.assertEqual(out.shape, (2, 3 * 5))
+
+    def test_substation_readout_needs_n_sub(self):
+        with self.assertRaises(ValueError):
+            BaselineGNN(x_dim=4, hidden_dim=8, x_out_dim=5, readout="substation")
+
+
 class TestBaselineGNN(unittest.TestCase):
     def setUp(self):
         self.x, self.edge_index, self.batch = _make_batch()

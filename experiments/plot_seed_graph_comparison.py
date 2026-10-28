@@ -95,17 +95,9 @@ def init_ray() -> None:
 
 
 def register_models() -> None:
-    from ray.rllib.models import ModelCatalog
-    from rarl_rllib import RAActorCriticModel, RASACTorchModel, RADQNTorchModel
-    from rarl_rllib.ppo.gnn_ppo_model import GNNBaselineModel
-    from rarl_rllib.sac.gnn_sac_model import GNNBaselineSACModel
-    from rarl_rllib.dqn.gnn_dqn_model import GNNBaselineDQNModel
-    ModelCatalog.register_custom_model("ra_actor_critic_model", RAActorCriticModel)
-    ModelCatalog.register_custom_model("rasac_model", RASACTorchModel)
-    ModelCatalog.register_custom_model("radqn_model", RADQNTorchModel)
-    ModelCatalog.register_custom_model("gnn_model", GNNBaselineModel)
-    ModelCatalog.register_custom_model("gnn_sac_model", GNNBaselineSACModel)
-    ModelCatalog.register_custom_model("gnn_dqn_model", GNNBaselineDQNModel)
+    """Register the project's custom RLlib models (needed to restore policies from checkpoints)."""
+    from core.rllib_config import register_custom_models
+    register_custom_models()
 
 
 def load_policy(checkpoint: Path):

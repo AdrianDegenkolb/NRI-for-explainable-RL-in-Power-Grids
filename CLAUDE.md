@@ -48,10 +48,15 @@ The training pipeline is configured entirely via **Hydra** (configs/rllib/) and 
 - **training/**: algorithm params — `ppo.yaml`, `sac.yaml`, `ppo_test.yaml`, `sac_test.yaml`
 - **model/**: network architecture — `ragnn.yaml` (full model), `gnn.yaml` (no encoder), `mlp.yaml` (baseline;
   RLlib's default, which builds one MLP per attribute of a Dict observation), `flat_mlp.yaml` (one MLP on the
-  concatenated flat observation, Fraunhofer Junior size; `FlatMLPModel` in `src/rarl_rllib/ppo/mlp_ppo_model.py`)
+  concatenated flat observation, Fraunhofer Junior size; `FlatMLPModel` in `src/rarl_rllib/ppo/mlp_ppo_model.py`),
+  `gcn_substation_readout.yaml` (GCN; node embeddings averaged per substation and concatenated, `src/rarl/nn/readout.py`;
+  needs `node_substations: true`)
 - **obs_space/**: `default.yaml` (graph: nodes/edge_index/edge_mask), `complete_graph.yaml` (graph plus
   line/substation state and node-type one-hot, no voltage angles; used for imitation), `flat.yaml` or
-  `flat_vect.yaml` (flat, every attribute of `obs.to_vect()`)
+  `flat_vect.yaml` (flat, every attribute of `obs.to_vect()`), `graph_comparison/` (the 12 representations of the
+  graph comparison, all with the Complete node features via `node_features: complete`: bus graphs merge them per
+  bus by `_BUS_AGGREGATION`, `no_edges` is the structure control, `flat` the MLP input; run with
+  `slurm/unicluster/compare_graph_obs_spaces_multiseed.sh`, GPU by default, `DEVICE=cpu` for CPU nodes)
 - **env/**: Grid2Op case definition (case14)
 - **reward/**: reward function class (`rho`, `scaled_l2rpn`, `constant`, `alpha_zero`)
 - **relation_awareness/**: `default.yaml` (enable encoder + KL annealing) or `disabled.yaml`

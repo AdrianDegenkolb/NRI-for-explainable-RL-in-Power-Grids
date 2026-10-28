@@ -29,6 +29,8 @@ EDGE_INDEX = "edge_index"       # keys the edge index which notes node pairs tha
 EDGE_TYPE = "edge_type"         # keys edge types per edge [E]
 EDGE_WEIGHTS = "edge_weights"    # keys the edge weight per edge [E]
 GLOBAL = "global_features"      # keys global features in the observation
+NODE_SUBSTATIONS = "node_substations"  # keys the substation(s) of every node [N, 2], -1 = none (readout per substation)
+FLAT_FEATURES = "flat_features"  # keys the node features plus bus per node of FlatGraphObservationConverter [N, x_dim]
 
 
 _DEFAULT_NODE_FEATURES = [
@@ -48,21 +50,36 @@ _FORECAST_NODE_FEATURES = ("active_power_forecast", "reactive_power_forecast")
 # Node features of CompleteGraphObservationConverter besides forecasts and the node-type one-hot.
 # Voltage angles are left out: obs.to_vect() of l2rpn_wcci_2020 does not contain them, so they
 # cannot be restored from imitation data.
-_COMPLETE_STATE_NODE_FEATURES = [
-    "active_power",
-    "reactive_power",
-    "voltage",
+_LINE_STATE_FEATURES = [
     "rho",
     "timestep_overflow",
     "time_before_cooldown_line",
     "time_next_maintenance",
     "duration_next_maintenance",
-    "time_before_cooldown_sub",
 ]
+_COMPLETE_STATE_NODE_FEATURES = ["active_power", "reactive_power", "voltage", *_LINE_STATE_FEATURES, "time_before_cooldown_sub"]
 # Node types in node order; each gets a one-hot column `node_type_<type>`.
 _NODE_TYPES = ("line_or", "line_ex", "gen", "load", "storage")
+# Node types of ElementGraphObservationConverter in node order (ground/bus1/bus2 repeat per substation).
+_ELEMENT_NODE_TYPES = ("gen", "load", "line", "storage", "ground", "bus1", "bus2")
+# Per-bus net injection of generators, loads and storage, read by LODF line nodes at both line ends.
+_INJECTION_FEATURES = ["active_power", "reactive_power"]
 # time_next_maintenance is clipped to this many steps (one day of 5-minute steps).
 MAINTENANCE_HORIZON_STEPS = 288
+
+# How bus-level converters merge the features of the elements on a bus. Features not listed are
+# summed: powers and forecasts (net injection of the bus) and node-type columns (element counts).
+_BUS_AGGREGATION: dict[str, str] = {
+    "voltage": "mean",
+    "voltage_angle_sin": "mean",
+    "voltage_angle_cos": "mean",
+    "time_before_cooldown_sub": "mean",
+    "rho": "max",
+    "timestep_overflow": "max",
+    "time_before_cooldown_line": "max",
+    "duration_next_maintenance": "max",
+    "time_next_maintenance": "min",
+}
 
 
 @dataclass
@@ -83,6 +100,76 @@ class _GridDimensions:
             n_line=obs_space.n_line,
             n_storage=obs_space.n_storage,
         )
+
+
+@dataclass
+class _Forecasts:
+    """Next-step forecasts in the generator sign convention (loads negative)."""
+
+    gen_p: npt.NDArray[np.float32]  # [n_gen]
+    gen_q: npt.NDArray[np.float32]  # [n_gen]; grid2op forecasts no gen q, this holds the voltage setpoint
+    load_p: npt.NDArray[np.float32]  # [n_load]
+    load_q: npt.NDArray[np.float32]  # [n_load]
+
+
+def zero_forecasts(dims: _GridDimensions) -> _Forecasts:
+    """All-zero forecasts, for converters that observe none."""
+    return _Forecasts(*(np.zeros(n, dtype=np.float32) for n in (dims.n_gen, dims.n_gen, dims.n_load, dims.n_load)))
+
+
+def next_step_forecasts(g2op_obs: BaseObservation, dims: _GridDimensions) -> _Forecasts:
+    """Forecasts of the next step (index 1 of `get_forecast_arrays`); zeros once the episode is done.
+
+    Args:
+        g2op_obs: Current observation.
+        dims: Grid dimensions (for the zero arrays).
+
+    Returns:
+        Generator p and voltage setpoint, load p and q (negated).
+    """
+    if g2op_obs._is_done:
+        return zero_forecasts(dims)
+    load_p, load_q, prod_p, prod_v, _ = g2op_obs.get_forecast_arrays()
+    return _Forecasts(
+        gen_p=prod_p[1].astype(np.float32),
+        gen_q=prod_v[1].astype(np.float32),
+        load_p=-load_p[1].astype(np.float32),
+        load_q=-load_q[1].astype(np.float32),
+    )
+
+
+def aggregate_to_buses(
+    features: dict[str, npt.NDArray],
+    names: list[str],
+    slots: npt.NDArray[np.int64],
+    n_slots: int,
+) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
+    """Merge per-element features into bus nodes, per feature by `_BUS_AGGREGATION` (default: sum).
+
+    Args:
+        features: Feature name -> value per element [n_elements] (connected elements only).
+        names: Features to merge, in column order.
+        slots: Bus slot of every element [n_elements].
+        n_slots: Number of bus slots.
+
+    Returns:
+        node_features [n_slots, len(names)] (0 on empty slots) and node_mask [n_slots] (slots with an element).
+    """
+    count = np.bincount(slots, minlength=n_slots)
+    node_mask = count > 0
+    node_features = np.zeros((n_slots, len(names)), dtype=np.float64)
+    for col, name in enumerate(names):
+        values = np.asarray(features[name], dtype=np.float64)
+        rule = _BUS_AGGREGATION.get(name, "sum")
+        if rule in ("sum", "mean"):
+            np.add.at(node_features[:, col], slots, values)
+            if rule == "mean":
+                node_features[node_mask, col] /= count[node_mask]
+        else:
+            merged = np.full(n_slots, -np.inf if rule == "max" else np.inf)
+            (np.maximum if rule == "max" else np.minimum).at(merged, slots, values)
+            node_features[node_mask, col] = merged[node_mask]
+    return node_features.astype(np.float32), node_mask
 
 
 
@@ -199,6 +286,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs_space.storage_to_subid,
         ])
         self._sub_ids = sub_ids
+        self._node_type_features = self._build_node_type_features()
         # Candidate topology pairs: all (i, j) with i < j in the same substation.
         # Filtering to same-bus + connected is done dynamically; this eliminates the
         # O(N²) same_sub broadcast that was recomputed on every observation step.
@@ -242,6 +330,18 @@ class GraphObservationConverter(ObservationConverter[Dict]):
     @property
     def x_dim(self) -> int:
         return self._observation_space[NODES].shape[1]
+
+    @property
+    def node_substations(self) -> npt.NDArray[np.int64]:
+        """Substation of every node [num_nodes, 2]; second column -1 (each node is in one substation)."""
+        return np.stack([self._sub_ids, np.full_like(self._sub_ids, -1)], axis=1).astype(np.int64)
+
+    @staticmethod
+    def node_buses(g2op_obs: BaseObservation) -> npt.NDArray[np.int64]:
+        """Bus of every node [num_nodes] in node order [line_or | line_ex | gen | load | storage]; -1 = disconnected."""
+        return np.concatenate([
+            g2op_obs.line_or_bus, g2op_obs.line_ex_bus, g2op_obs.gen_bus, g2op_obs.load_bus, g2op_obs.storage_bus,
+        ]).astype(np.int64)
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
         """
@@ -295,41 +395,39 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             GLOBAL: gym_obs[GLOBAL],
         }
 
+    def _build_node_type_features(self) -> dict[str, npt.NDArray[np.float32]]:
+        """Static one-hot columns: `node_type_<type>` -> [num_nodes] (1 on nodes of that type)."""
+        dims = self._dims
+        counts = [dims.n_line, dims.n_line, dims.n_gen, dims.n_load, dims.n_storage]
+        node_type = np.repeat(np.arange(len(_NODE_TYPES)), counts)
+        return {f"node_type_{name}": (node_type == i).astype(np.float32) for i, name in enumerate(_NODE_TYPES)}
+
+    def _on_line_ends(self, values: npt.ArrayLike) -> npt.NDArray[np.float32]:
+        """Per-line values [n_line] as a node column [num_nodes]: on both line ends, 0 elsewhere."""
+        values = np.asarray(values, dtype=np.float32)
+        rest = np.zeros(self._num_nodes - 2 * self._dims.n_line, dtype=np.float32)
+        return np.concatenate([values, values, rest])
+
     def _compute_all_node_features(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
         """
         Compute all supported node features, each as a flat array of length
         num_nodes in order [line_or | line_ex | gen | load | storage].
+
+        Line features (`rho`, `timestep_overflow`, ...) sit on both line ends, `time_before_cooldown_sub`
+        on every node of the substation, `node_type_<type>` is a static one-hot.
         """
         dims = self._dims
         zeros_line = np.zeros(dims.n_line, dtype=np.float32)
-        zeros_gen = np.zeros(dims.n_gen, dtype=np.float32)
-        zeros_load = np.zeros(dims.n_load, dtype=np.float32)
         zeros_storage = np.zeros(dims.n_storage, dtype=np.float32)
 
-        if self._use_forecasts and not g2op_obs._is_done:
-            t0 = time.perf_counter()
-            load_p, load_q, prod_p, prod_v, _ = g2op_obs.get_forecast_arrays()
-            self._timings["forecast_ms"] = (time.perf_counter() - t0) * 1000
-            # Index 1 = next timestep forecast; sign convention: gen positive, load negative
-            gen_p_forecast = prod_p[1].astype(np.float32)
-            # grid2op forecasts no gen q; this slot holds the gen voltage setpoint forecast.
-            gen_q_forecast = prod_v[1].astype(np.float32)
-            load_p_forecast = -load_p[1].astype(np.float32)
-            load_q_forecast = -load_q[1].astype(np.float32)
-        else:
-            self._timings["forecast_ms"] = 0.0
-            gen_p_forecast = zeros_gen
-            gen_q_forecast = zeros_gen
-            load_p_forecast = zeros_load
-            load_q_forecast = zeros_load
+        t0 = time.perf_counter()
+        fc = next_step_forecasts(g2op_obs, dims) if self._use_forecasts else zero_forecasts(dims)
+        self._timings["forecast_ms"] = (time.perf_counter() - t0) * 1000
 
         return {
-            "active_power_forecast": np.concatenate([
-                zeros_line, zeros_line, gen_p_forecast, load_p_forecast, zeros_storage,
-            ]),
-            "reactive_power_forecast": np.concatenate([
-                zeros_line, zeros_line, gen_q_forecast, load_q_forecast, zeros_storage,
-            ]),
+            "active_power_forecast": np.concatenate([zeros_line, zeros_line, fc.gen_p, fc.load_p, zeros_storage]),
+            # grid2op forecasts no gen q; the generator slot holds the voltage setpoint forecast.
+            "reactive_power_forecast": np.concatenate([zeros_line, zeros_line, fc.gen_q, fc.load_q, zeros_storage]),
             # Generator convention: generation positive, consumption negative
             "active_power": np.concatenate([
                 g2op_obs.p_or, g2op_obs.p_ex, g2op_obs.gen_p, -g2op_obs.load_p, g2op_obs.storage_power,
@@ -346,10 +444,14 @@ class GraphObservationConverter(ObservationConverter[Dict]):
             "voltage_angle_sin": np.sin(np.deg2rad(np.concatenate([
                 g2op_obs.theta_or, g2op_obs.theta_ex, g2op_obs.gen_theta, g2op_obs.load_theta, g2op_obs.storage_theta,
             ]))),
-            # rho is a line-level quantity; non-line nodes get 0
-            "rho": np.concatenate([
-                g2op_obs.rho, g2op_obs.rho, zeros_gen, zeros_load, zeros_storage,
-            ]),
+            # Line-level quantities sit on both line ends; non-line nodes get 0
+            "rho": self._on_line_ends(g2op_obs.rho),
+            "timestep_overflow": self._on_line_ends(g2op_obs.timestep_overflow),
+            "time_before_cooldown_line": self._on_line_ends(g2op_obs.time_before_cooldown_line),
+            "time_next_maintenance": self._on_line_ends(scale_time_next_maintenance(g2op_obs.time_next_maintenance)),
+            "duration_next_maintenance": self._on_line_ends(g2op_obs.duration_next_maintenance),
+            "time_before_cooldown_sub": g2op_obs.time_before_cooldown_sub[self._sub_ids].astype(np.float32),
+            **self._node_type_features,
         }
 
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
@@ -374,11 +476,7 @@ class GraphObservationConverter(ObservationConverter[Dict]):
         of size N×N on every step, which is ~10× more memory/compute on IEEE36
         (N=177) than on IEEE14 (N=57).
         """
-        bus_ids = np.concatenate([
-            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
-            g2op_obs.gen_bus, g2op_obs.load_bus,
-            g2op_obs.storage_bus,
-        ])
+        bus_ids = self.node_buses(g2op_obs)
 
         # Filter precomputed same-substation candidate pairs by dynamic bus assignment.
         # Both endpoints must be on the same bus and connected (bus > 0).
@@ -431,6 +529,43 @@ def complete_node_features(use_forecasts: bool, has_storage: bool) -> list[str]:
     return forecasts + _COMPLETE_STATE_NODE_FEATURES + [f"node_type_{t}" for t in types]
 
 
+def element_node_features(use_forecasts: bool, has_storage: bool) -> list[str]:
+    """Node features of ElementGraphObservationConverter, in column order.
+
+    The information of `complete_node_features` on the element graph: one node per line holds the
+    state of both line ends (`*_ex` columns), the ground/bus nodes hold the substation cooldown.
+
+    Args:
+        use_forecasts: Include the forecast features.
+        has_storage: Include the `node_type_storage` column (only grids with storage units).
+
+    Returns:
+        Feature names: element state, line extremity state, forecasts, line state, substation
+        cooldown, then one `node_type_<type>` per node type.
+    """
+    forecasts = list(_FORECAST_NODE_FEATURES) if use_forecasts else []
+    types = [t for t in _ELEMENT_NODE_TYPES if t != "storage" or has_storage]
+    return (["active_power", "reactive_power", "voltage", "active_power_ex", "reactive_power_ex", "voltage_ex"]
+            + forecasts + _LINE_STATE_FEATURES + ["time_before_cooldown_sub"] + [f"node_type_{t}" for t in types])
+
+
+def lodf_node_features(use_forecasts: bool) -> list[str]:
+    """Node (= powerline) features of LODFGraphObservationConverter, in column order.
+
+    Args:
+        use_forecasts: Include the forecasts of the injections at the line ends.
+
+    Returns:
+        Feature names: line state, `line_status`, then per line end (`_or`, `_ex`) the substation
+        cooldown and the net injection of the bus the end is connected to (`injection_*`).
+    """
+    injections = _INJECTION_FEATURES + (list(_FORECAST_NODE_FEATURES) if use_forecasts else [])
+    end = ["time_before_cooldown_sub"] + [f"injection_{name}" for name in injections]
+    line = ["active_power_or", "reactive_power_or", "voltage_or", "active_power_ex", "reactive_power_ex",
+            "voltage_ex", *_LINE_STATE_FEATURES, "line_status"]
+    return line + [f"{name}_{side}" for side in ("or", "ex") for name in end]
+
+
 def scale_time_next_maintenance(steps: npt.ArrayLike, horizon: int = MAINTENANCE_HORIZON_STEPS) -> npt.NDArray[np.float32]:
     """Steps until the next maintenance, clipped to `horizon` and scaled to [0, 1].
 
@@ -457,6 +592,8 @@ class CompleteGraphObservationConverter(GraphObservationConverter):
 
     The feature set is fixed (`complete_node_features`); `use_forecasts` only adds or drops the
     forecast columns. Features are normalized like the parent's, by a running mean/variance.
+    The same features are available to every converter built on GraphObservationConverter via
+    `attr_to_observe` (obs_space config `node_features: complete`).
     """
 
     def __init__(self, g2op_obs_space: ObservationSpace, use_forecasts: bool = True, verbose: bool = False):
@@ -467,33 +604,18 @@ class CompleteGraphObservationConverter(GraphObservationConverter):
         """
         features = complete_node_features(use_forecasts, has_storage=g2op_obs_space.n_storage > 0)
         super().__init__(g2op_obs_space, attr_to_observe=features, verbose=verbose)
-        self._node_type_features = self._build_node_type_features()
 
-    def _build_node_type_features(self) -> dict[str, npt.NDArray[np.float32]]:
-        """Static one-hot columns: `node_type_<type>` -> [num_nodes] (1 on nodes of that type)."""
-        dims = self._dims
-        counts = [dims.n_line, dims.n_line, dims.n_gen, dims.n_load, dims.n_storage]
-        node_type = np.repeat(np.arange(len(_NODE_TYPES)), counts)
-        return {f"node_type_{name}": (node_type == i).astype(np.float32) for i, name in enumerate(_NODE_TYPES)}
 
-    def _on_line_ends(self, values: npt.ArrayLike) -> npt.NDArray[np.float32]:
-        """Per-line values [n_line] as a node column [num_nodes]: on both line ends, 0 elsewhere."""
-        values = np.asarray(values, dtype=np.float32)
-        rest = np.zeros(self._num_nodes - 2 * self._dims.n_line, dtype=np.float32)
-        return np.concatenate([values, values, rest])
+class EdgelessGraphObservationConverter(GraphObservationConverter):
+    """GraphObservationConverter without edges: same nodes and node features, no message passing.
 
-    def _compute_all_node_features(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
-        """Parent features plus line, substation and node-type features, each [num_nodes]."""
-        features = super()._compute_all_node_features(g2op_obs)
-        features.update({
-            "timestep_overflow": self._on_line_ends(g2op_obs.timestep_overflow),
-            "time_before_cooldown_line": self._on_line_ends(g2op_obs.time_before_cooldown_line),
-            "time_next_maintenance": self._on_line_ends(scale_time_next_maintenance(g2op_obs.time_next_maintenance)),
-            "duration_next_maintenance": self._on_line_ends(g2op_obs.duration_next_maintenance),
-            "time_before_cooldown_sub": g2op_obs.time_before_cooldown_sub[self._sub_ids].astype(np.float32),
-            **self._node_type_features,
-        })
-        return features
+    Control of the graph comparison: a GNN on it can only combine node features in its readout,
+    so the gap to a graph with edges measures what the graph structure adds.
+    """
+
+    def _get_edge_index(self, g2op_obs: BaseObservation) -> npt.NDArray[np.int64]:
+        """No edges: [2, 0]."""
+        return np.zeros((2, 0), dtype=np.int64)
 
 
 class HeterogeneousGraphObservationConverter(GraphObservationConverter):
@@ -627,23 +749,12 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
     split across bus 1 and bus 2. Padded to max_nodes = 2 * n_sub with NODE_MASK.
 
     Node features use the same attr_to_observe as GraphObservationConverter,
-    aggregated across all elements assigned to each bus:
-      - power features (active/reactive): sum
-      - voltage, voltage_angle: mean
-      - rho: max
+    merged over all elements assigned to each bus by `aggregate_to_buses`
+    (`_BUS_AGGREGATION`: e.g. powers summed, voltage averaged, rho maximum).
 
     Edges are one bidirectional pair per connected powerline, linking the bus
     nodes at each line's origin and extremity.
     """
-
-    # Aggregation strategy when collapsing per-element features to per-bus nodes.
-    # Features not listed here default to "sum".
-    _BUS_AGGREGATION: dict[str, str] = {
-        "voltage": "mean",
-        "voltage_angle_sin": "mean",
-        "voltage_angle_cos": "mean",
-        "rho": "max",
-    }
 
     def __init__(
         self,
@@ -673,16 +784,6 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
         # Line endpoint substation ids for edge building
         self._line_or_subid = g2op_obs_space.line_or_to_subid.astype(np.int64)
         self._line_ex_subid = g2op_obs_space.line_ex_to_subid.astype(np.int64)
-
-        # Precompute which feature indices use mean/max aggregation (rest default to sum)
-        self._mean_feat_indices: list[int] = [
-            i for i, name in enumerate(self.attr_to_observe)
-            if self._BUS_AGGREGATION.get(name) == "mean"
-        ]
-        self._max_feat_indices: list[int] = [
-            i for i, name in enumerate(self.attr_to_observe)
-            if self._BUS_AGGREGATION.get(name) == "max"
-        ]
 
         x_dim = len(self.attr_to_observe)
         self._observation_space = Dict({
@@ -714,9 +815,15 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
     def max_num_edges(self) -> int:
         return self._max_num_edges
 
+    @property
+    def node_substations(self) -> npt.NDArray[np.int64]:
+        """Substation of every bus slot [max_nodes, 2] (slot // 2); second column -1."""
+        slots = np.arange(self._max_nodes)
+        return np.stack([slots // 2, np.full_like(slots, -1)], axis=1).astype(np.int64)
+
     def _get_nodes_and_mask(self, g2op_obs: BaseObservation) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
         """
-        Aggregate per-element features into per-bus node features.
+        Aggregate per-element features into per-bus node features (see `aggregate_to_buses`).
 
         Node slot formula: 2 * sub_id + (bus - 1) for bus ∈ {1, 2}.
         Disconnected elements (bus == -1) are excluded.
@@ -726,36 +833,11 @@ class SubstationGraphObservationConverter(GraphObservationConverter):
             node_mask:     [max_nodes] bool — True for slots with ≥1 element
         """
         all_features = self._compute_all_node_features(g2op_obs)
-
-        bus_ids_flat = np.concatenate([
-            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
-            g2op_obs.gen_bus, g2op_obs.load_bus,
-            g2op_obs.storage_bus,
-        ])
+        bus_ids_flat = self.node_buses(g2op_obs)
         connected = bus_ids_flat > 0
-        active_slots = (2 * self._sub_ids_flat + (bus_ids_flat - 1))[connected].astype(np.int64)
-
-        x_dim = len(self.attr_to_observe)
-        node_features = np.zeros((self._max_nodes, x_dim), dtype=np.float64)
-        node_count = np.zeros(self._max_nodes, dtype=np.int64)
-        node_max = np.full((self._max_nodes, x_dim), -np.inf, dtype=np.float64)
-
-        np.add.at(node_count, active_slots, 1)
-
-        for f_idx, feat_name in enumerate(self.attr_to_observe):
-            values = all_features[feat_name][connected]
-            if self._BUS_AGGREGATION.get(feat_name) == "max":
-                np.maximum.at(node_max[:, f_idx], active_slots, values)
-            else:  # sum (also used as first step for mean)
-                np.add.at(node_features[:, f_idx], active_slots, values)
-
-        node_mask = node_count > 0
-        for f_idx in self._mean_feat_indices:
-            node_features[node_mask, f_idx] /= node_count[node_mask]
-        for f_idx in self._max_feat_indices:
-            node_features[node_mask, f_idx] = node_max[node_mask, f_idx]
-
-        return node_features.astype(np.float32), node_mask
+        active_slots = (2 * self._sub_ids_flat + (bus_ids_flat - 1))[connected]
+        connected_features = {name: all_features[name][connected] for name in self.attr_to_observe}
+        return aggregate_to_buses(connected_features, self.attr_to_observe, active_slots, self._max_nodes)
 
     def _get_edge_index(self, g2op_obs: BaseObservation) -> npt.NDArray[np.int64]:
         """
@@ -843,37 +925,18 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
 
     Node ordering: [gen | load | line | storage | (ground, bus1, bus2) × n_sub]
 
-    Node features (x_dim=28, heterogeneous, zero-padded per type):
-      Slots  0- 4: base     — |p|, p, q, |v|, cos(θ)               (all nodes)
-      Slots  5-17: gen      — g_norm, g_maxup, g_maxdown, g_minuptime,
-                               g_mindowntime, g_cost, g_startcost,
-                               g_shutdowncost, g_type×5             (generators)
-      Slots 18-21: bus      — b_ground, b_bus1, b_bus2, b_cooldown  (buses)
-      Slots 22-25: line     — ρ, p_tsoverflow, p_tscooldown,
-                               p_maintenance                         (powerlines)
-      Slots 26-27: forecast — p_forecast, q_forecast                (gen/load only)
+    Node features (`element_node_features`, zero where a feature does not apply to the node type):
+      - gens, loads, storage: p, q, v (generator sign convention: loads negative), forecasts
+      - lines: p, q, v of the origin (same columns) and of the extremity, rho, overflow steps,
+        line cooldown, steps to maintenance (`scale_time_next_maintenance`), maintenance duration
+      - ground/bus nodes: substation cooldown
+      - node-type one-hot (gen, load, line, storage if the grid has any, ground, bus1, bus2)
 
     Edges are static (precomputed once): each element is connected to every
     busbar and ground node of its substation(s). Edge feature EDGE_ATTR[e, 0]
     is 1 if the element is currently assigned to that specific bus, 0 otherwise.
     EDGE_MASK is all-True (no padding — edge count is fixed).
     """
-
-    # Feature layout for ElementGraphObservationConverter (x_dim = 28).
-    # Slots 0-4: base features shared by all node types.
-    # Slots 5-17: generator-specific features (zero for non-generators).
-    # Slots 18-21: bus-specific features (zero for non-buses).
-    # Slots 22-25: powerline-specific features (zero for non-powerlines).
-    # Slots 26-27: forecast features for gen/load (zero for all other types).
-    _ELEM_X_DIM = 28
-    _ELEM_BASE_SLICE = slice(0, 5)        # |p|, p, q, |v|, cos(θ)
-    _ELEM_GEN_SLICE = slice(5, 18)        # g_norm, g_maxup, ..., g_type×5
-    _ELEM_BUS_SLICE = slice(18, 22)       # b_ground, b_bus1, b_bus2, b_cooldown
-    _ELEM_LINE_SLICE = slice(22, 26)      # ρ, p_tsoverflow, p_tscooldown, p_maintenance
-    _ELEM_FORECAST_SLICE = slice(26, 28)  # p_forecast, q_forecast
-
-    # One-hot generator type encoding order used in grid2op
-    _GEN_TYPE_ORDER = ["solar", "wind", "hydro", "thermal", "nuclear"]
 
     # Bus-slot offsets within each substation block: (ground=0, bus1=1, bus2=2)
     _GROUND_OFFSET = 0
@@ -886,8 +949,10 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         verbose: bool = False,
         use_forecasts: bool = True,
     ):
-        # If False, get_forecast_arrays() is never called and forecast slots 26-27 stay zero.
+        # If False, get_forecast_arrays() is never called and the forecast columns are left out.
         self._use_forecasts = use_forecasts
+        self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
+        self.feature_names = element_node_features(use_forecasts, has_storage=g2op_obs_space.n_storage > 0)
         n_gen = g2op_obs_space.n_gen
         n_load = g2op_obs_space.n_load
         n_line = g2op_obs_space.n_line
@@ -915,8 +980,7 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         self._line_ex_subid = g2op_obs_space.line_ex_to_subid.astype(np.int64)
         self._storage_subid = g2op_obs_space.storage_to_subid.astype(np.int64)
 
-        # Static generator features (don't change per step)
-        self._static_gen_features = self._build_static_gen_features(g2op_obs_space)
+        self._node_type_features = self._build_node_type_features()
 
         # Precompute static edge_index and lookup tables for dynamic edge_attr
         self._edge_index, self._edge_element_idx, self._edge_bus_idx, \
@@ -925,7 +989,7 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
 
         self._observation_space = Dict({
             NODES: Box(low=-np.inf, high=np.inf,
-                       shape=(self._num_nodes, self._ELEM_X_DIM), dtype=np.float32),
+                       shape=(self._num_nodes, self.x_dim), dtype=np.float32),
             EDGE_INDEX: Box(low=0, high=self._num_nodes - 1,
                             shape=(2, self._num_edges), dtype=np.int64),
             EDGE_MASK: Box(low=0, high=1,
@@ -937,7 +1001,7 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
             GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
         })
 
-        self._normalizer = RunningMeanStd(shape=(self._ELEM_X_DIM,))
+        self._normalizer = RunningMeanStd(shape=(self.x_dim,))
         self._timings: dict[str, float] = {}
 
         if verbose:
@@ -945,7 +1009,7 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
                 f"ElementGraphObservationConverter: {self._num_nodes} nodes "
                 f"({n_gen} gen, {n_load} load, {n_line} line, {n_storage} storage, "
                 f"{3 * n_sub} bus/ground), {self._num_edges} edges, "
-                f"x_dim={self._ELEM_X_DIM}."
+                f"x_dim={self.x_dim} ({', '.join(self.feature_names)})."
             )
 
     # ------------------------------------------------------------------
@@ -966,11 +1030,20 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
 
     @property
     def x_dim(self) -> int:
-        return self._ELEM_X_DIM
+        return len(self.feature_names)
 
     @property
     def num_edges(self) -> int:
         return self._num_edges
+
+    @property
+    def node_substations(self) -> npt.NDArray[np.int64]:
+        """Substation(s) of every node [num_nodes, 2]: lines have both ends, other nodes -1 in column 2."""
+        first = self._place(gen=self._gen_subid, load=self._load_subid, line=self._line_or_subid,
+                            storage=self._storage_subid, bus=np.repeat(np.arange(self._n_sub), 3))
+        second = np.full(self._num_nodes, -1.0, dtype=np.float32)
+        second[self._line_offset:self._line_offset + self._n_line] = self._line_ex_subid
+        return np.stack([first, second], axis=1).astype(np.int64)
 
     # ------------------------------------------------------------------
     # Static precomputation helpers
@@ -988,33 +1061,34 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         """
         return self._bus_offset + 3 * sub_id + bus
 
-    def _build_static_gen_features(self, obs_space: ObservationSpace) -> npt.NDArray[np.float32]:
+    def _place(
+        self,
+        gen: Optional[npt.ArrayLike] = None,
+        load: Optional[npt.ArrayLike] = None,
+        line: Optional[npt.ArrayLike] = None,
+        storage: Optional[npt.ArrayLike] = None,
+        bus: Optional[npt.ArrayLike] = None,
+    ) -> npt.NDArray[np.float32]:
+        """One node column [num_nodes] from values per node type; types left out get 0.
+
+        Args:
+            gen, load, line, storage: Values per element of that type ([n_gen], [n_load], ...).
+            bus: Values per ground/bus node [3 * n_sub], in node order (ground, bus1, bus2) per substation.
         """
-        Precompute the time-invariant generator feature columns (slots 5-17).
+        column = np.zeros(self._num_nodes, dtype=np.float32)
+        blocks = ((self._gen_offset, gen), (self._load_offset, load), (self._line_offset, line),
+                  (self._storage_offset, storage), (self._bus_offset, bus))
+        for offset, values in blocks:
+            if values is not None:
+                values = np.asarray(values, dtype=np.float32)
+                column[offset:offset + len(values)] = values
+        return column
 
-        Returns:
-            [n_gen, 13] float32 array of static generator features.
-        """
-        n_gen = self._n_gen
-        feats = np.zeros((n_gen, 13), dtype=np.float32)
-
-        # g_norm placeholder (slot 0 of gen block) — computed dynamically per step
-        # g_maxup … g_shutdowncost (slots 1-8)
-        feats[:, 1] = obs_space.gen_max_ramp_up
-        feats[:, 2] = obs_space.gen_max_ramp_down
-        feats[:, 3] = obs_space.gen_min_uptime
-        feats[:, 4] = obs_space.gen_min_downtime
-        feats[:, 5] = obs_space.gen_cost_per_MW
-        feats[:, 6] = obs_space.gen_startup_cost
-        feats[:, 7] = obs_space.gen_shutdown_cost
-
-        # g_type one-hot (slots 8-12)
-        for i, gen_type in enumerate(obs_space.gen_type):
-            t = gen_type.lower()
-            if t in self._GEN_TYPE_ORDER:
-                feats[i, 8 + self._GEN_TYPE_ORDER.index(t)] = 1.0
-
-        return feats
+    def _build_node_type_features(self) -> dict[str, npt.NDArray[np.float32]]:
+        """Static one-hot columns: `node_type_<type>` -> [num_nodes] (1 on nodes of that type)."""
+        counts = [self._n_gen, self._n_load, self._n_line, self._n_storage]
+        node_type = np.concatenate([np.repeat(np.arange(4), counts), np.tile([4, 5, 6], self._n_sub)])
+        return {f"node_type_{name}": (node_type == i).astype(np.float32) for i, name in enumerate(_ELEMENT_NODE_TYPES)}
 
     def _build_static_edges(self) -> tuple[
         npt.NDArray[np.int64],
@@ -1096,106 +1170,40 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
     # Per-step feature computation
     # ------------------------------------------------------------------
 
-    def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
-        """
-        Build the [num_nodes, 28] node feature matrix for the current observation.
+    def _compute_node_features(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
+        """All node features of `element_node_features`, each as a column [num_nodes] in node order.
 
         Args:
             g2op_obs: Current grid2op observation.
         Returns:
-            Node feature matrix [num_nodes, 28] float32.
+            Feature name -> column; 0 on node types the feature does not apply to.
         """
-        X = np.zeros((self._num_nodes, self._ELEM_X_DIM), dtype=np.float32)
+        obs = g2op_obs
+        fc = next_step_forecasts(obs, self._dims) if self._use_forecasts else zero_forecasts(self._dims)
+        return {
+            # Generator sign convention: generation positive, consumption negative.
+            "active_power": self._place(gen=obs.gen_p, load=-obs.load_p, line=obs.p_or, storage=obs.storage_power),
+            "reactive_power": self._place(gen=obs.gen_q, load=-obs.load_q, line=obs.q_or),
+            "voltage": self._place(gen=obs.gen_v, load=obs.load_v, line=obs.v_or),
+            "active_power_ex": self._place(line=obs.p_ex),
+            "reactive_power_ex": self._place(line=obs.q_ex),
+            "voltage_ex": self._place(line=obs.v_ex),
+            "active_power_forecast": self._place(gen=fc.gen_p, load=fc.load_p),
+            # grid2op forecasts no gen q; the generator slot holds the voltage setpoint forecast.
+            "reactive_power_forecast": self._place(gen=fc.gen_q, load=fc.load_q),
+            "rho": self._place(line=obs.rho),
+            "timestep_overflow": self._place(line=obs.timestep_overflow),
+            "time_before_cooldown_line": self._place(line=obs.time_before_cooldown_line),
+            "time_next_maintenance": self._place(line=scale_time_next_maintenance(obs.time_next_maintenance)),
+            "duration_next_maintenance": self._place(line=obs.duration_next_maintenance),
+            "time_before_cooldown_sub": self._place(bus=np.repeat(obs.time_before_cooldown_sub, 3)),
+            **self._node_type_features,
+        }
 
-        # --- Forecasts (slots 26-27): next-timestep p/q for gen and load ---
-        if self._use_forecasts and not g2op_obs._is_done:
-            load_p_fc, load_q_fc, prod_p_fc, prod_v_fc, _ = g2op_obs.get_forecast_arrays()
-            gen_p_forecast = prod_p_fc[1].astype(np.float32)
-            # grid2op forecasts no gen q; this slot holds the gen voltage setpoint forecast.
-            gen_q_forecast = prod_v_fc[1].astype(np.float32)
-            load_p_forecast = load_p_fc[1].astype(np.float32)
-            load_q_forecast = load_q_fc[1].astype(np.float32)
-        else:
-            gen_p_forecast = np.zeros(self._n_gen, dtype=np.float32)
-            gen_q_forecast = np.zeros(self._n_gen, dtype=np.float32)
-            load_p_forecast = np.zeros(self._n_load, dtype=np.float32)
-            load_q_forecast = np.zeros(self._n_load, dtype=np.float32)
-
-        # --- Generators ---
-        g_p = g2op_obs.gen_p.astype(np.float32)
-        g_q = g2op_obs.gen_q.astype(np.float32)
-        g_v = g2op_obs.gen_v.astype(np.float32)
-        g_theta = g2op_obs.gen_theta.astype(np.float32)
-        g_idx = slice(self._gen_offset, self._gen_offset + self._n_gen)
-        X[g_idx, 0] = np.abs(g_p)
-        X[g_idx, 1] = g_p
-        X[g_idx, 2] = g_q
-        X[g_idx, 3] = np.abs(g_v)
-        X[g_idx, 4] = np.cos(np.deg2rad(g_theta))
-        # Static gen features (slots 5-17), g_norm is dynamic (slot 5)
-        X[g_idx, self._ELEM_GEN_SLICE] = self._static_gen_features
-        p_min = np.abs(g2op_obs.gen_pmin).astype(np.float32)
-        p_max = np.abs(g2op_obs.gen_pmax).astype(np.float32)
-        denom = p_max - p_min
-        g_norm = np.where(denom > 0, (np.abs(g_p) - p_min) / denom, 0.0)
-        X[g_idx, 5] = g_norm  # overwrite slot 5 (g_norm)
-        X[g_idx, 26] = gen_p_forecast
-        X[g_idx, 27] = gen_q_forecast
-
-        # --- Loads ---
-        l_p = g2op_obs.load_p.astype(np.float32)
-        l_q = g2op_obs.load_q.astype(np.float32)
-        l_v = g2op_obs.load_v.astype(np.float32)
-        l_theta = g2op_obs.load_theta.astype(np.float32)
-        l_idx = slice(self._load_offset, self._load_offset + self._n_load)
-        X[l_idx, 0] = np.abs(l_p)
-        X[l_idx, 1] = l_p
-        X[l_idx, 2] = l_q
-        X[l_idx, 3] = np.abs(l_v)
-        X[l_idx, 4] = np.cos(np.deg2rad(l_theta))
-        X[l_idx, 26] = load_p_forecast
-        X[l_idx, 27] = load_q_forecast
-
-        # --- Lines (single node per line, use origin-side electrical quantities) ---
-        ln_p = g2op_obs.p_or.astype(np.float32)
-        ln_q = g2op_obs.q_or.astype(np.float32)
-        ln_v = g2op_obs.v_or.astype(np.float32)
-        ln_theta = g2op_obs.theta_or.astype(np.float32)
-        ln_idx = slice(self._line_offset, self._line_offset + self._n_line)
-        X[ln_idx, 0] = np.abs(ln_p)
-        X[ln_idx, 1] = ln_p
-        X[ln_idx, 2] = ln_q
-        X[ln_idx, 3] = np.abs(ln_v)
-        X[ln_idx, 4] = np.cos(np.deg2rad(ln_theta))
-        X[ln_idx, 22] = g2op_obs.rho.astype(np.float32)
-        X[ln_idx, 23] = g2op_obs.timestep_overflow.astype(np.float32)
-        X[ln_idx, 24] = g2op_obs.time_before_cooldown_line.astype(np.float32)
-        X[ln_idx, 25] = g2op_obs.duration_next_maintenance.astype(np.float32)
-
-        # --- Storage ---
-        if self._n_storage > 0:
-            st_p = g2op_obs.storage_power.astype(np.float32)
-            st_idx = slice(self._storage_offset, self._storage_offset + self._n_storage)
-            # grid2op doesn't expose per-storage voltage/theta directly; use zeros
-            X[st_idx, 0] = np.abs(st_p)
-            X[st_idx, 1] = st_p
-
-        # --- Bus / Ground nodes ---
-        cooldown = g2op_obs.time_before_cooldown_sub.astype(np.float32)  # [n_sub]
-        for s in range(self._n_sub):
-            ground_node = self._bus_node(s, self._GROUND_OFFSET)
-            bus1_node = self._bus_node(s, self._BUS1_OFFSET)
-            bus2_node = self._bus_node(s, self._BUS2_OFFSET)
-            cd = cooldown[s]
-            # one-hot b_type: [b_ground, b_bus1, b_bus2]
-            X[ground_node, 18] = 1.0
-            X[ground_node, 21] = cd
-            X[bus1_node, 19] = 1.0
-            X[bus1_node, 21] = cd
-            X[bus2_node, 20] = 1.0
-            X[bus2_node, 21] = cd
-
-        return X
+    def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
+        """Node feature matrix [num_nodes, x_dim], columns in `feature_names` order."""
+        features = self._compute_node_features(g2op_obs)
+        return np.column_stack([features[name] for name in self.feature_names]).astype(np.float32)
 
     def _get_edge_attr(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
         """
@@ -1282,7 +1290,7 @@ class ElementGraphObservationConverter(ObservationConverter[Dict]):
         Args:
             gym_obs: Graph observation dict with raw node features.
         """
-        node_features = gym_obs[NODES]  # [num_nodes, 26]
+        node_features = gym_obs[NODES]  # [num_nodes, x_dim]
         self._normalizer.update(node_features)
         normalized = (node_features - self._normalizer.mean) / np.sqrt(self._normalizer.var + 1e-8)
         return {
@@ -1335,7 +1343,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
 
     Observation keys
     ----------------
-    NODES      : [num_nodes, 28]         — element node features (identical to parent)
+    NODES      : [num_nodes, x_dim]      — element node features (identical to parent)
     EDGE_INDEX : [2, max_num_edges]      — padded connectivity
     EDGE_MASK  : [max_num_edges]         — True for active edges
     EDGES      : [max_num_edges, 1]      — bus assignment (type 0) or |LODF| (type 1)
@@ -1378,7 +1386,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
         # Rebuild obs space with padded shapes and new EDGE_TYPE key.
         self._observation_space = Dict({
             NODES: Box(low=-np.inf, high=np.inf,
-                       shape=(self._num_nodes, self._ELEM_X_DIM), dtype=np.float32),
+                       shape=(self._num_nodes, self.x_dim), dtype=np.float32),
             EDGE_INDEX: Box(low=0, high=self._num_nodes - 1,
                             shape=(2, self._max_num_edges), dtype=np.int64),
             EDGE_MASK: Box(low=0, high=1,
@@ -1401,7 +1409,7 @@ class ElementLODFGraphObservationConverter(ElementGraphObservationConverter):
                 f"ElementLODFGraphObservationConverter: {self._num_nodes} nodes, "
                 f"<= {self._max_num_edges} edges "
                 f"({self._num_edges} element-bus + {self._n_lodf_edges} LODF), "
-                f"x_dim={self._ELEM_X_DIM}."
+                f"x_dim={self.x_dim}."
             )
 
     def _get_lodf_cached(self, topo_vect: np.ndarray) -> None:
@@ -1653,10 +1661,8 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
     so it is cached per line-status vector and only recomputed on topology changes.
 
     Node features use the same attr_to_observe as GraphObservationConverter,
-    aggregated across all elements assigned to each bus:
-      - power features (active/reactive): sum
-      - voltage, voltage_angle: mean
-      - rho: max
+    merged over all elements assigned to each bus by `aggregate_to_buses`
+    (`_BUS_AGGREGATION`: e.g. powers summed, voltage averaged, rho maximum).
 
     Bus slot convention (aligns with PTDF column indices from lightsim2grid):
         slot = (busbar - 1) * n_sub + sub_id    for busbar ∈ {1, 2}
@@ -1664,13 +1670,6 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
     """
 
     needs_backend_state = True
-
-    _BUS_AGGREGATION: dict[str, str] = {
-        "voltage": "mean",
-        "voltage_angle_sin": "mean",
-        "voltage_angle_cos": "mean",
-        "rho": "max",
-    }
 
     def __init__(
         self,
@@ -1701,16 +1700,6 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
             g2op_obs_space.load_to_subid,
             g2op_obs_space.storage_to_subid,
         ]).astype(np.int64)
-
-        # Feature aggregation indices (same strategy as SubstationGraphObservationConverter)
-        self._mean_feat_indices: list[int] = [
-            i for i, name in enumerate(self.attr_to_observe)
-            if self._BUS_AGGREGATION.get(name) == "mean"
-        ]
-        self._max_feat_indices: list[int] = [
-            i for i, name in enumerate(self.attr_to_observe)
-            if self._BUS_AGGREGATION.get(name) == "max"
-        ]
 
         # Static fully-connected directed edge index over all bus slots (no self-loops)
         idx = np.arange(self._max_nodes)
@@ -1760,6 +1749,12 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         """Number of directed edges in the fully-connected graph (max_nodes * (max_nodes - 1))."""
         return self._max_num_edges
 
+    @property
+    def node_substations(self) -> npt.NDArray[np.int64]:
+        """Substation of every bus slot [max_nodes, 2] (slot % n_sub); second column -1."""
+        slots = np.arange(self._max_nodes)
+        return np.stack([slots % self._n_sub, np.full_like(slots, -1)], axis=1).astype(np.int64)
+
     def _get_ptdf_cached(self, topo_vect: np.ndarray) -> np.ndarray:
         """
         Return the PTDF matrix, recomputing only when topo_vect has changed.
@@ -1782,7 +1777,7 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
         self, g2op_obs: BaseObservation
     ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.bool_]]:
         """
-        Aggregate per-element features into per-bus node features.
+        Aggregate per-element features into per-bus node features (see `aggregate_to_buses`).
 
         Bus slot formula: slot = (busbar - 1) * n_sub + sub_id, busbar ∈ {1, 2}.
         Disconnected elements (bus == -1) are excluded.
@@ -1794,39 +1789,11 @@ class PTDFGraphObservationConverter(GraphObservationConverter):
             node_mask:     [max_nodes] bool — True for slots with ≥1 connected element
         """
         all_features = self._compute_all_node_features(g2op_obs)
-
-        bus_ids_flat = np.concatenate([
-            g2op_obs.line_or_bus, g2op_obs.line_ex_bus,
-            g2op_obs.gen_bus, g2op_obs.load_bus,
-            g2op_obs.storage_bus,
-        ])
+        bus_ids_flat = self.node_buses(g2op_obs)
         connected = bus_ids_flat > 0
-        # PTDF bus slot: (busbar - 1) * n_sub + sub_id
-        active_slots = (
-            (bus_ids_flat[connected] - 1) * self._n_sub + self._sub_ids_flat[connected]
-        ).astype(np.int64)
-
-        x_dim = len(self.attr_to_observe)
-        node_features = np.zeros((self._max_nodes, x_dim), dtype=np.float64)
-        node_count = np.zeros(self._max_nodes, dtype=np.int64)
-        node_max = np.full((self._max_nodes, x_dim), -np.inf, dtype=np.float64)
-
-        np.add.at(node_count, active_slots, 1)
-
-        for f_idx, feat_name in enumerate(self.attr_to_observe):
-            values = all_features[feat_name][connected]
-            if self._BUS_AGGREGATION.get(feat_name) == "max":
-                np.maximum.at(node_max[:, f_idx], active_slots, values)
-            else:
-                np.add.at(node_features[:, f_idx], active_slots, values)
-
-        node_mask = node_count > 0
-        for f_idx in self._mean_feat_indices:
-            node_features[node_mask, f_idx] /= node_count[node_mask]
-        for f_idx in self._max_feat_indices:
-            node_features[node_mask, f_idx] = node_max[node_mask, f_idx]
-
-        return node_features.astype(np.float32), node_mask
+        active_slots = ((bus_ids_flat - 1) * self._n_sub + self._sub_ids_flat)[connected]
+        connected_features = {name: all_features[name][connected] for name in self.attr_to_observe}
+        return aggregate_to_buses(connected_features, self.attr_to_observe, active_slots, self._max_nodes)
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
         """
@@ -1966,38 +1933,44 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
     two lines are tightly coupled under contingency: tripping one strongly
     affects the other.
 
-    NODE_MASK is True for connected lines (obs.line_status).
+    NODE_MASK is all True: disconnected lines stay nodes (their cooldown and maintenance stay
+    visible, `line_status` = 0), but have no edges.
     EDGE_MASK is True only when both endpoint lines are connected.
     EDGES carries the running-normalized |LODF| value as a scalar [E, 1].
 
     Like PTDF, LODF depends only on network topology (not on operating point),
-    so it is cached per line-status vector and recomputed only on topology changes.
+    so it is cached per ``topo_vect`` and recomputed only on topology changes.
 
-    Node features per line (x_dim = 7):
-      0: rho              — relative line loading
-      1: p_or             — active power flow (origin side)
-      2: q_or             — reactive power flow (origin side)
-      3: v_or             — voltage magnitude (origin side)
-      4: cos(theta_or)    — voltage angle cosine (origin side)
-      5: sin(theta_or)    — voltage angle sine (origin side)
-      6: line_status      — 1.0 if connected, 0.0 if disconnected
+    Node features per line (`lodf_node_features`): p, q, v of both line ends, the line state of
+    `complete_node_features` (rho, overflow, cooldown, maintenance), `line_status`, and per line end
+    the substation cooldown and the net injection (generators − loads + storage: p, q, forecasts)
+    of the bus the end is connected to (0 if disconnected).
     """
 
     needs_backend_state = True
-
-    _X_DIM = 7
 
     def __init__(
         self,
         backend: LightSimBackend,
         g2op_obs_space: ObservationSpace,
         verbose: bool = False,
+        use_forecasts: bool = True,
     ):
         if g2op_obs_space.n_line == 0:
             raise ValueError("LODFGraphObservationConverter requires n_line > 0.")
 
         self._grid = backend._grid
         self._n_line = g2op_obs_space.n_line
+        self._n_sub = g2op_obs_space.n_sub
+        self._dims = _GridDimensions.from_obs_space(g2op_obs_space)
+        self._use_forecasts = use_forecasts
+        self.feature_names = lodf_node_features(use_forecasts)
+        self._line_or_subid = g2op_obs_space.line_or_to_subid.astype(np.int64)
+        self._line_ex_subid = g2op_obs_space.line_ex_to_subid.astype(np.int64)
+        # Substation of every injection element, in order [gen | load | storage].
+        self._injection_subid = np.concatenate([
+            g2op_obs_space.gen_to_subid, g2op_obs_space.load_to_subid, g2op_obs_space.storage_to_subid,
+        ]).astype(np.int64)
 
         n_line = self._n_line
         self._num_edges = n_line * (n_line - 1)  # directed, no self-loops
@@ -2009,7 +1982,7 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         self._edge_index = np.stack([ii[no_self_loop], jj[no_self_loop]]).astype(np.int64)
 
         self._observation_space = Dict({
-            NODES: Box(low=-np.inf, high=np.inf, shape=(n_line, self._X_DIM), dtype=np.float32),
+            NODES: Box(low=-np.inf, high=np.inf, shape=(n_line, self.x_dim), dtype=np.float32),
             EDGE_INDEX: Box(low=0, high=n_line - 1, shape=(2, self._num_edges), dtype=np.int64),
             EDGE_MASK: Box(low=0, high=1, shape=(self._num_edges,), dtype=np.bool_),
             EDGES: Box(low=-np.inf, high=np.inf, shape=(self._num_edges, 1), dtype=np.float32),
@@ -2017,7 +1990,7 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
             GLOBAL: Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
         })
 
-        self._normalizer = RunningMeanStd(shape=(self._X_DIM,))
+        self._normalizer = RunningMeanStd(shape=(self.x_dim,))
         self._edge_normalizer = RunningMeanStd(shape=(1,))
         self._timings: dict[str, float] = {}
 
@@ -2028,7 +2001,7 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         if verbose:
             logger.info(
                 f"LODFGraphObservationConverter: {n_line} nodes (powerlines), "
-                f"{self._num_edges} directed edges, x_dim={self._X_DIM}."
+                f"{self._num_edges} directed edges, x_dim={self.x_dim} ({', '.join(self.feature_names)})."
             )
 
     @property
@@ -2050,6 +2023,16 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         """Total directed edges in the fully-connected line graph."""
         return self._num_edges
 
+    @property
+    def x_dim(self) -> int:
+        """Node features per line."""
+        return len(self.feature_names)
+
+    @property
+    def node_substations(self) -> npt.NDArray[np.int64]:
+        """Substations of both ends of every line [n_line, 2]."""
+        return np.stack([self._line_or_subid, self._line_ex_subid], axis=1)
+
     def _get_lodf_cached(self, topo_vect: np.ndarray) -> None:
         """
         Update _cached_D and _cached_topo_vect if topo_vect has changed.
@@ -2065,30 +2048,77 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
             self._cached_topo_vect, self._cached_D,
         )
 
+    def _bus_injections(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray[np.float32]]:
+        """Net injection of generators, loads and storage per bus slot 2 * sub + (bus - 1).
+
+        Same values as the summed power columns of the bus-level converters, restricted to injections.
+
+        Returns:
+            `injection_<feature>` -> [2 * n_sub] for every feature of `_INJECTION_FEATURES` and forecasts.
+        """
+        obs, dims = g2op_obs, self._dims
+        fc = next_step_forecasts(obs, dims) if self._use_forecasts else zero_forecasts(dims)
+        zeros_storage = np.zeros(dims.n_storage, dtype=np.float32)
+        values = {
+            "active_power": np.concatenate([obs.gen_p, -obs.load_p, obs.storage_power]),
+            "reactive_power": np.concatenate([obs.gen_q, -obs.load_q, zeros_storage]),
+        }
+        if self._use_forecasts:
+            values["active_power_forecast"] = np.concatenate([fc.gen_p, fc.load_p, zeros_storage])
+            values["reactive_power_forecast"] = np.concatenate([fc.gen_q, fc.load_q, zeros_storage])
+        buses = np.concatenate([obs.gen_bus, obs.load_bus, obs.storage_bus]).astype(np.int64)
+        connected = buses > 0
+        slots = (2 * self._injection_subid + buses - 1)[connected]
+        names = list(values)
+        sums, _ = aggregate_to_buses({name: values[name][connected] for name in names}, names, slots, 2 * self._n_sub)
+        return {f"injection_{name}": sums[:, i] for i, name in enumerate(names)}
+
+    def _line_end_features(
+        self, g2op_obs: BaseObservation, side: str, injections: dict[str, npt.NDArray[np.float32]],
+    ) -> dict[str, npt.NDArray[np.float32]]:
+        """Substation cooldown and bus injections at one end of every line.
+
+        Args:
+            g2op_obs: Current grid2op observation.
+            side: "or" (origin) or "ex" (extremity).
+            injections: Output of `_bus_injections`.
+        Returns:
+            `<feature>_<side>` -> [n_line]; injections are 0 for a disconnected end.
+        """
+        bus = (g2op_obs.line_or_bus if side == "or" else g2op_obs.line_ex_bus).astype(np.int64)
+        sub = self._line_or_subid if side == "or" else self._line_ex_subid
+        connected = bus > 0
+        slot = np.where(connected, 2 * sub + bus - 1, 0)
+        features = {"time_before_cooldown_sub": g2op_obs.time_before_cooldown_sub[sub].astype(np.float32)}
+        features.update({name: np.where(connected, per_bus[slot], 0.0) for name, per_bus in injections.items()})
+        return {f"{name}_{side}": values for name, values in features.items()}
+
     def _get_node_features(self, g2op_obs: BaseObservation) -> npt.NDArray[np.float32]:
         """
-        Build the [n_line, 7] node feature matrix for the current observation.
+        Build the [n_line, x_dim] node feature matrix (columns in `feature_names` order).
 
-        Features for disconnected lines (line_status == False) are zeroed out.
+        Disconnected lines keep their state (cooldown, maintenance); grid2op reports 0 flow for them.
 
         Args:
             g2op_obs: Current grid2op observation.
         Returns:
-            Node feature matrix [n_line, 7] float32.
+            Node feature matrix [n_line, x_dim] float32.
         """
-        line_status = g2op_obs.line_status  # dtype bool, shape (n_line,)
-        theta_or = np.deg2rad(g2op_obs.theta_or).astype(np.float32)
-        X = np.column_stack([
-            g2op_obs.rho.astype(np.float32),
-            g2op_obs.p_or.astype(np.float32),
-            g2op_obs.q_or.astype(np.float32),
-            g2op_obs.v_or.astype(np.float32),
-            np.cos(theta_or),
-            np.sin(theta_or),
-            line_status.astype(np.float32),
-        ])  # (n_line, 7)
-        X[~line_status] = 0.0
-        return X
+        obs = g2op_obs
+        features = {
+            "active_power_or": obs.p_or, "reactive_power_or": obs.q_or, "voltage_or": obs.v_or,
+            "active_power_ex": obs.p_ex, "reactive_power_ex": obs.q_ex, "voltage_ex": obs.v_ex,
+            "rho": obs.rho,
+            "timestep_overflow": obs.timestep_overflow,
+            "time_before_cooldown_line": obs.time_before_cooldown_line,
+            "time_next_maintenance": scale_time_next_maintenance(obs.time_next_maintenance),
+            "duration_next_maintenance": obs.duration_next_maintenance,
+            "line_status": obs.line_status,
+        }
+        injections = self._bus_injections(obs)
+        for side in ("or", "ex"):
+            features.update(self._line_end_features(obs, side, injections))
+        return np.column_stack([features[name] for name in self.feature_names]).astype(np.float32)
 
     def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
         """
@@ -2098,11 +2128,11 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
             g2op_obs: The grid2op observation to convert.
         Returns:
             Dict with keys:
-              NODES:      [n_line, 7] float32, per-line electrical features (zeroed for disconnected).
+              NODES:      [n_line, x_dim] float32, per-line features (see `lodf_node_features`).
               EDGE_INDEX: [2, n_line*(n_line-1)] int64, static fully-connected directed index.
               EDGE_MASK:  [n_line*(n_line-1)] bool, True where both endpoint lines are connected.
               EDGES:      [n_line*(n_line-1), 1] float32, normalized |LODF[i,j]| (zeroed for inactive).
-              NODE_MASK:  [n_line] bool, True for connected lines.
+              NODE_MASK:  [n_line] bool, all True (disconnected lines stay nodes without edges).
               GLOBAL:     [6] float32, time-based features.
         """
         t_total = time.perf_counter()
@@ -2117,12 +2147,13 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         if self._cached_D is None:
             raise RuntimeError("LODF cache is uninitialized after _get_lodf_cached — DC PF likely failed.")
 
-        node_mask = g2op_obs.line_status.astype(bool)
+        line_status = g2op_obs.line_status.astype(bool)
+        node_mask = np.ones(self._n_line, dtype=np.bool_)
         global_features = self._get_global_features(g2op_obs)
 
         src, dst = self._edge_index[0], self._edge_index[1]
         edge_weights = self._cached_D[src, dst].astype(np.float32)[:, np.newaxis]  # [num_edges, 1]
-        edge_mask = node_mask[src] & node_mask[dst]
+        edge_mask = line_status[src] & line_status[dst]
 
         result = self.normalize({
             NODES: node_features,
@@ -2139,14 +2170,14 @@ class LODFGraphObservationConverter(ObservationConverter[Dict]):
         """
         Normalize node features and edge weights using separate running statistics.
 
-        Only connected lines (NODE_MASK=True) update the node normalizer; disconnected
-        line features are zeroed after normalization.  Only active edges (EDGE_MASK=True)
-        update the edge normalizer; inactive edges are zeroed.
+        Only nodes with NODE_MASK=True update the node normalizer; masked nodes are zeroed
+        after normalization.  Only active edges (EDGE_MASK=True) update the edge normalizer;
+        inactive edges are zeroed.
 
         Args:
             gym_obs: LODF graph observation dict with raw features.
         """
-        node_features = gym_obs[NODES]   # (n_line, 7)
+        node_features = gym_obs[NODES]   # (n_line, x_dim)
         node_mask = gym_obs[NODE_MASK]   # (n_line,)
         edge_weights = gym_obs[EDGES]    # (num_edges, 1)
         edge_mask = gym_obs[EDGE_MASK]   # (num_edges,)
@@ -2800,104 +2831,185 @@ def sync_backend_to_observation(env, obs: BaseObservation) -> bool:
     return bool(converged)
 
 
+class FlatGraphObservationConverter(ObservationConverter[Dict]):
+    """The node features of a graph converter plus the bus of every node, as one input for an MLP.
+
+    Same normalized numbers as the graph converter's NODES, without the constant node-type columns,
+    plus the bus of every node (-1 = disconnected, 1, 2) in place of the edges. The MLP baseline of
+    the graph comparison: the same information as the Complete graph, without graph structure.
+
+    Observation: {FLAT_FEATURES: [num_nodes, x_dim]}; `FlatMLPModel` flattens it.
+    """
+
+    def __init__(self, graph: GraphObservationConverter, verbose: bool = False):
+        """Args:
+            graph: Converter that computes and normalizes the node features.
+            verbose: Log the input size.
+        """
+        self._graph = graph
+        self._kept_columns = [i for i, name in enumerate(graph.attr_to_observe) if not name.startswith("node_type_")]
+        self._observation_space = Dict({
+            FLAT_FEATURES: Box(low=-np.inf, high=np.inf, shape=(graph.num_nodes, len(self._kept_columns) + 1),
+                               dtype=np.float32),
+        })
+        if verbose:
+            logger.info(f"FlatGraphObservationConverter: {graph.num_nodes} nodes x "
+                        f"{len(self._kept_columns) + 1} features (node features without types, bus).")
+
+    @property
+    def observation_space(self) -> Dict:
+        """{FLAT_FEATURES: Box [num_nodes, x_dim]}."""
+        return self._observation_space
+
+    @property
+    def _timings(self) -> dict[str, float]:
+        """Timings of the graph converter (read by the env)."""
+        return self._graph._timings
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """Normalized node features of the graph converter plus the bus column: {FLAT_FEATURES: [N, x_dim]}."""
+        nodes = self._graph.to_gym(g2op_obs)[NODES][:, self._kept_columns]
+        buses = self._graph.node_buses(g2op_obs).astype(np.float32)
+        return {FLAT_FEATURES: np.column_stack([nodes, buses]).astype(np.float32)}
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """Identity: the graph converter normalizes the node features in `to_gym`."""
+        return gym_obs
+
+
+class NodeSubstationsConverter(ObservationConverter[Dict]):
+    """Adds NODE_SUBSTATIONS, the static substation(s) of every node, to a graph converter's output.
+
+    Needed by the per-substation readout of `GNNBaselineModel` (`rarl.nn.readout.substation_readout`).
+    The wrapped converter must have a `node_substations` property ([max_nodes, 2], -1 = none).
+    """
+
+    def __init__(self, converter: ObservationConverter[Dict], n_sub: int):
+        """Args:
+            converter: Graph converter to wrap.
+            n_sub: Substations of the grid (upper bound of the substation ids).
+        """
+        self.converter = converter
+        self.needs_backend_state = converter.needs_backend_state
+        self._node_substations = converter.node_substations
+        spaces = dict(converter.observation_space.spaces)
+        spaces[NODE_SUBSTATIONS] = Box(low=-1, high=n_sub - 1, shape=self._node_substations.shape, dtype=np.int64)
+        self._observation_space = Dict(spaces)
+
+    @property
+    def observation_space(self) -> Dict:
+        """Observation space of the wrapped converter plus NODE_SUBSTATIONS [max_nodes, 2]."""
+        return self._observation_space
+
+    @property
+    def _timings(self) -> dict[str, float]:
+        """Timings of the wrapped converter (read by the env)."""
+        return self.converter._timings
+
+    def to_gym(self, g2op_obs: BaseObservation) -> dict[str, npt.NDArray]:
+        """Observation of the wrapped converter plus NODE_SUBSTATIONS."""
+        return {**self.converter.to_gym(g2op_obs), NODE_SUBSTATIONS: self._node_substations}
+
+    def normalize(self, gym_obs: dict) -> dict:
+        """Normalize with the wrapped converter, keeping NODE_SUBSTATIONS."""
+        return {**self.converter.normalize(gym_obs), NODE_SUBSTATIONS: self._node_substations}
+
+    def close(self) -> None:
+        """Close the wrapped converter."""
+        self.converter.close()
+
+    def reset_obs(self) -> None:
+        """Reset the wrapped converter at the start of an episode."""
+        self.converter.reset_obs()
+
+
 # --- Factory ---
+def resolve_node_features(env_config: dict, g2op_obs_space: ObservationSpace) -> Optional[list[str]]:
+    """Node features of the attribute-list converters (Graph, Heterogeneous, Substation, PTDF, Zbus, ...).
+
+    Args:
+        env_config: Env config; reads `attr_to_observe`, `node_features` ("default" or "complete")
+            and `use_forecasts`.
+        g2op_obs_space: Observation space of the grid2op env.
+
+    Returns:
+        Explicit `attr_to_observe` if set; `complete_node_features` for `node_features: complete`;
+        the default features without forecasts if `use_forecasts` is off; else None (converter default).
+    """
+    use_forecasts = env_config.get("use_forecasts", True)
+    node_features = env_config.get("node_features", "default")
+    if node_features not in ("default", "complete"):
+        raise ValueError(f"Unknown node_features {node_features!r}; expected 'default' or 'complete'.")
+    if env_config.get("attr_to_observe") is not None:
+        return env_config["attr_to_observe"]
+    if node_features == "complete":
+        return complete_node_features(use_forecasts, has_storage=g2op_obs_space.n_storage > 0)
+    if not use_forecasts:
+        return [f for f in _DEFAULT_NODE_FEATURES if f not in _FORECAST_NODE_FEATURES]
+    return None
+
+
 def make_observation_converter(gym_env: GymEnv, env_config: dict, backend: LightSimBackend) -> ObservationConverter:
     """Construct the appropriate ObservationConverter from env_config.
 
     Args:
         gym_env: GymEnv wrapper of the grid2op env (for the observation space).
-        env_config: Env config, see `core.rllib_config.build_env_config`.
+        env_config: Env config, see `core.rllib_config.build_env_config`. `node_substations: true`
+            adds NODE_SUBSTATIONS to the observations (`NodeSubstationsConverter`).
         backend: Backend of the grid2op env that is actually stepped. Converters with
             `needs_backend_state` read its grid model. Not `gym_env.init_env.backend`: GymEnv works
             on a copy of the env, whose backend never follows the episode.
     """
+    converter = _make_base_converter(gym_env, env_config, backend)
+    if env_config.get("node_substations", False):
+        converter = NodeSubstationsConverter(converter, n_sub=gym_env.init_env.observation_space.n_sub)
+    return converter
+
+
+def _make_base_converter(gym_env: GymEnv, env_config: dict, backend: LightSimBackend) -> ObservationConverter:
+    """The converter selected by `env_config["observation_space"]`; arguments as `make_observation_converter`."""
     mode = env_config.get("observation_space", "FlatSpace")
+    g2op_obs_space = gym_env.init_env.observation_space
+    verbose = env_config.get("verbose", False)
+    use_forecasts = env_config.get("use_forecasts", True)
     # use_forecasts=False removes forecasts from every converter: the default node features of the
-    # attribute-list converters lose their forecast columns, the element converters zero their slots.
-    attr_to_observe = env_config.get("attr_to_observe")
-    if attr_to_observe is None and not env_config.get("use_forecasts", True):
-        attr_to_observe = [f for f in _DEFAULT_NODE_FEATURES if f not in _FORECAST_NODE_FEATURES]
+    # attribute-list converters lose their forecast columns, the element and LODF converters drop theirs.
+    attr_to_observe = resolve_node_features(env_config, g2op_obs_space)
     if mode == "GraphObsSpace" or mode == "BusConnectivityGraphObsSpace":
-        return GraphObservationConverter(
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return GraphObservationConverter(g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
     elif mode == "CompleteGraphObsSpace":
-        return CompleteGraphObservationConverter(
-            g2op_obs_space=gym_env.init_env.observation_space,
-            use_forecasts=env_config.get("use_forecasts", True),
-            verbose=env_config.get("verbose", False),
-        )
+        return CompleteGraphObservationConverter(g2op_obs_space, use_forecasts=use_forecasts, verbose=verbose)
+    elif mode == "EdgelessGraphObsSpace":
+        return EdgelessGraphObservationConverter(g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
+    elif mode == "FlatGraphObsSpace":
+        graph = GraphObservationConverter(g2op_obs_space, attr_to_observe=attr_to_observe)
+        return FlatGraphObservationConverter(graph, verbose=verbose)
     elif mode == "HeterogeneousGraphObsSpace":
-        return HeterogeneousGraphObservationConverter(
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return HeterogeneousGraphObservationConverter(g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
     elif mode == "SubstationGraphObsSpace":
-        return SubstationGraphObservationConverter(
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return SubstationGraphObservationConverter(g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
     elif mode == "ElementGraphObsSpace":
-        return ElementGraphObservationConverter(
-            g2op_obs_space=gym_env.init_env.observation_space,
-            verbose=env_config.get("verbose", False),
-            use_forecasts=env_config.get("use_forecasts", True),
-        )
+        return ElementGraphObservationConverter(g2op_obs_space, verbose=verbose, use_forecasts=use_forecasts)
     elif mode == "PTDFGraphObsSpace":
-        return PTDFGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return PTDFGraphObservationConverter(backend, g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
     elif mode == "LODFGraphObsSpace":
-        return LODFGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            verbose=env_config.get("verbose", False),
-        )
+        return LODFGraphObservationConverter(backend, g2op_obs_space, verbose=verbose, use_forecasts=use_forecasts)
     elif mode == "ElementLODFGraphObsSpace":
-        return ElementLODFGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            verbose=env_config.get("verbose", False),
-            use_forecasts=env_config.get("use_forecasts", True),
-        )
+        return ElementLODFGraphObservationConverter(backend, g2op_obs_space, verbose=verbose, use_forecasts=use_forecasts)
     elif mode == "ZbusGraphObsSpace":
-        return ZbusGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return ZbusGraphObservationConverter(backend, g2op_obs_space, attr_to_observe=attr_to_observe, verbose=verbose)
     elif mode == "SubstationPTDFGraphObsSpace":
-        return SubstationPTDFGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return SubstationPTDFGraphObservationConverter(backend, g2op_obs_space, attr_to_observe=attr_to_observe,
+                                                       verbose=verbose)
     elif mode == "SubstationZbusGraphObsSpace":
-        return SubstationZbusGraphObservationConverter(
-            backend=backend,
-            g2op_obs_space=gym_env.init_env.observation_space,
-            attr_to_observe=attr_to_observe,
-            verbose=env_config.get("verbose", False),
-        )
+        return SubstationZbusGraphObservationConverter(backend, g2op_obs_space, attr_to_observe=attr_to_observe,
+                                                       verbose=verbose)
     elif mode == "FlatObsSpace":
         g2op_input = env_config.get("g2op_input", ["p_i", "p_l", "q_i", "q_l", "a", "v_i", "v_l", "theta_i", "theta_l", "r", "t"])
         # "vect": every attribute of obs.to_vect(), i.e. exactly what imitation data stores.
-        attrs = (list(gym_env.init_env.observation_space.attr_list_vect) if "vect" in g2op_input
+        attrs = (list(g2op_obs_space.attr_list_vect) if "vect" in g2op_input
                  else get_attr_list(g2op_input))
-        return FlatObservationConverter(
-            gym_env=gym_env,
-            attr_to_observe=attrs,
-            verbose=env_config.get("verbose", False),
-        )
+        return FlatObservationConverter(gym_env=gym_env, attr_to_observe=attrs, verbose=verbose)
     else:
         raise ValueError(f"Unknown observation space type: {mode}")
 

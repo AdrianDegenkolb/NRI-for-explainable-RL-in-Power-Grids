@@ -50,9 +50,7 @@ CONVERTERS = (
 
 
 def make_converter(cls, env):
-    if cls is LODFGraphObservationConverter:
-        return cls(env.backend, env.observation_space)
-    if cls is ElementLODFGraphObservationConverter:
+    if cls in (LODFGraphObservationConverter, ElementLODFGraphObservationConverter):
         return cls(env.backend, env.observation_space, use_forecasts=False)
     return cls(env.backend, env.observation_space, attr_to_observe=NO_FORECASTS)
 

@@ -63,6 +63,10 @@ def build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         # Node features; use_forecasts=false drops the forecast features of every converter.
         "use_forecasts": obs.get("use_forecasts", True),
         "attr_to_observe": OmegaConf.to_container(obs.attr_to_observe) if obs.get("attr_to_observe") else None,
+        # "complete": the node features of CompleteGraphObsSpace for every attribute-list converter.
+        "node_features": obs.get("node_features", "default"),
+        # Add each node's substation(s) to the observation (needed by the per-substation GNN readout).
+        "node_substations": obs.get("node_substations", False),
         "use_chronics_cache": env.get("use_chronics_cache", False),
     }
 
