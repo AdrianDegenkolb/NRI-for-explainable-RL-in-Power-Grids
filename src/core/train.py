@@ -112,7 +112,7 @@ def _run_post_training_analysis(
     """Load the best checkpoint and run the full post-training analysis suite."""
     from rarl_rllib.model import RARLModel
     from analysis.post_training.runner import PostTrainingRunner
-    from analysis.post_training.analyzers import SurvivalAnalyzer, CongestionProfileAnalyzer, TopologyActionAnalyzer
+    from analysis.post_training.analyzers import SurvivalAnalyzer, CongestionProfileAnalyzer, TopologyActionAnalyzer, TopologyVariabilityAnalyzer
     from analysis.post_training.analyzers.h1_coupling import H1ElectricalCouplingAnalyzer
     from analysis.post_training.analyzers.h2_coupling import H2RiskCouplingAnalyzer
     from analysis.post_training.analyzers.h3_coupling import H3ActionEffectAnalyzer
@@ -136,6 +136,7 @@ def _run_post_training_analysis(
         SurvivalAnalyzer(),
         CongestionProfileAnalyzer(env_name=test_env_name),
         TopologyActionAnalyzer(env_name=test_env_name),
+        TopologyVariabilityAnalyzer(),
     ]
     if has_encoder:
         analyzers += [
