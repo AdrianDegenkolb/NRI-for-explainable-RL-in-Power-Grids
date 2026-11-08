@@ -35,9 +35,11 @@ def find_checkpoint(trial_dir: Path) -> str:
     :param trial_dir: Path to the trial directory.
     :return: Name of the checkpoint directory (e.g. ``checkpoint_000002``).
     """
-    candidates = sorted(trial_dir.glob("checkpoint_*"))
+    # Restrict to numeric checkpoint dirs (e.g. checkpoint_000002) to avoid
+    # matching checkpoint_results.json that Ray Tune writes alongside them.
+    candidates = sorted(d for d in trial_dir.glob("checkpoint_[0-9]*") if d.is_dir())
     if not candidates:
-        raise FileNotFoundError(f"No checkpoint_* directories found in {trial_dir}")
+        raise FileNotFoundError(f"No checkpoint_[0-9]* directories found in {trial_dir}")
     return candidates[-1].name
 
 
