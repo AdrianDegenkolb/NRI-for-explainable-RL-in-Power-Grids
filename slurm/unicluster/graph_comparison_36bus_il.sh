@@ -6,8 +6,8 @@
 #   1. convert → 2. HPO (4 GPU workers) → 3. summarize → 4. rollouts (argmax + top-k)
 #
 # Replicates the 14-bus PPO graph comparison on the 36-bus grid using IL only.
-# Model: gcn_substation_readout (GCN + per-substation pooling), same as the 14-bus runs.
-# Dataset: hard labels (best survival in Junior2).
+# Model: gcn_substation_readout (GCN + per-substation pooling) for 11 graph obs_spaces,
+# flat_mlp for the flat baseline. Dataset: hard labels (best survival in Junior2).
 #
 # Usage (from repo root):
 #   # Step 1: submit all HPO chains (each ends with an argmax rollout)
@@ -42,7 +42,7 @@ PREFIX="${PREFIX:-graph36}"
 read -r -a TOP_KS <<< "${TOP_KS:-20 50}"
 SBATCH_TIME="${SBATCH_TIME:-06:00:00}"
 
-DEFAULT_OBS_SPACES="no_edges substation complete elements heterogeneous lodf ptdf zbus elements_lodf substation_ptdf substation_zbus"
+DEFAULT_OBS_SPACES="no_edges substation complete elements heterogeneous lodf ptdf zbus elements_lodf substation_ptdf substation_zbus flat"
 read -r -a OBS_SPACES <<< "${OBS_SPACES:-$DEFAULT_OBS_SPACES}"
 
 if [[ "$ROLLOUTS_ONLY" -eq 1 ]]; then
@@ -79,13 +79,23 @@ for obs_space in "${OBS_SPACES[@]}"; do
     study="${PREFIX}_${obs_space}"
     echo "--- ${obs_space} (study: ${study}) ---"
 
-    CONFIG_NAME=pretrain_hpo_graph36 \
-    N_WORKERS="${N_WORKERS:-4}" \
-    SBATCH_TIME="${SBATCH_TIME}" \
-        slurm/unicluster/pretrain_hpo.sh \
-            "${study}" \
-            "${DATASET}" \
-            "obs_space=graph_comparison/${obs_space}"
+    if [[ "$obs_space" == "flat" ]]; then
+        # MLP baseline: different model and obs_space (FlatGraphObsSpace, not a graph Dict)
+        CONFIG_NAME=pretrain_hpo_graph36_mlp \
+        N_WORKERS="${N_WORKERS:-4}" \
+        SBATCH_TIME="${SBATCH_TIME}" \
+            slurm/unicluster/pretrain_hpo.sh \
+                "${study}" \
+                "${DATASET}"
+    else
+        CONFIG_NAME=pretrain_hpo_graph36 \
+        N_WORKERS="${N_WORKERS:-4}" \
+        SBATCH_TIME="${SBATCH_TIME}" \
+            slurm/unicluster/pretrain_hpo.sh \
+                "${study}" \
+                "${DATASET}" \
+                "obs_space=graph_comparison/${obs_space}"
+    fi
     echo ""
 done
 

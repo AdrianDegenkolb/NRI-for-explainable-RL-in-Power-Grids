@@ -1,0 +1,43 @@
+# HPO for the 36-bus graph comparison MLP baseline: flat_mlp on FlatGraphObsSpace (same node
+# features as the GNN variants, flattened). Same search space as pretrain_hpo_mlp.yaml
+# (fixed architecture, tune lr/batch/weight_decay/patience/dropout).
+#
+# Usage:
+#   python experiments/pretrain_hpo.py --config-name pretrain_hpo_graph36_mlp \
+#       experiment.name=graph36_flat imitation.dataset=data/imitation/case36_k208_greedy_hard.npz
+defaults:
+  - config
+  - override env: case36
+  - override model: flat_mlp
+  - override obs_space: graph_comparison/flat
+  - override relation_awareness: disabled
+  - override imitation: default
+  - _self_
+
+obs_space:
+  use_forecasts: false
+
+imitation:
+  epochs: 150
+  monitor: regret_top20
+
+hpo:
+  n_trials: 40
+  worker_id: 0
+  sampler_seed: 0
+  monitor: val_${imitation.monitor}
+  convert_only: false
+  pruner:
+    percentile: 75
+    n_startup_trials: 10
+    n_warmup_steps: 20
+  search_space:
+    imitation.lr: {type: float, low: 1.0e-5, high: 1.0e-2, log: true}
+    imitation.batch_size: {type: categorical, choices: [128, 256, 512, 768]}
+    imitation.weight_decay: {type: float, low: 1.0e-5, high: 1.0e-2, log: true}
+    imitation.patience: {type: categorical, choices: [3, 5, 10]}
+    model.mlp.dropout_prob: {type: float, low: 0.0, high: 0.5}
+
+hydra:
+  run:
+    dir: ${imitation.out_dir}/hydra/worker_${hpo.worker_id}
