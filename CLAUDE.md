@@ -118,8 +118,15 @@ Hydra Config
   zeroes the critic's gradient — explained variance stayed ≈ 0 in all earlier PPO runs. During the critic warm-up `set_policy_trainable` (`src/rarl_rllib/callback.py`)
   freezes actor and GNN, and keeps their BatchNorm layers in eval mode so the sampling policy can't drift.
   The Senior runs keep BatchNorm in eval mode for the whole run (`imitation.freeze_batch_norm`: RLlib samples in
-  eval mode but computes the PPO loss in train mode) and set `+training.kl_coeff=0.0` (RLlib's old API stack
+  eval mode but computes the PPO loss in train mode) and set `training.kl_coeff=0.0` (RLlib's old API stack
   ignores `use_kl_loss: false` and applies an adaptive KL penalty).
+  36-bus graph comparison with RL: `slurm/unicluster/graph_comparison_36bus_senior.sh` retrains the best Junior of
+  each `graph36_<obs>` HPO study with new seeds (GPU), fine-tunes each with `senior_warmup` and rolls Junior and
+  Senior out (argmax, val + test) into `results/senior/<experiment>/<obs>/`. Each Senior runs on CPU and GPU in
+  parallel (`RL_DEVICES`; the PPO updates, not sampling, dominate a 36-bus Senior's run time): the first to finish
+  claims `eval/senior_s<seed>.claim`, exports and cancels the other; `eval/senior_s<seed>/trained_on.txt` records
+  which one. The RL model's base configs are `model=gcn_substation_readout
+  obs_space=graph_comparison/<obs>`, not `model=gnn obs_space=default` (their extra keys would change the network).
   `experiments/senior_results.ipynb` plots TensorBoard curves (`src/analysis/training_curves.py`) and survival
   tables (`analysis.episodes.survival_metrics`, shared with the Junior notebook).
   Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),

@@ -87,7 +87,7 @@ echo "${JUNIOR_DIR}" > "${OUT_DIR}/eval/junior/source_run_dir.txt"
 # mode but computes the loss in train mode, and the batch statistics made these two policies differ by a KL of
 # 0.3-0.8 after RL (ImitationInitCallback).
 COMMON_OVERRIDES="training=ppo env=case36 model=gnn obs_space=default relation_awareness=disabled imitation=default \
-reward=constant reward.normalize_by_episode_length=true +training.kl_coeff=0.0 imitation.freeze_batch_norm=true \
+reward=constant reward.normalize_by_episode_length=true training.kl_coeff=0.0 imitation.freeze_batch_norm=true \
 rollouts.num_gpus_per_learner_worker=0 rollouts.num_rollout_workers=${N_WORKERS} \
 experiment.nb_timesteps=${NB_TIMESTEPS} ${ARCH_OVERRIDES} ${RL_OVERRIDES}"
 JUNIOR_WEIGHTS="imitation.weights_path=${OUT_DIR}/eval/junior/policy_weights.pt"
