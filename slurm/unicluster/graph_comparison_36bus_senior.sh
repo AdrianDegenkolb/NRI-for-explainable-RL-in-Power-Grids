@@ -66,7 +66,7 @@ N_ROLLOUT_TASKS="${N_ROLLOUT_TASKS:-2}"
 SBATCH_TIME_IL="${SBATCH_TIME_IL:-00:45:00}"
 SBATCH_TIME_ROLLOUT="${SBATCH_TIME_ROLLOUT:-01:30:00}"
 
-declare -A RL_PARTITION=([cpu]="cpu_il,cpu" [gpu]="gpu_h100,gpu_a100_il,gpu_h100_vip1")
+declare -A RL_PARTITION=([cpu]="cpu_il,cpu" [gpu]="gpu_h100,gpu_h100_il,gpu_a100_il,gpu_h100_vip1")
 declare -A RL_GRES=([cpu]="" [gpu]="#SBATCH --gres=gpu:1")
 declare -A RL_NUM_GPUS=([cpu]=0 [gpu]=1)
 declare -A RL_TIME=([cpu]="${SBATCH_TIME_RL_CPU:-48:00:00}" [gpu]="${SBATCH_TIME_RL_GPU:-24:00:00}")
@@ -166,7 +166,7 @@ for obs in "${OBS_SPACES[@]}"; do
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=${SBATCH_TIME_IL}
-#SBATCH --partition=gpu_h100,gpu_a100_il,gpu_h100_vip1
+#SBATCH --partition=gpu_h100,gpu_h100_il,gpu_a100_il,gpu_h100_vip1
 ${ENV_SETUP}
 python experiments/pretrain_policy.py --config-path "${BEST_DIRS[$obs]}" --config-name config \
     experiment.seed=${seed} imitation.device=cuda imitation.out_dir=${junior_dir} hydra.run.dir=${junior_dir}/hydra
