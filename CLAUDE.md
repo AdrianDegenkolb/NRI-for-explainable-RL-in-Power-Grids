@@ -121,12 +121,33 @@ Hydra Config
   eval mode but computes the PPO loss in train mode) and set `training.kl_coeff=0.0` (RLlib's old API stack
   ignores `use_kl_loss: false` and applies an adaptive KL penalty).
   36-bus graph comparison with RL: `slurm/unicluster/graph_comparison_36bus_senior.sh` retrains the best Junior of
-  each `graph36_<obs>` HPO study with new seeds (GPU), fine-tunes each with `senior_warmup` and rolls Junior and
-  Senior out (argmax, val + test) into `results/senior/<experiment>/<obs>/`. Each Senior runs on CPU and GPU in
-  parallel (`RL_DEVICES`; the PPO updates, not sampling, dominate a 36-bus Senior's run time): the first to finish
-  claims `eval/senior_s<seed>.claim`, exports and cancels the other; `eval/senior_s<seed>/trained_on.txt` records
-  which one. The RL model's base configs are `model=gcn_substation_readout
-  obs_space=graph_comparison/<obs>`, not `model=gnn obs_space=default` (their extra keys would change the network).
+  each `graph36_<obs>` HPO study (all 12) with new seeds (GPU; `JUNIOR_EXPERIMENT` copies existing Juniors of an
+  earlier run instead), fine-tunes each with `senior_warmup` and rolls Junior and Senior out (argmax, val + test)
+  into `results/senior/<experiment>/<obs>/`; `experiments/graph_comparison_36bus_results.ipynb` tabulates them.
+  Each Senior runs on CPU and GPU in parallel (`RL_DEVICES`; the PPO updates, not sampling, dominate a 36-bus
+  Senior's run time): the first to finish claims `eval/senior_s<seed>.claim`, exports and cancels the other;
+  `eval/senior_s<seed>/trained_on.txt` records which one. It exports the kept checkpoint with the highest val
+  survival (`export_policy_weights.py --select best_val`, `imitation.senior.select_best_val_checkpoint`;
+  `checkpoint_selection.json`), so Senior val survival is slightly optimistic and test is the unbiased split.
+  The rollouts run inside the Junior job and inside the winning Senior's job after its export
+  (`slurm/unicluster/parallel_rollouts.sh`, `ROLLOUT_PROCS` processes per split, default 2 like the reused
+  Juniors' rollouts: the converter's running normalizer makes results depend slightly on the chronic split), so
+  there are no rollout jobs; a failed Junior rollout does not block the Seniors.
+  Training and rollouts read the chronics from a copy on the node-local SSD (`env.chronics_dir=$TMPDIR/data_grid2op`,
+  `imitation_rollout.py --chronics-dir`; a missing path makes grid2op silently fall back to `~/data_grid2op`),
+  Juniors write their conversion cache there (`imitation.cache_dir`; one cache file per seed and representation,
+  up to 9 GB). `export_policy_weights.py` writes `env.chronics_dir: null`, since that copy is gone after the job. The RL model's base configs are `model=gcn_substation_readout obs_space=graph_comparison/<obs>`
+  (`model=mlp` for flat), not `model=gnn obs_space=default` (their extra keys would change the network).
+  RL chronic order (`CustomizedGrid2OpEnvironment._setup_chronics`, helpers in `src/grid2op_env/utils.py`): every
+  env copy gets the seed `worker_seed(experiment.seed, worker_index, vector_index)` from RLlib's `EnvContext`;
+  training envs shuffle their chronics with it (`env.shuffle_scenarios`, default true; before 2026-11-11 every
+  worker played the sorted chronics in lockstep, i.e. month by month). Evaluation worker i plays val chronic
+  i, i + n, ... (n = `evaluation_num_workers`), each seeded with `chronic_seed(evaluation.seed, chronic)` as in
+  the imitation rollouts, so every evaluation covers all val chronics with fixed maintenance (before: 18
+  chronics per evaluation, the next 18 the next time). `checkpoint_results.json` records each kept
+  checkpoint's `training_iteration`; RLlib repeats the last evaluation on iterations without one.
+  The critic warm-up recognizes the value head of RLlib's default Dict model (`value_layer`) as well as
+  `_value_branch` (`rarl_rllib.callback.is_value_parameter`).
   `experiments/senior_results.ipynb` plots TensorBoard curves (`src/analysis/training_curves.py`) and survival
   tables (`analysis.episodes.survival_metrics`, shared with the Junior notebook).
   Results per pipeline step: `results/teacher/`, `results/tutor/` (Tutor runs, `<run>/experience` + `summary`),

@@ -185,6 +185,9 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     rllib_cfg["evaluation_duration_unit"] = eval_cfg.evaluation_duration_unit
     rllib_cfg["always_attach_evaluation_results"] = True
     rllib_cfg["evaluation_num_workers"] = eval_cfg.evaluation_num_workers
+    # Evaluation worker i plays val chronic i, i + n, ... with a fixed seed per chronic (CustomizedGrid2OpEnvironment).
+    n_eval_shards = max(eval_cfg.evaluation_num_workers, 1)
+    val_env_config.update(chronic_shards=n_eval_shards, eval_seed=eval_cfg.get("seed", 42))
     rllib_cfg["evaluation_config"] = {"env_config": val_env_config, "explore": False}
 
     # Number of eval episodes = number of available chronics for the val env
@@ -192,6 +195,9 @@ def build_rllib_config(cfg: DictConfig) -> dict[str, Any]:
     chronics_path = os.path.join(grid2op.get_current_local_dir(), val_env_name, "chronics")
     if os.path.exists(chronics_path):
         rllib_cfg["evaluation_duration"] = len(os.listdir(chronics_path))
+        if rllib_cfg["evaluation_duration"] % n_eval_shards:
+            logger.warning("%d val chronics are not a multiple of %d evaluation workers: an evaluation does not "
+                           "cover every chronic exactly once", rllib_cfg["evaluation_duration"], n_eval_shards)
     else:
         rllib_cfg["evaluation_duration"] = 50
         logger.warning("Val chronics path not found (%s); defaulting evaluation_duration=50", chronics_path)

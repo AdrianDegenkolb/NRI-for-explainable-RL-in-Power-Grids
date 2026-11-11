@@ -76,6 +76,8 @@ def main(args: argparse.Namespace) -> None:
     cfg = OmegaConf.load(run_dir / CONFIG_FILE)
     register_custom_models()
     env_config = build_env_config(cfg, args.env_split)
+    if args.chronics_dir:
+        env_config["chronics_dir"] = args.chronics_dir
     device = torch.device(args.device)
 
     env = make_g2op_env(env_config)
@@ -121,6 +123,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Directory of the episode table; default <run-dir>/rollout (rollout_top<K> with --top-k)")
     parser.add_argument("--seed", type=int, default=42, help="Base seed; must equal the Tutor's for paired comparison")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--chronics-dir", default=None,
+                        help="Directory holding the Grid2Op envs, e.g. a node-local copy; default: the run config's "
+                             "env.chronics_dir, else Grid2Op's data dir")
     return parser
 
 

@@ -294,6 +294,27 @@ class TestCriticWarmup(unittest.TestCase):
         set_policy_trainable(SimpleNamespace(model=model), True)
         self.assertTrue(all(p.requires_grad for p in model.parameters()))
 
+    def test_frozen_policy_trains_value_layer_of_rllibs_default_model(self):
+        """RLlib's ComplexInputNetwork (flat MLP on a Dict observation) has its value head in `value_layer`."""
+        torch.manual_seed(0)
+        obs_space = gym.spaces.Dict({"a": gym.spaces.Box(-1, 1, (6,)), "b": gym.spaces.Box(-1, 1, (4,))})
+        model = build_policy_model(obs_space, 5, {"custom_model": None, "fcnet_hiddens": [16, 16]})
+        set_policy_trainable(SimpleNamespace(model=model), False)
+        before = {n: p.detach().clone() for n, p in model.named_parameters()}
+
+        obs = {key: torch.rand(8, *space.shape) for key, space in obs_space.spaces.items()}
+        logits_before = policy_logits(model, obs).detach()
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
+        loss = model.value_function().pow(2).mean()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        changed = {n for n, p in model.named_parameters() if not torch.equal(before[n], p.detach())}
+        self.assertTrue(changed, "the value head did not train")
+        self.assertTrue(all(n.startswith("value_layer") for n in changed), changed)
+        self.assertTrue(torch.equal(policy_logits(model, obs).detach(), logits_before))
+
     def test_frozen_batch_norm_matches_sampling_in_train_mode(self):
         """While frozen, a train-mode forward (RLlib's updates) equals the eval-mode one (sampling)
         and leaves the running statistics unchanged; unfreezing restores normal BatchNorm training."""

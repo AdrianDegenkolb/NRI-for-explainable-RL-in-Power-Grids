@@ -192,6 +192,8 @@ def load_rllib_agent(
     """
     # Add env_name to config for CustomizedGrid2OpEnvironment
     env_config["env_name"] = env_name
+    # One env for evaluation: chronics in their sorted order.
+    env_config["shuffle_scenarios"] = False
 
     # Create the CustomizedGrid2OpEnvironment to get proper observation/action spaces
     gym_wrapper = CustomizedGrid2OpEnvironment(env_config)

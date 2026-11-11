@@ -17,7 +17,8 @@ import grid2op
 import numpy as np
 from lightsim2grid import LightSimBackend
 
-from imitation.tutor import DO_NOTHING_INDEX, Tutor, chronic_seed, load_policy_actions, select_action
+from grid2op_env.utils import chronic_seed
+from imitation.tutor import DO_NOTHING_INDEX, Tutor, load_policy_actions, select_action
 
 ROOT = Path(__file__).resolve().parents[3]
 ACTION_SPACE = ROOT / "data/action_spaces/l2rpn_wcci_2020/teacher_n1_k208.json"

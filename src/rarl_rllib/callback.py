@@ -232,8 +232,12 @@ def _policy_models(policy: Policy) -> list[torch.nn.Module]:
 
 
 def is_value_parameter(name: str) -> bool:
-    """Whether a model parameter belongs to the value head of RLlib's FullyConnectedNetwork."""
-    return "_value_branch" in name
+    """Whether a model parameter belongs to the value head.
+
+    RLlib's FullyConnectedNetwork names it `_value_branch[_separate]`, its ComplexInputNetwork (the default
+    model for Dict observations, e.g. the flat MLP) `value_layer`.
+    """
+    return "_value_branch" in name or name.startswith("value_layer")
 
 
 def set_policy_trainable(policy: Policy, trainable: bool, freeze_batch_norm: bool = False) -> None:

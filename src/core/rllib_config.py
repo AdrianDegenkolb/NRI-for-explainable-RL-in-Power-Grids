@@ -60,6 +60,8 @@ def build_env_config(cfg: DictConfig, split: str) -> dict[str, Any]:
         "curriculum_training": env.curriculum_training,
         "curriculum_thresholds": list(env.curriculum_thresholds),
         "chronics_dir": env.get("chronics_dir", None),
+        # Every rollout worker plays the chronics in its own random order (CustomizedGrid2OpEnvironment).
+        "shuffle_scenarios": env.get("shuffle_scenarios", True),
         # Node features; use_forecasts=false drops the forecast features of every converter.
         "use_forecasts": obs.get("use_forecasts", True),
         "attr_to_observe": OmegaConf.to_container(obs.attr_to_observe) if obs.get("attr_to_observe") else None,

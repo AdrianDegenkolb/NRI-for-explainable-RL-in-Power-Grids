@@ -300,10 +300,14 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
     # --- Print checkpoint summary for each trial ---
     for i, result in enumerate(result_grid):
         if not result.error:
+            # Evaluation metrics of every kept checkpoint. On an iteration without evaluation RLlib repeats the
+            # last evaluation's results, so `training_iteration` tells whether they belong to these weights.
             checkpoints_to_json = {
                 os.path.basename(checkpoint.path): {
-                    k: v for k, v in metrics.get('evaluation', {}).get('custom_metrics', {}).items()
-                    if not isinstance(v, list)
+                    **{k: v for k, v in metrics.get('evaluation', {}).get('custom_metrics', {}).items()
+                       if not isinstance(v, list)},
+                    "training_iteration": metrics.get("training_iteration"),
+                    "timesteps_total": metrics.get("timesteps_total"),
                 }
                 for checkpoint, metrics in result.best_checkpoints
             }
@@ -315,8 +319,8 @@ def run_training(rllib_cfg: dict[str, Any], cfg: DictConfig) -> ResultGrid:
                     print(
                         Style.BOLD + f" *---- Trial {i} finished successfully ---*\n" + Style.END +
                         tabulate(
-                            [[k] + list(v.values()) for k, v in checkpoints_to_json.items() if v],
-                            headers=['checkpoint'] + list(eval_metrics.keys()),
+                            [[k] + list(v.values()) for k, v in checkpoints_to_json.items()],
+                            headers=['checkpoint'] + list(next(iter(checkpoints_to_json.values())).keys()),
                             tablefmt='rounded_grid',
                         )
                     )

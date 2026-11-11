@@ -7,7 +7,7 @@ The policy is any `ActionChooser`: the greedy (argmax) action of a policy networ
 (`greedy_chooser`), the Tutor's rule over the network's k highest-ranked actions (`top_k_chooser`,
 which simulates them and keeps do-nothing unless one beats it), or always do-nothing
 (`do_nothing_chooser`) as the reference without topology actions. Each chronic is seeded with
-`imitation.tutor.chronic_seed`, so every agent faces exactly the maintenance schedule the Tutor
+`grid2op_env.utils.chronic_seed`, so every agent faces exactly the maintenance schedule the Tutor
 faced on that chronic and survival can be compared per chronic.
 Results use the shared episode table of `analysis.episodes`.
 """
@@ -28,8 +28,9 @@ from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from analysis.episodes import make_episodes
 from core.heuristic_actions import reconnection_rule
 from grid2op_env.observation_converter import ObservationConverter
+from grid2op_env.utils import chronic_seed
 from imitation.pretrain import policy_logits
-from imitation.tutor import DO_NOTHING_INDEX, Tutor, chronic_seed
+from imitation.tutor import DO_NOTHING_INDEX, Tutor
 
 logger = logging.getLogger(__name__)
 

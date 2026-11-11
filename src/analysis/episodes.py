@@ -20,7 +20,7 @@ One row per (agent, chronic) episode, stored as CSV:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import numpy as np
@@ -116,6 +116,58 @@ def survival_metrics(episodes: pd.DataFrame) -> SurvivalMetrics:
         decisions_per_day=per_day(episodes, "n_decisions"),
         actions_per_day=per_day(episodes, "n_actions"),
         illegal_per_day=per_day(episodes, "n_illegal"),
+    )
+
+
+@dataclass
+class SurvivalOverSeeds:
+    """Survival of one agent summarized over training seeds (one row of a multi-seed survival table).
+
+    Attributes:
+        seeds: Number of seeds.
+        steps_pct: Mean over seeds of the step survival (`SurvivalMetrics.mean_survival_pct`), in %.
+        steps_sd: Its sample standard deviation over seeds (NaN for one seed), in %.
+        episodes_pct: Mean over seeds of the episode survival (`SurvivalMetrics.full_survival_pct`), in %.
+        episodes_sd: Its sample standard deviation over seeds (NaN for one seed), in %.
+    """
+
+    seeds: int
+    steps_pct: float
+    steps_sd: float
+    episodes_pct: float
+    episodes_sd: float
+
+
+def survival_per_seed(folders: dict[int, Path], tag: str) -> pd.DataFrame:
+    """`SurvivalMetrics` of each seed's rollout folder on one env split.
+
+    Args:
+        folders: Training seed -> folder with the episode tables `episodes_<tag>_*.csv` (one per array task).
+        tag: Env split tag of the file names, e.g. "valenv" or "testenv".
+
+    Returns:
+        One row per seed with at least one file (index `seed`, columns: the `SurvivalMetrics` fields);
+        empty with these columns if no seed has files.
+    """
+    rows = {seed: asdict(survival_metrics(load_episodes(*files)))
+            for seed, folder in folders.items() if (files := sorted(folder.glob(f"episodes_{tag}_*.csv")))}
+    columns = [f.name for f in fields(SurvivalMetrics)]
+    return pd.DataFrame.from_dict(rows, orient="index", columns=columns).rename_axis("seed")
+
+
+def survival_over_seeds(per_seed: pd.DataFrame) -> SurvivalOverSeeds:
+    """Mean and sample SD over seeds of step and episode survival.
+
+    Args:
+        per_seed: One row per seed with `mean_survival_pct` and `full_survival_pct`, e.g. from
+            `survival_per_seed`.
+    """
+    return SurvivalOverSeeds(
+        seeds=len(per_seed),
+        steps_pct=per_seed["mean_survival_pct"].mean(),
+        steps_sd=per_seed["mean_survival_pct"].std(ddof=1),
+        episodes_pct=per_seed["full_survival_pct"].mean(),
+        episodes_sd=per_seed["full_survival_pct"].std(ddof=1),
     )
 
 

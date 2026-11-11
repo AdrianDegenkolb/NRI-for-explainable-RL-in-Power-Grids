@@ -4,6 +4,7 @@ Unit tests for imitation/senior.py (RL overrides from a Junior run's config).
 Tests are organised by class:
   - TestFormatValue
   - TestArchitectureOverrides
+  - TestSelectBestValCheckpoint
 """
 from __future__ import annotations
 
@@ -12,7 +13,14 @@ import unittest
 
 from omegaconf import DictConfig, OmegaConf
 
-from imitation.senior import SKIPPED_KEYS, architecture_overrides, flatten, format_value, shell_overrides
+from imitation.senior import (
+    SKIPPED_KEYS,
+    architecture_overrides,
+    flatten,
+    format_value,
+    select_best_val_checkpoint,
+    shell_overrides,
+)
 from tests.hydra_config import compose_config
 
 # As in slurm/unicluster/imitation_vs_rl36.sh, before the architecture overrides.
@@ -65,3 +73,30 @@ class TestArchitectureOverrides(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def checkpoint(iteration: int | None, val_survival: float | None) -> dict:
+    """Entry of checkpoint_results.json."""
+    return {"training_iteration": iteration, "grid2op_end_mean": val_survival}
+
+
+class TestSelectBestValCheckpoint(unittest.TestCase):
+    def test_highest_val_survival_among_evaluation_iterations(self):
+        results = {"checkpoint_000001": checkpoint(10, 3000), "checkpoint_000003": checkpoint(30, 5000),
+                   "checkpoint_000004": checkpoint(40, 4000)}
+        self.assertEqual(select_best_val_checkpoint(results, 10), "checkpoint_000003")
+
+    def test_ignores_checkpoint_with_stale_evaluation(self):
+        """The end-of-training checkpoint (iteration 153) repeats the evaluation of iteration 150."""
+        results = {"checkpoint_000014": checkpoint(150, 4000), "checkpoint_000015": checkpoint(153, 6000)}
+        self.assertEqual(select_best_val_checkpoint(results, 10), "checkpoint_000014")
+
+    def test_later_checkpoint_wins_ties(self):
+        results = {"checkpoint_000001": checkpoint(10, 5000), "checkpoint_000002": checkpoint(20, 5000)}
+        self.assertEqual(select_best_val_checkpoint(results, 10), "checkpoint_000002")
+
+    def test_without_evaluated_checkpoint_raises(self):
+        with self.assertRaises(ValueError):
+            select_best_val_checkpoint({"checkpoint_000000": checkpoint(3, 5000)}, 10)
+        with self.assertRaises(ValueError):
+            select_best_val_checkpoint({"checkpoint_000000": checkpoint(None, None)}, 10)

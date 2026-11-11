@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +34,7 @@ from lightsim2grid import LightSimBackend
 
 from core.heuristic_actions import reconnection_rule
 from grid2op_env.action_converters import load_actions
+from grid2op_env.utils import chronic_seed
 
 logger = logging.getLogger(__name__)
 
@@ -75,23 +75,6 @@ class TutorConfig:
     do_nothing_margin: float = DO_NOTHING_MARGIN
     line_reco: bool = True
     max_steps: int | None = None
-
-
-def chronic_seed(base_seed: int, chronic_id: str) -> int:
-    """Seed for one chronic: depends on the chronic's name, not on its position in any list.
-
-    grid2op draws maintenance from the env seed, so a single seed for every chronic gives every
-    chronic the same maintenance schedule. Evaluating another agent with the same seed per chronic
-    reproduces the Tutor's maintenance exactly.
-
-    Args:
-        base_seed: Run-level seed.
-        chronic_id: Chronic path or name.
-
-    Returns:
-        A seed in [0, 2**31).
-    """
-    return (base_seed + zlib.crc32(Path(chronic_id).name.encode())) % 2**31
 
 
 def select_action(max_rho: np.ndarray, valid: np.ndarray, margin: float) -> int:

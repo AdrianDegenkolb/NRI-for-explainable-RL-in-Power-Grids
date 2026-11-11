@@ -74,3 +74,29 @@ def architecture_overrides(junior_cfg: DictConfig, dropout_prob: float | None = 
 def shell_overrides(overrides: list[str]) -> str:
     """Overrides as one shell-quoted line (protects `[...]` from globbing)."""
     return " ".join(shlex.quote(o) for o in overrides)
+
+
+VAL_SURVIVAL_KEY = "grid2op_end_mean"  # mean last grid2op step of the val episodes of one evaluation
+
+
+def select_best_val_checkpoint(results: dict[str, dict[str, Any]], evaluation_interval: int) -> str:
+    """The kept checkpoint with the highest val survival among those evaluated with their own weights.
+
+    RLlib evaluates every `evaluation_interval` iterations and repeats the last evaluation's results in
+    between, so a checkpoint from another iteration (e.g. the one at the end of training) carries the
+    val survival of older weights and is left out.
+
+    Args:
+        results: Checkpoint name -> its metrics with `training_iteration` and `VAL_SURVIVAL_KEY`
+            (the trial's `checkpoint_results.json`, written by `core.train`).
+        evaluation_interval: Iterations between two evaluations.
+
+    Returns:
+        Name of the selected checkpoint; the later one on ties.
+    """
+    evaluated = {name: metrics[VAL_SURVIVAL_KEY] for name, metrics in results.items()
+                 if metrics.get("training_iteration") and metrics["training_iteration"] % evaluation_interval == 0
+                 and metrics.get(VAL_SURVIVAL_KEY) is not None}
+    if not evaluated:
+        raise ValueError(f"No checkpoint from an evaluation iteration (every {evaluation_interval}) in {sorted(results)}")
+    return max(sorted(evaluated, reverse=True), key=evaluated.get)
